@@ -3,8 +3,10 @@
 # List the tickets of the local Markdown issue tracker under `.scratch/`.
 #
 # Ticket state lives in a `Status:` line near the top of every issue file (see
-# docs/agents/issue-tracker.md). `done` and `wontfix` are the terminal labels;
-# anything else -- including a missing line -- counts as open work.
+# docs/agents/issue-tracker.md). `done`, `wontfix` and `resolved` are the
+# terminal labels -- the first two close an implementation ticket, the third
+# closes a wayfinder decision ticket -- and anything else, including a missing
+# line, counts as open work.
 #
 # Usage:
 #   scripts/issues.sh          # open tickets only
@@ -55,7 +57,7 @@ while IFS= read -r file; do
 
     if [ "$show_all" = false ]; then
         case "$status" in
-            done | wontfix) continue ;;
+            done | wontfix | resolved) continue ;;
         esac
     fi
 

@@ -20,6 +20,10 @@ The `Status:` line is the only record of ticket state, so it must be kept true:
   merged branch can never leave a ticket looking open;
 - when abandoning a ticket, set `Status: wontfix` and say why under `## Comments`.
 
+Wayfinder decision tickets use their own terminal label, `resolved` (see "Wayfinding operations" below). The three
+terminal labels are therefore `done`, `wontfix` and `resolved`; every other value, and a missing line, counts as
+open work.
+
 Never close a ticket by deleting it, and never report work as complete while its ticket still shows a non-terminal
 status.
 

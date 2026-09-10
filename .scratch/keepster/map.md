@@ -107,6 +107,28 @@ a spec.
   had to carve an exception into ticket 03's "the index is wholly derived" invariant. See
   `docs/adr/0002-pins-as-parentless-commits.md`.
 
+- **The HTTP API is a public contract, the CLI a thin client over it**: `/v1`, additive-only, breaking changes only
+  via `/v2`, and the embedded SPA gets no privileged endpoints — because a third-party web or native UI cannot be
+  served by shelling out to the CLI. Addressing is ULIDs for both `Root` and `SnapshotId`, one canonical URL form
+  each, with cwd resolution and selectors (`latest`, `~N`, `2h`) living in the CLI; `path=` is one query parameter
+  across every endpoint; content is raw bytes with `Range`, diffs are computed by the daemon; Restore only
+  overwrites and creates and never deletes (Include Rules make "make identical" irreversibly destructive outside
+  what the tool can see); errors are RFC 9457 with a stable `code` plus a CLI exit-code table; the browser gets a
+  per-start token through a single-use bootstrap exchanged for an `HttpOnly` cookie, guarded by `Host`/`Origin`
+  checks; live updates are SSE with `Last-Event-ID` replay and an honest `resync`; `forget` and Maintenance are
+  jobs, pins are synchronous; `status --json` is a verbatim passthrough of `GET /v1/status`; configuration is
+  read-only with per-key provenance plus an `explain?path=` diagnostic; `open` launches the configured editor via
+  argv without a shell and can materialise a historical version. See
+  [07 — Daemon HTTP API and CLI surface](issues/07-api-and-cli-surface.md).
+- **Unwatch keeps the history but lets it decay**: deregistering pins the latest Snapshot (ADR 0002) and leaves
+  Retention running, so an orphaned store falls down the normal ladder to exactly that pinned last state instead of
+  either emptying itself within 30 days (a silent `purge`) or holding disk forever. Refines ticket 06. Roots may not
+  overlap, and a move is only ever explicit. See [07](issues/07-api-and-cli-surface.md).
+- **`Project` is renamed `Watched Root`** (short `Root`): the entity is a registration whose path is a mutable
+  attribute, so a folder-shaped word asserts the opposite, and `Project` implies code for a tool that will watch
+  `~/Documents/notes`. Documentation-only pass tracked as
+  [13 — Rename Project to Watched Root](issues/13-rename-project-to-root.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -119,6 +141,9 @@ a spec.
   settled — `keepster status`, live state, non-zero exit.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
+- How the now-public `/v1` contract is published: whether an OpenAPI document is generated from the handlers or
+  hand-written, where it lives, and how it is kept from drifting away from the implementation. Ticket 07 committed
+  to documenting the API; it did not decide the mechanism.
 
 ## Out of scope
 
