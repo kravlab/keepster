@@ -132,6 +132,15 @@ a spec.
   `default / global / root`. See
   [13 — Rename Project to Watched Root](issues/13-rename-project-to-root.md).
 
+- **Eight crates, and the core owns no ports**: `core` is a pure decision kernel (no traits, no I/O), `app` holds
+  use-cases over a *concrete* `SnapshotStore` that owns both git and the derived index, and `api`, `watch`,
+  `service` and `ui` are separate so that Cargo — not review — enforces what each may not know; the CLI links
+  neither `git2` nor `rusqlite` nor `core`. Policy is `decide(state, event, now) -> (Vec<Action>, PolicyState)`
+  over values, a failed Root is a `RootRuntime` variant rather than a startup error, time is a parameter, and the
+  workspace contains no fake but a real git store in a temp dir. `cargo build` never needs node. See
+  [08 — Workspace structure and module boundaries](issues/08-workspace-structure.md) and
+  `docs/adr/0003-no-ports-in-core.md`.
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -144,9 +153,6 @@ a spec.
   settled — `keepster status`, live state, non-zero exit.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
-- How the now-public `/v1` contract is published: whether an OpenAPI document is generated from the handlers or
-  hand-written, where it lives, and how it is kept from drifting away from the implementation. Ticket 07 committed
-  to documenting the API; it did not decide the mechanism.
 
 ## Out of scope
 
