@@ -2,29 +2,29 @@
 
 Editor-independent file history: a background daemon captures snapshots of watched directories into its own
 git-backed store, so that work overwritten by an agent, a script or a stray command can be recovered without
-relying on the project's own version control.
+relying on the directory's own version control.
 
 ## Language
 
-**Project**:
+**Watched Root** (short form **Root**):
 A directory registered for history, identified by a surrogate id that survives renaming or moving the directory.
-_Avoid_: repository, workspace, folder
+_Avoid_: project, repository, workspace, folder, directory
 
 **Registry**:
-The daemon's record of every registered Project and its current path.
-_Avoid_: database, index, project list
+The daemon's record of every registered Root and its current path.
+_Avoid_: database, index, root list
 
 **Working Tree**:
-The live files in a Project's directory, as opposed to any captured version of them.
+The live files in a Root's directory, as opposed to any captured version of them.
 _Avoid_: source, current version, disk state
 
 **Include Rules**:
-A Project's own rules deciding which files a Snapshot captures. They are authoritative; a directory's `.gitignore`
+A Root's own rules deciding which files a Snapshot captures. They are authoritative; a directory's `.gitignore`
 is an optional layer beneath them.
 _Avoid_: gitignore, filters, exclusions
 
 **Snapshot**:
-The captured state of a Project's included files at one moment. Normally complete; where some included files could
+The captured state of a Root's included files at one moment. Normally complete; where some included files could
 not be read, the Snapshot is still taken and marked incomplete, naming what it omits, so that it never claims a
 completeness it does not have.
 _Avoid_: commit, version, backup, checkpoint
@@ -40,8 +40,8 @@ touching any other Segment.
 _Avoid_: bucket, chain, branch
 
 **History Store**:
-The storage owned by Keepster that holds a Project's Snapshots, separate from and invisible to the Project's
-own version control.
+The storage owned by Keepster that holds a Root's Snapshots, separate from and invisible to the version
+control inside the watched directory.
 _Avoid_: backup, cache, repo
 
 **Trigger**:
@@ -64,7 +64,7 @@ periods indefinitely.
 _Avoid_: segment size, granularity, bucket width
 
 **Retention Ladder**:
-The ordered list of Tiers that expresses a Project's Retention, from the newest and densest to the oldest and
+The ordered list of Tiers that expresses a Root's Retention, from the newest and densest to the oldest and
 sparsest.
 _Avoid_: policy, schedule, rotation
 
@@ -85,20 +85,20 @@ with capturing a Snapshot.
 _Avoid_: gc, cleanup, compaction, vacuum
 
 **Forget**:
-Removing every version of a path from a Project's whole history, used when a secret was captured. Distinct from
+Removing every version of a path from a Root's whole history, used when a secret was captured. Distinct from
 Retention, which discards Snapshots wholesale by age; Forget removes one path from Snapshots that otherwise
 survive, and never touches the Working Tree.
 _Avoid_: purge, scrub, delete, redact
 
 **Degraded**:
-The state of a Project the daemon is still watching but cannot serve as promised — its configuration failed to
+The state of a Root the daemon is still watching but cannot serve as promised — its configuration failed to
 load and an older one is in force, or its coverage guarantee has been switched off.
 _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:
-The state of a Project whose directory cannot be reached at all — missing, unmounted or unreadable — so that
-nothing can be captured. Distinct from Degraded, where watching continues on worse terms; an Unavailable Project is
-never deregistered and its History Store is kept, because the Project's identity does not depend on its path.
+The state of a Root whose directory cannot be reached at all — missing, unmounted or unreadable — so that
+nothing can be captured. Distinct from Degraded, where watching continues on worse terms; an Unavailable Root is
+never deregistered and its History Store is kept, because the Root's identity does not depend on its path.
 _Avoid_: offline, missing, lost, disconnected
 
 **Restore**:

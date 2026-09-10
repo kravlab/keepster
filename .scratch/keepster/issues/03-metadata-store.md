@@ -1,11 +1,11 @@
-# 03 — Where the project registry and the snapshot index live
+# 03 — Where the Root registry and the snapshot index live
 
 Type: research
 Status: resolved
 
 ## Question
 
-Two pieces of state are not git objects: the registry of watched projects (id, path, per-project config) and the
+Two pieces of state are not git objects: the registry of Watched Roots (id, path, per-Root config) and the
 index mapping `SnapshotId` to its segment ref and commit. Where do they live — SQLite, plain files inside the
 history store, or git objects (trailers, notes) with an in-memory index built on demand?
 
@@ -15,7 +15,7 @@ Weigh against:
 - concurrent access: the daemon writes while CLI and HTTP handlers read;
 - recoverability: since `SnapshotId` also lives in the commit trailer, the index must be rebuildable from git alone
   if the metadata file is lost or corrupted — confirm this holds for the chosen option;
-- the queries the timeline needs: list snapshots for a project newest-first across segments, and list only the
+- the queries the timeline needs: list snapshots for a Root newest-first across segments, and list only the
   snapshots in which a given path changed;
 - cost of the dependency on three platforms.
 
@@ -25,7 +25,7 @@ destroyed.
 ## Answer
 
 Split the state rather than picking one store. The **Registry** lives in plain files — one small daemon-owned
-`project.toml` per Project beside its History Store, replaced atomically (temp file + fsync + rename) — because
+`root.toml` per Root beside its History Store, replaced atomically (temp file + fsync + rename) — because
 it is the only state not derivable from git and therefore the only state that must never sit in something a
 backup tool or a network filesystem can corrupt. The **SnapshotId → (Segment ref, commit) index**, the
 path-change index and the cross-Segment ordering live in **SQLite via rusqlite** (`bundled`, WAL,
@@ -44,7 +44,7 @@ the synchronous setting or journal mode."
 Recovery when the metadata is destroyed but git survives: delete the `.sqlite`/`-wal`/`-shm` set together,
 enumerate Segment refs newest-first, walk each chain reading `SnapshotId` trailers, tree-diff each commit against
 its parent to rebuild the path rows, then record watermarks. The Registry recovers separately and only partly —
-the Project id is recoverable from the store directory and a `Keepster-Project` commit trailer, but the
+the Root id is recoverable from the store directory and a `Keepster-Root` commit trailer, but the
 watched directory *path* is recoverable under no option, so the user re-runs `keepster watch <dir>` and the
 daemon reattaches the existing store by id.
 

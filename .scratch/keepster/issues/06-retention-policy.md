@@ -28,7 +28,7 @@ Settle:
 ### Segment granularity
 
 **Configurable, hourly default.** A Segment is created lazily on the first Snapshot falling in its period, so the
-ref count tracks *active* periods, not elapsed ones: a Project touched twice a day costs ~30 refs over a 30-day
+ref count tracks *active* periods, not elapsed ones: a Root touched twice a day costs ~30 refs over a 30-day
 window, a continuously-churning one ~720. Both are trivial for `packed-refs`.
 
 Hourly is the default because it makes the Segment period equal to the finest tier the default ladder uses, and
@@ -81,9 +81,9 @@ should be whole multiples of the Segment period, or Retention lags by up to one 
 
 ### Disk-usage cap
 
-**Opt-in, per Project, off by default.** The ladder already bounds growth; a default cap would silently truncate
-history nobody asked to lose. The cap is per Project rather than on the shared global store, because a global cap
-lets one busy Project evict another's history — a surprise with no owner.
+**Opt-in, per Root, off by default.** The ladder already bounds growth; a default cap would silently truncate
+history nobody asked to lose. The cap is per Root rather than on the shared global store, because a global cap
+lets one busy Root evict another's history — a surprise with no owner.
 
 One physical fact dictates the order of operations: **deleting a Segment ref frees nothing until `gc` runs**, it
 only makes objects unreachable. So the cap can never be a check-then-prune loop — that would delete the entire
@@ -123,7 +123,7 @@ Cadence, split by cost:
   for the same reason.
 
 Neither competes with the user for I/O: Retention is never urgent, so a scheduled pass waits for the first quiet
-moment (~5 min without a Snapshot), with a hard ceiling (~6 h) so a permanently busy Project is still maintained
+moment (~5 min without a Snapshot), with a hard ceiling (~6 h) so a permanently busy Root is still maintained
 rather than growing forever. Daemon start *schedules* a pass rather than blocking on one — the startup
 Reconciliation walk is the latency-critical work there.
 
@@ -149,7 +149,7 @@ copy's commit hash differs from the in-Segment copy, which is exactly the case A
 `keepster forget <glob>` rebuilds every tree containing a matching path, re-chains every affected Segment,
 rewrites any matching pin, and ends with `gc --prune=now` — all under the store lock.
 
-**The ladder is what makes this affordable.** At the defaults a maximally-busy Project retains ~1440 commits in the
+**The ladder is what makes this affordable.** At the defaults a maximally-busy Root retains ~1440 commits in the
 24 h tier, ~144 in the hourly tier and ~23 in the daily tier: on the order of **1,600 commits**, not the hundreds of
 thousands a real repository holds. A `git2` treebuilder pass over that is sub-second CPU plus the object writes, so
 no lazy or soft-delete variant is needed. A soft delete was rejected outright: it leaves the secret readable on
@@ -162,7 +162,7 @@ to change.
 
 **Exclusion is a per-invocation choice with no default**, because either default is wrong half the time: a `.env`
 should never be captured again, while a source file with one leaked line should keep being snapshotted. Both
-`--exclude` (adds the pattern to the Project's exclude rules) and `--keep-watching` ship; interactively the command
+`--exclude` (adds the pattern to the Root's exclude rules) and `--keep-watching` ship; interactively the command
 asks, non-interactively it fails unless one is given. `--exclude` is refused when the path is on the secret opt-in
 list, since that list is the user having explicitly said "capture this".
 

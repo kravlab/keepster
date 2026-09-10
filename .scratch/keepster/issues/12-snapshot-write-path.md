@@ -30,10 +30,10 @@ Settle:
   from the cold-start path ticket 04 already made configurable;
 - whether `git2::Index` is the right vehicle at all, or our own map plus `TreeBuilder` applied to the previous
   Snapshot's tree. The latter rebuilds only the tree objects on the changed paths' ancestry rather than every tree
-  in the Project, and makes the map ours to shape; the former is already written and knows how to emit nested
+  in the Root, and makes the map ours to shape; the former is already written and knows how to emit nested
   trees;
 - how this interacts with a Snapshot marked **incomplete** (`CONTEXT.md`): a file that could not be read must not
   leave behind an entry that looks valid to the next Snapshot;
-- memory cost of a long-lived map for a large Project, and whether there is a size past which the answer flips;
+- memory cost of a long-lived map for a large Root, and whether there is a size past which the answer flips;
 - the mode recorded in each entry, which ticket 10 needs: `core.filemode = false` (ADR 0001) stops git probing the
   filesystem, so whatever mode the entry carries is the one that reaches history.

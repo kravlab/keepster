@@ -30,10 +30,10 @@ a spec.
 <!-- charting session, 2026-09-08; these were settled in conversation before any ticket existed -->
 
 - **Destination scope**: v1 spec covers both core (daemon + CLI) and web UI, not core alone.
-- **Watched unit is any directory**: git presence is not required, so the ignore engine and the project identity
+- **Watched unit is any directory**: git presence is not required, so the ignore engine and the Root identity
   are ours, not git's. Git remains a storage engine only.
-- **One global daemon + a project registry**: a single process watches every registered directory; CLI and web UI
-  talk to it. Not one process per project.
+- **One global daemon + a Root registry**: a single process watches every registered directory; CLI and web UI
+  talk to it. Not one process per Root.
 - **Platforms**: Linux, macOS and Windows in v1.
 - **Snapshot triggers are configurable**: watcher-with-debounce, periodic floor snapshot and full reconciliation
   scan are all available; the user chooses which are active. A rate limit always applies, and its value is the
@@ -52,7 +52,7 @@ a spec.
   the current state first, so a restore is itself undoable.
 - **Web UI delivery**: the daemon serves it over HTTP on 127.0.0.1 with a token; the built SPA is embedded in the
   binary. One artifact, no runtime dependencies.
-- **Project identity**: explicit registration (`keepster watch <dir>`), identity is a generated surrogate id;
+- **Root identity**: explicit registration (`keepster watch <dir>`), identity is a generated surrogate id;
   the path is a mutable attribute, so moving or renaming a directory keeps its history.
 - **Git engine is split by role**: `git2` (libgit2, vendored) owns the hot path — writing a Snapshot from an index
   we own, reading blobs, tree-to-tree diffs — while store maintenance (`gc`, `repack`, packed-refs compaction) is
@@ -67,22 +67,22 @@ a spec.
   `mmap` writes, network mounts). Reconciliation is therefore the guarantee and cannot be disabled, whatever
   Trigger set the user picks. See
   [02 — Reliability limits of cross-platform filesystem watching](issues/02-filesystem-watching.md).
-- **Metadata is split by derivability**: the Registry lives in per-Project plain files replaced atomically, because
+- **Metadata is split by derivability**: the Registry lives in per-Root plain files replaced atomically, because
   the watched path is the one fact git cannot reproduce; the `SnapshotId` and path indexes live in SQLite declared
   as a derived cache that may be deleted and rebuilt from git objects at any time. Git notes are rejected outright.
-  See [03 — Where the project registry and the snapshot index live](issues/03-metadata-store.md).
+  See [03 — Where the Root registry and the snapshot index live](issues/03-metadata-store.md).
 
 - **Configuration**: two TOML levels — a global daemon config and an unrestricted `.keepster.toml` in the
   watched directory — merged by key class (pattern lists layer with negation, sets and scalars replace). Reload is
-  automatic, an invalid config never applies and leaves the Project Degraded, and the store location is itself a
-  key: global by default, optionally inside the Project. See
+  automatic, an invalid config never applies and leaves the Root Degraded, and the store location is itself a
+  key: global by default, optionally inside the Root. See
   [04 — Configuration schema and precedence](issues/04-configuration-schema.md).
 
 - **Daemon lifecycle**: one daemon per OS user, running as that user and never elevated, autostarted by a unit
   `keepster service install` writes and can verify (Linux linger; macOS LaunchAgent, whose logout gap is shown
   rather than hidden; Windows per-user service). One HTTP API on two listeners — permission-protected socket/pipe
   for the CLI, loopback plus token for the browser. A flock'd pid file is the single-instance authority, and only
-  the service manager ever starts the daemon, so a running daemon is always a supervised one. A new Project state
+  the service manager ever starts the daemon, so a running daemon is always a supervised one. A new Root state
   `Unavailable` separates "root gone or unreadable" from `Degraded`, and a partly unreadable tree still yields a
   Snapshot, marked incomplete. `keepster status` is the authority on health — live daemon state, non-zero exit,
   `--json` — and logs are demoted to debugging. Shutdown drains the in-flight capture and flushes pending debounce
@@ -92,7 +92,7 @@ a spec.
 - **Retention**: a Segment Period (configurable, hourly default, per-Segment so reconfiguring needs no migration)
   plus a duration-based Tier ladder — everything for 24 h, hourly to 7 d, daily to 30 d — where the survivor of a
   thinned period is its last Snapshot and Retention only ever touches a Segment lying *wholly* past a boundary, so
-  thinning happens at most once per Segment and the pass is idempotent. An opt-in per-Project disk cap drops whole
+  thinning happens at most once per Segment and the pass is idempotent. An opt-in per-Root disk cap drops whole
   Segments oldest-first *after* maintenance (ref deletion frees nothing until `gc`), floors at the newest tier and
   never blocks capture. An exclusive per-store lock is the precondition for `git gc --prune=now`, which is required
   because git's two-week `gc.pruneExpire` default would otherwise make Retention free nothing; Retention runs per
@@ -126,7 +126,10 @@ a spec.
   overlap, and a move is only ever explicit. See [07](issues/07-api-and-cli-surface.md).
 - **`Project` is renamed `Watched Root`** (short `Root`): the entity is a registration whose path is a mutable
   attribute, so a folder-shaped word asserts the opposite, and `Project` implies code for a tool that will watch
-  `~/Documents/notes`. Documentation-only pass tracked as
+  `~/Documents/notes`. The documentation-only pass is done: `CONTEXT.md`, this map, tickets `01`–`12`, the
+  registry file (`project.toml` → `root.toml`) and the commit trailer (`Keepster-Project` → `Keepster-Root`).
+  The rename also settled one identifier ticket 07 had left behind — config provenance is now
+  `default / global / root`. See
   [13 — Rename Project to Watched Root](issues/13-rename-project-to-root.md).
 
 ## Not yet specified
@@ -147,7 +150,7 @@ a spec.
 
 ## Out of scope
 
-- Proactive desktop notifications when a Project stops being covered: three extra platform
+- Proactive desktop notifications when a Root stops being covered: three extra platform
   integrations that deliver nowhere on a headless lingering daemon, and mutable into silence.
   The pull-based `status` surface carries v1 instead. See
   [05 — Daemon lifecycle and autostart on three platforms](issues/05-daemon-lifecycle.md).
@@ -157,4 +160,4 @@ a spec.
   chasing it here would trade away the read latency this tool exists for.
 - A Zed extension. The whole point of the design is to sit below the editor, not inside it.
 - Editing files inside the web UI. It reads history and restores; it is not an editor.
-- Any interaction with the project's own `.git` (its index, HEAD, branches or stash).
+- Any interaction with the watched directory's own `.git` (its index, HEAD, branches or stash).

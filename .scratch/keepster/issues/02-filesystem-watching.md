@@ -36,7 +36,7 @@ Conclusion: the watcher is a latency optimisation, never the correctness mechani
 guarantee, it must be non-disableable at daemon start and after every rescan signal, and the daemon must arm
 watches before walking, rescan any directory that appears in the tree, apply Include Rules before installing
 watches (measured: ~10k watches and 1-4 s to arm a 100k-file tree, against a per-user budget of 133264), and
-disable symlink following so a recursive watch cannot escape the Project.
+disable symlink following so a recursive watch cannot escape the Root.
 
 Full findings, with sources and local measurements:
 [`../research/02-filesystem-watching.md`](../research/02-filesystem-watching.md)

@@ -11,7 +11,7 @@ What is that contract?
 
 Settle:
 
-- the endpoints and their shapes: project registry (list, watch, unwatch, move), timeline for a project, snapshots
+- the endpoints and their shapes: Root registry (list, watch, unwatch, move), timeline for a Root, snapshots
   touching a given path, file listing within a snapshot, file content, diff (snapshot vs previous, snapshot vs
   working tree), restore, forget;
 - how a `SnapshotId` appears in URLs and CLI arguments;
@@ -31,9 +31,9 @@ contract; do not reopen it here:
   authentication bullet above therefore only concerns the *TCP* listener; "what stops another local process from
   calling the API" is answered for the CLI path by socket permissions.
 - **`status` is not a free design**: it must expose live daemon state as the payload described in 05 — daemon
-  liveness and uptime, autostart, linger, the git prerequisite row owned by ticket 11, and per Project its state
+  liveness and uptime, autostart, linger, the git prerequisite row owned by ticket 11, and per Root its state
   (`Watching` / `Degraded` / `Unavailable`), last Snapshot age, Snapshot count and any "coverage not guaranteed"
-  flag — with a non-zero exit whenever any Project is not `Watching`, and `--json` emitting the same shape the web
+  flag — with a non-zero exit whenever any Root is not `Watching`, and `--json` emitting the same shape the web
   UI renders. This ticket owns its wire format, not its content.
 - **CLI-only commands** now include `service install | uninstall | status` alongside `status`.
 - A Snapshot may be **marked incomplete** (see `CONTEXT.md`), so every shape that returns a Snapshot needs a place
@@ -166,7 +166,7 @@ what passed the Include Rules, so `node_modules`, build output and — with the 
 every path no rule covers are absent from it. "Make identical" deletes all of that, and the Safety Snapshot cannot
 undo it, because the Safety Snapshot is taken through the same rules and therefore does not contain it either. An
 operation whose worst case is irreversible precisely in the region the tool cannot see does not belong in v1; the
-motivating scenario ("an agent deleted half the project") needs deleted files back, not extra files removed.
+motivating scenario ("an agent deleted half the Working Tree") needs deleted files back, not extra files removed.
 
 Restoring one path per call was rejected too: it means N Safety Snapshots and no single undo, which is the point of
 the Safety Snapshot.
@@ -279,7 +279,7 @@ presenting as a single store-wide period), plus the orphaned-store section. A Ro
 ### Configuration
 
 **Read-only, with provenance**: `GET /v1/roots/{r}/config` returns the effective merged configuration and, per key,
-the level that set it (default / global / project). Edits are made in the TOML files, which the daemon already
+the level that set it (default / global / root). Edits are made in the TOML files, which the daemon already
 reloads automatically (ticket 04).
 
 Write support was rejected for v1: the daemon would be rewriting a file the user keeps in git and edits by hand, and
