@@ -1,0 +1,111 @@
+# Keepster
+
+Editor-independent file history: a background daemon captures snapshots of watched directories into its own
+git-backed store, so that work overwritten by an agent, a script or a stray command can be recovered without
+relying on the project's own version control.
+
+## Language
+
+**Project**:
+A directory registered for history, identified by a surrogate id that survives renaming or moving the directory.
+_Avoid_: repository, workspace, folder
+
+**Registry**:
+The daemon's record of every registered Project and its current path.
+_Avoid_: database, index, project list
+
+**Working Tree**:
+The live files in a Project's directory, as opposed to any captured version of them.
+_Avoid_: source, current version, disk state
+
+**Include Rules**:
+A Project's own rules deciding which files a Snapshot captures. They are authoritative; a directory's `.gitignore`
+is an optional layer beneath them.
+_Avoid_: gitignore, filters, exclusions
+
+**Snapshot**:
+The captured state of a Project's included files at one moment. Normally complete; where some included files could
+not be read, the Snapshot is still taken and marked incomplete, naming what it omits, so that it never claims a
+completeness it does not have.
+_Avoid_: commit, version, backup, checkpoint
+
+**SnapshotId**:
+The stable public identity of a Snapshot, deliberately not the underlying commit hash, so that pruning may rewrite
+commits without invalidating anything that refers to a Snapshot.
+_Avoid_: hash, SHA, revision
+
+**Segment**:
+The group of Snapshots covering one retention period, self-contained so it can be dropped or thinned without
+touching any other Segment.
+_Avoid_: bucket, chain, branch
+
+**History Store**:
+The storage owned by Keepster that holds a Project's Snapshots, separate from and invisible to the Project's
+own version control.
+_Avoid_: backup, cache, repo
+
+**Trigger**:
+A rule that decides when a Snapshot is taken. Which Triggers are active is the user's choice.
+_Avoid_: schedule, hook, watcher event
+
+**Reconciliation**:
+A full comparison of a Working Tree against its latest Snapshot, used to recover changes whose filesystem events
+were never delivered.
+_Avoid_: full scan, resync, refresh
+
+**Retention**:
+The rules deciding which Snapshots survive and which are discarded.
+_Avoid_: cleanup, expiry, garbage collection
+
+**Segment Period**:
+The span of time one Segment covers. A property of the Segment, fixed when it is created, not of the History Store:
+changing the configured period affects only Segments created afterwards, so a store may hold Segments of differing
+periods indefinitely.
+_Avoid_: segment size, granularity, bucket width
+
+**Retention Ladder**:
+The ordered list of Tiers that expresses a Project's Retention, from the newest and densest to the oldest and
+sparsest.
+_Avoid_: policy, schedule, rotation
+
+**Tier**:
+One rung of the Retention Ladder: an age, and how densely Snapshots are kept below it. Stated in durations, so it
+is independent of the Segment Period.
+_Avoid_: level, band, bucket
+
+**Pin**:
+A user's declaration that one Snapshot survives Retention unconditionally. Held as its own self-contained copy of
+the Snapshot, so that Retention need not know pinned Snapshots exist.
+_Avoid_: lock, keep, favourite, star
+
+**Maintenance Pass**:
+The periodic reclamation of a History Store's disk space, distinct from Retention: Retention decides which
+Snapshots survive, the Maintenance Pass makes the space of the others actually available again. It cannot overlap
+with capturing a Snapshot.
+_Avoid_: gc, cleanup, compaction, vacuum
+
+**Forget**:
+Removing every version of a path from a Project's whole history, used when a secret was captured. Distinct from
+Retention, which discards Snapshots wholesale by age; Forget removes one path from Snapshots that otherwise
+survive, and never touches the Working Tree.
+_Avoid_: purge, scrub, delete, redact
+
+**Degraded**:
+The state of a Project the daemon is still watching but cannot serve as promised — its configuration failed to
+load and an older one is in force, or its coverage guarantee has been switched off.
+_Avoid_: broken, error state, unhealthy
+
+**Unavailable**:
+The state of a Project whose directory cannot be reached at all — missing, unmounted or unreadable — so that
+nothing can be captured. Distinct from Degraded, where watching continues on worse terms; an Unavailable Project is
+never deregistered and its History Store is kept, because the Project's identity does not depend on its path.
+_Avoid_: offline, missing, lost, disconnected
+
+**Restore**:
+Writing a Snapshot's version of a file back over the Working Tree.
+_Avoid_: revert, rollback, checkout
+
+**Safety Snapshot**:
+The Snapshot taken of the current state immediately before a Restore, which is what makes a Restore itself
+undoable.
+_Avoid_: backup, pre-restore copy
