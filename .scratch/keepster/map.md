@@ -141,6 +141,13 @@ a spec.
   [08 — Workspace structure and module boundaries](issues/08-workspace-structure.md) and
   `docs/adr/0003-no-ports-in-core.md`.
 
+- **The diff editor is CodeMirror 6, fed by the daemon's hunks**: about seven times lighter than a trimmed Monaco
+  (96.7 against 671 KiB gzip before first paint), and the only engine that renders hunks computed elsewhere
+  (`diffConfig.override`), which ticket 07's daemon-side diff requires, so MergeView's own diff is never used.
+  Line wrapping is an opt-in button, and a file with a line over a configurable threshold (20,000 characters by
+  default) opens without syntax highlighting. See
+  [09 — Web UI diff editor: CodeMirror 6 or Monaco](issues/09-web-ui-prototype.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -153,6 +160,8 @@ a spec.
   settled — `keepster status`, live state, non-zero exit.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
+- The v1 SPA stack. The ticket 09 prototype runs on Vite, Svelte 5 and TypeScript, picked for the prototype and not
+  yet confirmed for v1.
 
 ## Out of scope
 
