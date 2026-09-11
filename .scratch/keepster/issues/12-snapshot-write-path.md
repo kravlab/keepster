@@ -39,3 +39,8 @@ Settle:
   filesystem, so whatever mode the entry carries is the one that reaches history. *Settled by ticket 10:*
   `100755` / `100644` from `stat` on Unix, carried from the same path's entry in the previous Snapshot on Windows,
   `120000` for links.
+- hardlinks: no platform reports that link *A* changed when the write went through link *B* (research 02, F-L5,
+  R8), so an entry refreshed only from events keeps a stale copy of a hardlinked file. Whether the walk or a
+  long-lived map groups entries by `(dev, ino)` — on Windows the volume serial number plus file index, through the
+  `windows-sys` calls ticket 10 already takes — so that one changed link refreshes every link, or whether this is
+  left to Reconciliation. Ticket 10 left this here as change tracking.
