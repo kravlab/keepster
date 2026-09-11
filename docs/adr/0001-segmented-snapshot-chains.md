@@ -30,8 +30,9 @@ and thinning a period rewrites only that period.
   creation and then assert, not merely assert. It stops the on-disk mode bit from making one Working Tree produce
   different trees on different platforms, and keeps the external `git` maintenance binary consistent with the
   Snapshots `git2` writes. Because Snapshots are built from an index we own (ticket 01), the operative rule is that
-  Snapshot tree entries carry a normalised mode; whether the executable bit is captured out of band so that a
-  Restore can put it back is ticket 10.
+  Snapshot tree entries carry a normalised mode — one of git's `100644`, `100755` or `120000`, set by us rather than
+  probed by git, never the raw `st_mode`. The executable bit is kept that way: read from `stat` on Unix, carried from
+  the previous Snapshot on Windows, and put back by a Restore on Unix (ticket 10).
 - Deleting a Segment ref only makes its objects unreachable; something must still reclaim the space. Neither
   `git2` nor `gitoxide` implements garbage collection, so that pass is delegated to the external `git` binary,
   which is a mandatory prerequisite of every installation (ticket 01). Retention must therefore keep git

@@ -148,6 +148,17 @@ a spec.
   default) opens without syntax highlighting. See
   [09 — Web UI diff editor: CodeMirror 6 or Monaco](issues/09-web-ui-prototype.md).
 
+- **File kinds are settled around a new term, `Withheld`**: a Snapshot records a path whose content it
+  deliberately does not hold — over the 100 MiB default cap, a FIFO, socket or device, a reserved `.git` name, an
+  unrepresentable name, a cloud placeholder — with a reason, apart from `incomplete`, which stays "meant to capture,
+  could not read". Binaries are stored as-is; symlinks are stored as links, with an opt-in `follow_symlinks` pattern
+  list covered by periodic Reconciliation of the targets rather than extra watches; the executable bit lives in the
+  tree mode and fuller permissions are deferred to ticket 17; cloud files are never hydrated; paths travel as bytes,
+  with `path_bytes` on the wire. Refines ticket 07's Restore: a whole-request preflight with `dry_run`, per-reason
+  confirmations plus `force`, per-path resolutions for name collisions and invalid names, `skip_unresolvable`, and a
+  refusal for hardlinked files. See
+  [10 — Binary files, symlinks, permissions and path edge cases](issues/10-file-kind-edge-cases.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git

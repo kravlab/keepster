@@ -36,4 +36,6 @@ Settle:
   leave behind an entry that looks valid to the next Snapshot;
 - memory cost of a long-lived map for a large Root, and whether there is a size past which the answer flips;
 - the mode recorded in each entry, which ticket 10 needs: `core.filemode = false` (ADR 0001) stops git probing the
-  filesystem, so whatever mode the entry carries is the one that reaches history.
+  filesystem, so whatever mode the entry carries is the one that reaches history. *Settled by ticket 10:*
+  `100755` / `100644` from `stat` on Unix, carried from the same path's entry in the previous Snapshot on Windows,
+  `120000` for links.

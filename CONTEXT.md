@@ -29,6 +29,12 @@ not be read, the Snapshot is still taken and marked incomplete, naming what it o
 completeness it does not have.
 _Avoid_: commit, version, backup, checkpoint
 
+**Withheld**:
+A path a Snapshot records as present in the Working Tree but whose content it deliberately does not hold, together
+with the reason it was withheld. Withholding is policy, not failure: it does not make a Snapshot incomplete, which is
+reserved for files that were meant to be captured and could not be read.
+_Avoid_: skipped, omitted, excluded, ignored
+
 **SnapshotId**:
 The stable public identity of a Snapshot, deliberately not the underlying commit hash, so that pruning may rewrite
 commits without invalidating anything that refers to a Snapshot.
