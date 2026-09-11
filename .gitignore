@@ -1,0 +1,5 @@
+# Web UI build artefacts. `ui/` holds tracked SPA sources (ticket 08), so only its generated output is ignored,
+# matching `ui/.gitignore` on the `prototype/web-ui` branch.
+node_modules/
+ui/dist/
+ui/measure/out/
