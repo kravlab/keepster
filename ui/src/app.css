@@ -1,0 +1,15 @@
+/* PROTOTYPE (ticket 09) — deliberately plain: this page is a measuring instrument, not a design. */
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --panel: #1b1e24;
+  --line: #2b3038;
+  --fg: #d7dbe2;
+  --muted: #8b93a1;
+  --accent: #7aa2f7;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button[aria-pressed='true'] { border-color: var(--accent); color: #fff; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
