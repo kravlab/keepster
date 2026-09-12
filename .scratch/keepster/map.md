@@ -214,6 +214,16 @@ a spec.
   `prototype/web-ui` (`70c3c64`), `ui/timeline.html?variant=A|B|C`. See
   [15 — Web UI: timeline, view modes and restore presentation](issues/15-web-ui-timeline-prototype.md).
 
+- **Two themes, and the daemon owns the preference**: light and dark, defaulting to `system` (live
+  `prefers-color-scheme`) with a pin, no user-supplied themes, and a theme that owns the diff colours and the editor
+  palette so `@codemirror/merge`'s barely-visible defaults and `oneDark` are both dropped. The preference lives in a
+  daemon-side UI-preferences store reached through a new public `GET`/`PUT /v1/preferences` — not `.keepster.toml`,
+  which travels to every clone, and not the read-only global config, which would leave the in-UI control unable to
+  make anything stick. Three daemon-wide keys: `theme`, `syntax_line_limit` (20,000, settling ticket 09) and
+  `wrap_lines`, all editable from the UI with no settings screen. `localStorage` survives only as a paint cache, so
+  losing it costs one flash rather than the setting, and `index.html` stays static. See
+  [16 — Web UI themes and appearance settings](issues/16-web-ui-themes.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
