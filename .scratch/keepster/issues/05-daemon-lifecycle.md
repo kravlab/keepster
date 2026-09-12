@@ -91,3 +91,11 @@ premise directly, but cost three more platform integrations (D-Bus, macOS UserNo
 requirements, WinRT toast), deliver nowhere on the lingering headless daemon that is the main reason linger exists,
 and invite the mute-then-silent-failure cycle. Recorded under Out of scope; revisit if the pull-only surface proves
 insufficient.
+
+## Comments
+
+2026-09-11 — the "Rejected for v1" paragraph above is reopened. It was written into this answer rather than decided
+with the user, and its central argument — that notifications "deliver nowhere on the lingering headless daemon" —
+no longer holds now that a tray process is on the table. The map's Out of scope line has been removed and the live
+question is [21 — Tray icon, and whether the daemon may push notifications](21-tray-and-notifications.md). The
+answer above is left unedited as the record of what was written then.

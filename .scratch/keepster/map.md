@@ -193,10 +193,6 @@ a spec.
 
 ## Out of scope
 
-- Proactive desktop notifications when a Root stops being covered: three extra platform
-  integrations that deliver nowhere on a headless lingering daemon, and mutable into silence.
-  The pull-based `status` surface carries v1 instead. See
-  [05 — Daemon lifecycle and autostart on three platforms](issues/05-daemon-lifecycle.md).
 - Encryption of the history store at rest.
 - Any remote: pushing, syncing or backing up history off the machine.
 - Being a backup tool. Durability against losing the machine is a separate concern served by separate tools, and
@@ -204,3 +200,8 @@ a spec.
 - A Zed extension. The whole point of the design is to sit below the editor, not inside it.
 - Editing files inside the web UI. It reads history and restores; it is not an editor.
 - Any interaction with the watched directory's own `.git` (its index, HEAD, branches or stash).
+- Mounting a Snapshot, or a Root's history, as a read-only filesystem. Post-release by user decision: the mechanism
+  differs on all three platforms and none is cheap (FUSE; a macFUSE kernel extension or FSKit on macOS 15+; ProjFS,
+  which is not enabled by default, or a third-party driver on Windows), and v1's "look at an old version outside the
+  Working Tree" need is served by export instead. Kept with its platform constraints in
+  [18 — Mounting a Snapshot as a filesystem](issues/18-mount-snapshots.md).
