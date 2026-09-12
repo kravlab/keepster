@@ -205,6 +205,15 @@ a spec.
   `match` with no wildcard. SSE events are typed in `components` today; OAS 3.2's `itemSchema` waits for a utoipa
   release and lands additively. See [14 — Publishing the `/v1` contract](issues/14-openapi-contract.md).
 
+- **The history browser is one screen with three view modes**, defaulting to a Snapshot rail, with a
+  file-first tree-and-scrubber mode and an activity feed alongside it. Three screens were rejected because
+  the prototype showed a `?variant=` switch reading as continuity once the selected file *and* Snapshot were
+  carried — which is what a view mode is — and because three screens make every user first answer "which one
+  is the right one". Restore's presentation is deliberately **not** per-mode: a mode decides navigation, not
+  destructive affordances, so all three reach the same preflight dialog. Prototype on branch
+  `prototype/web-ui` (`70c3c64`), `ui/timeline.html?variant=A|B|C`. See
+  [15 — Web UI: timeline, view modes and restore presentation](issues/15-web-ui-timeline-prototype.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
