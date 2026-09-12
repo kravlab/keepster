@@ -44,3 +44,9 @@ Settle:
   long-lived map groups entries by `(dev, ino)` — on Windows the volume serial number plus file index, through the
   `windows-sys` calls ticket 10 already takes — so that one changed link refreshes every link, or whether this is
   left to Reconciliation. Ticket 10 left this here as change tracking.
+- what a capture does while store maintenance holds the exclusive per-store lock (ticket 06): wait, defer to the
+  next Trigger, or coalesce into one Snapshot afterwards. `git-gc` documents that `--prune=now` "increases the risk
+  of corruption if another process is writing to the repository concurrently", and that other process is this write
+  path, so the exclusion has to be real rather than advisory. Git's own `gc.pid` lock is no help — it guards `gc`
+  against `gc`, and `--force`, which would bypass it, is forbidden by ticket 11. Left here by
+  [11 — External git prerequisite](11-git-prerequisite.md).

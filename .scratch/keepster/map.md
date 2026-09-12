@@ -159,10 +159,27 @@ a spec.
   refusal for hardlinked files. See
   [10 — Binary files, symlinks, permissions and path edge cases](issues/10-file-kind-edge-cases.md).
 
+- **The external `git` is a maintenance-only prerequisite, and its absence degrades instead of blocking**: capture
+  runs on in-process `git2`, so a missing, too-old, non-executable or macOS-stub git marks a daemon-global
+  `maintenance: unavailable` (with reason) in `keepster status`, which exits non-zero, and the one real consequence
+  — Retention frees nothing without `gc` — is bounded by pausing capture at the disk cap rather than filling the
+  disk. Discovery never reads an inherited `PATH`: an optional but unconditionally authoritative `git.path`, then a
+  list of *stable* absolute paths (Nix/Guix profile symlinks, not hashed store paths), the Windows registry with
+  `cmd\git.exe`, and on macOS `stat` only — `/usr/bin/git` and `xcrun` are never invoked because they raise the
+  Command Line Tools dialog. Validation is a leniently parsed `--version` at startup plus the first real
+  maintenance pass, whose stderr reaches `status`. Minimum version **2.32.0** (where `GIT_CONFIG_GLOBAL`/`SYSTEM`
+  arrived), which excludes nothing still supported, while 2.41.0 would have cost Ubuntu 22.04 LTS and Debian 12 for
+  an efficiency-only gain. Every invocation is hermetic — no shell, explicit `--git-dir`, system and global config
+  disabled, whitelisted environment, correctness keys as `-c` — and `--force` and `git maintenance` are forbidden.
+  Keepster prints the platform's install command and never runs a package manager. See
+  [11 — External git prerequisite](issues/11-git-prerequisite.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
-  prerequisite is no longer part of this: it graduated into ticket 11.
+  prerequisite is no longer part of this: it graduated into ticket 11, which leaves one constraint behind — the
+  prerequisite must be declared as a hard dependency in every format that can express one (deb/rpm `Depends`,
+  Homebrew `depends_on`), because dmg and a bare exe cannot, and those fall back to the runtime surface.
 - Upgrade path for the on-disk history format once it changes.
 - Behaviour on network and removable filesystems, and on directories that disappear while watched.
 - Performance budget and how it is measured (snapshot latency, daemon idle cost, store growth per day).
