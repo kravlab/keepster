@@ -189,6 +189,22 @@ a spec.
   [12 — Snapshot write path](issues/12-snapshot-write-path.md) and
   `docs/adr/0004-baseline-from-previous-tree.md`.
 
+- **The `/v1` document is generated from `keepster-api`'s types, and the error-code set stays open**: the orphan
+  rule leaves no way to generate schemas outside the crate owning the DTOs, so ticket 08's "serde alone" becomes
+  "serde plus an optional, default-off `openapi` feature" — the forced alternative being a mirror of every DTO,
+  i.e. the drift this ticket exists to remove. `utoipa-axum`'s `routes!` makes the axum route and the documented
+  path one literal (a renamed handler fails to compile; a handler never routed is caught as dead code), and
+  `openapi.json` is committed at the repo root — OpenAPI 3.1.0, `info.version = "1"` — with a `#[test]` comparing
+  it byte for byte. "Additive-only" means `oasdiff breaking --fail-on WARN` against the **last released tag**, not
+  the PR base, because the promise was made to clients and a client has only seen what shipped. The daemon serves
+  the document at `GET /v1/openapi.json`, generated at runtime and before authentication, under the invariant that
+  it depends on the build and never on the instance; no HTML viewer is embedded. `code` is one `ErrorCode` enum
+  rendered as a `string` with a generated description rather than a closed schema enum — a closed set would freeze
+  a list that has already grown twice and would fight the gate — see
+  `docs/adr/0005-error-codes-are-an-open-set.md` — and ticket 07's "`1` everything else" becomes an exhaustive
+  `match` with no wildcard. SSE events are typed in `components` today; OAS 3.2's `itemSchema` waits for a utoipa
+  release and lands additively. See [14 — Publishing the `/v1` contract](issues/14-openapi-contract.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -205,6 +221,9 @@ a spec.
 - Search across snapshots (by content or by path) as a UI feature.
 - The v1 SPA stack. The ticket 09 prototype runs on Vite, Svelte 5 and TypeScript, picked for the prototype and not
   yet confirmed for v1.
+- The CI pipeline itself: format, clippy, the platform matrix, node for `make ui`, and which of the `make` targets
+  ticket 14 defined run where. Ticket 14 deliberately added no CI files, so **`make check-api` is a manual release
+  gate until a pipeline exists** — the one commitment that decays silently if nothing records it.
 
 ## Out of scope
 
