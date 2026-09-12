@@ -205,3 +205,6 @@ a spec.
   which is not enabled by default, or a third-party driver on Windows), and v1's "look at an old version outside the
   Working Tree" need is served by export instead. Kept with its platform constraints in
   [18 — Mounting a Snapshot as a filesystem](issues/18-mount-snapshots.md).
+- A TUI client. Post-release by user decision: v1's answer for a machine without a browser is the CLI, and a second
+  interactive surface has to justify itself against the web UI rather than duplicate it. Kept with its reasoning in
+  [22 — A TUI client](issues/22-tui-client.md).
