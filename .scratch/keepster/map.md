@@ -174,6 +174,21 @@ a spec.
   Keepster prints the platform's install command and never runs a package manager. See
   [11 — External git prerequisite](issues/11-git-prerequisite.md).
 
+- **The snapshot baseline is re-seeded from the previous Snapshot's tree, and the daemon holds no index between
+  Snapshots**: `add_frombuffer` requires an owning repository, so every entry must carry an `Oid` we obtained
+  ourselves — which makes "rebuild per Snapshot" mean re-hashing the whole Root, not re-inserting entries. The
+  vehicle stays `git2::Index`, because `read_tree` works on an owner-less index and fills the TREE cache, so
+  `write_tree` rewrites only the changed paths' ancestry (0.162 s against 0.83 s on 100k entries) — the benefit the
+  ticket had attributed to `TreeBuilder` alone. A surviving map was rejected as state that goes stale silently
+  (ticket 02's unannounced losses), and it could not have been a `git2::Index` in any case, which is neither `Send`
+  nor `Sync`. Consequences: an unreadable file's path enters a retry queue with backoff, because its carried-forward
+  entry now looks unchanged; hardlink grouping by `(dev, ino)` belongs to Reconciliation, the only pass that still
+  walks; a capture meeting the maintenance lock neither blocks nor drops but coalesces into one Snapshot once the
+  lock is released; entries must be applied in lexicographic order (quadratic otherwise); and the previous
+  Snapshot's tree must be readable at every capture, including the first of a new Segment. See
+  [12 — Snapshot write path](issues/12-snapshot-write-path.md) and
+  `docs/adr/0004-baseline-from-previous-tree.md`.
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
