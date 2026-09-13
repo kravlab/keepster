@@ -239,6 +239,20 @@ a spec.
   [17 — Full permission capture and restore](issues/17-full-permission-capture.md) and
   `docs/adr/0006-modes-in-a-snapshot-metadata-sidecar.md`.
 
+- **Export is a daemon-side write to a path, not a download**: `POST /v1/roots/{r}/export` takes a `dest` the daemon
+  writes itself — the browser can supply one because it always runs on the daemon's machine, so the endpoint stays
+  unprivileged and a web client picks the directory through a new `GET /v1/fs?path=` (directories only,
+  unrestricted, since a cookie holder can already watch `/` and read the disk through `entries`). A streamed zip64
+  `archive` endpoint survives for the Downloads gesture and for handing someone one file, with its size shown before
+  the click, but it can never resume. Preflight is synchronous (`dry_run`, totals) and the write is a job on ticket
+  07's existing `job.*` events. Ticket 10's preflight is reused minus the three Restore-only rules, with overwriting
+  off by default behind a new `overwrite` confirmation; a destination inside a Root is allowed behind `dest_in_root`
+  and takes a Safety Snapshot when it overwrites, while a History Store destination is refused. The body mirrors
+  Restore (`{ from, paths, dest }`), a diff stays outside export on the existing `/v1/diff` (plus `keepster diff -o`,
+  because PowerShell 5.1 rewrites redirected output as UTF-16LE), a `Withheld` path is absent and reported as
+  `skipped` with its reason rather than a zero-byte lie, and exported files carry the Snapshot's modes. See
+  [19 — Export: saving a version into a directory of the user's choosing](issues/19-export-to-directory.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git

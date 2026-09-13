@@ -33,5 +33,7 @@ Settle:
 - The downstream consumers that re-opened this from the presentation side:
   [18 — Mounting a Snapshot as a filesystem](18-mount-snapshots.md) ("a zero-byte file, an absent entry and an
   `EIO` all lie differently") and
-  [19 — Export: saving a version into a directory](19-export-to-directory.md) (omitted, zero-byte placeholder, or
-  a refusal for the whole request). Whatever is chosen must answer both without a second mechanism.
+  [19 — Export: saving a version into a directory](19-export-to-directory.md). Whatever is chosen must answer both
+  without a second mechanism. Ticket 19 has since resolved: an exported `Withheld` path is not created and is
+  reported per path as `skipped` **with its reason**, so the representation chosen here must carry the reason all
+  the way to a client's per-path outcome, not only to `entries`.
