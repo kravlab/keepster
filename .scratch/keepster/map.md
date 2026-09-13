@@ -224,6 +224,21 @@ a spec.
   losing it costs one flash rather than the setting, and `index.html` stays static. See
   [16 — Web UI themes and appearance settings](issues/16-web-ui-themes.md).
 
+- **Full POSIX modes are captured, in a metadata sidecar inside the Snapshot tree**: all twelve bits, Unix only,
+  held as deviations from the Root's modal defaults in one blob, `.keepster-meta`, at the tree root — the SQLite
+  index was excluded by ticket 03's derived-cache invariant, a blob addressed by a trailer is physically
+  unreachable and would be collected by `gc`, and the trailer text itself crosses ticket 23's "wrong for thousands
+  of paths" line on the very `chmod -R 777 .` case the ticket exists for. Ownership, ACLs, xattrs and Windows
+  security descriptors are out: the daemon is never elevated (ticket 05), so it could not restore them, and the ACL
+  crates would add `libacl` as a runtime dependency. A permission-only change is now a real change — Reconciliation
+  gets the mode from the `stat` it already performs, and the watcher, which cannot tell a `chmod` from a `touch`
+  (`notify` collapses `IN_ATTRIB` to `Modify(Metadata(Any))`), `stat`s the path on an attribute event. Restore
+  asks by default and is answered by one `modes: "snapshot" | "keep"` scalar that `--force` deliberately does not
+  resolve, defaulting from a `restore.modes` config key; the Safety Snapshot needs no new mechanism, because
+  capture now records the bits it is about to overwrite. Refines tickets 10, 12 and 06. See
+  [17 — Full permission capture and restore](issues/17-full-permission-capture.md) and
+  `docs/adr/0006-modes-in-a-snapshot-metadata-sidecar.md`.
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -236,6 +251,9 @@ a spec.
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
   diagnostics/support-bundle command exists to collect state for a bug report. The health surface itself is
   settled — `keepster status`, live state, non-zero exit.
+- Empty directories, which git cannot represent and which therefore never reach history. Ticket 17's metadata
+  sidecar could carry them, as etckeeper's `mkdir -p` lines do, but that is a feature of its own: every build tool
+  creates and removes empty directories, and each would become a change by ticket 17's definition.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
 - The v1 SPA stack. The ticket 09 prototype runs on Vite, Svelte 5 and TypeScript, picked for the prototype and not
