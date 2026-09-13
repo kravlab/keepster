@@ -20,7 +20,8 @@ _Avoid_: source, current version, disk state
 
 **Include Rules**:
 A Root's own rules deciding which files a Snapshot captures. They are authoritative; a directory's `.gitignore`
-is an optional layer beneath them.
+is an optional layer beneath them. An excluded directory is never entered, so nothing beneath it can be
+re-included: where a rule and an ancestor's rule disagree, the ancestor wins.
 _Avoid_: gitignore, filters, exclusions
 
 **Snapshot**:
@@ -58,6 +59,12 @@ _Avoid_: schedule, hook, watcher event
 A full comparison of a Working Tree against its latest Snapshot, used to recover changes whose filesystem events
 were never delivered.
 _Avoid_: full scan, resync, refresh
+
+**Capture Preview**:
+A classification of a directory's current contents against the Include Rules that would govern it, without
+capturing anything. Distinct from Reconciliation, which compares a Working Tree against its latest Snapshot; a
+Capture Preview compares nothing, and is defined for a directory that is not yet a Root.
+_Avoid_: dry-run, simulation, scan, audit
 
 **Retention**:
 The rules deciding which Snapshots survive and which are discarded.

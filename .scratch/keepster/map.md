@@ -253,6 +253,27 @@ a spec.
   `skipped` with its reason rather than a zero-byte lie, and exported files carry the Snapshot's modes. See
   [19 — Export: saving a version into a directory of the user's choosing](issues/19-export-to-directory.md).
 
+- **A Capture Preview classifies a directory without capturing it**, for a registered Root and for one that is not:
+  `GET /v1/preview?path=` streamed as NDJSON (not a job — ticket 07 made `forget` a job because a dropped connection
+  strands an irreversible operation, and preview is the inverse), never opening the History Store, taking no lock,
+  counting as no Trigger, and aborting when the client disconnects. It reports **content to capture** and refuses to
+  guess store growth, which is unknowable without hashing every file — that being the capture. Output groups by *the
+  rule that decided*, so it is ticket 07's `explain?path=` mapped over a walk rather than a second engine, with
+  top-N largest on both sides and `--depth infinity` for the detailed view. The ticket's second question is demoted
+  to `pending_paths` plus an oldest-pending age on `status`, because a listing of a debounce queue is stale as it
+  prints. The unregistered case honours `.keepster.toml` exactly as registration would and *shows* what it sets,
+  which makes preview ticket 04's unbuilt trust prompt; `keepster watch --dry-run` is an alias for it. Refines
+  tickets 04, 07 and 10. See [20 — Capture Preview](issues/20-capture-dry-run.md).
+
+- **Pruning wins over negation**: an excluded directory is never entered, so nothing beneath it can be re-included —
+  git's rule, adopted because ticket 02 already applies Include Rules *before* installing watches (~10k watches per
+  100k-file tree against a 133,264 budget), so a pruned directory can produce no events for a re-included file to
+  arrive on. Full semantics would discard exactly that measurement; prefix analysis is defeated by any unanchored
+  negation. Git's silence is not adopted with it: `explain?path=` names the pruning ancestor, and config load warns
+  for every negation an ancestor makes unreachable — a warning, not a `Degraded` Root. Recorded as
+  `docs/adr/0007-pruning-wins-over-negation.md`. Closes a gap ticket 04 left
+  open and refines ticket 02. See [20 — Capture Preview](issues/20-capture-dry-run.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
