@@ -310,6 +310,22 @@ a spec.
   `docs/adr/0009-withheld-has-no-tree-entry.md`. Refines tickets 04, 10, 12 and 19. See
   [23 — How a Withheld path is represented in the git tree](issues/23-withheld-tree-representation.md).
 
+- **The loopback listener is switchable, defaults to on, and lives only in the global daemon config** — because
+  ticket 05 established that loopback TCP is not user-scoped on any platform, so the port is the one surface a
+  CLI-only user has reason to decline, bounded by a `0600` token rather than by OS permissions. Default-off with
+  on-demand binding was rejected for adding a second lifecycle (a bind during operation, a port collision surfacing
+  at request time, a `status` row that changes with no config change) while degenerating into "from first use until
+  restart", since the daemon never learns the browser closed. With the listener off the **token path disappears
+  entirely** — no mint, no `0600` file, `ui token rotate` failing with the same code as `keepster ui` — so `status`
+  is the only place that says whether a network surface exists. `embed-ui` stays a **separate** switch: a build
+  without the SPA keeps the listener on, because ticket 07 made `/v1` public precisely for third-party clients.
+  `keepster service install --no-web-ui` writes the key only when it *creates* the config file, preserving ticket
+  07's refusal to round-trip an existing TOML while giving a provisioning script one step instead of four. En route
+  it fixed a scope bug: ticket 04 classified the **HTTP port** as Root-level, which would let a cloned
+  `.keepster.toml` relocate the daemon's only network surface — the durable form being a class test, *a key that
+  describes the daemon rather than a Root is never settable at the Root level*. Refines tickets 04, 05, 07, 08
+  and 21. See [24 — A CLI-only install](issues/24-cli-only-install.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
