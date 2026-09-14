@@ -343,23 +343,11 @@ a spec.
 
 ## Not yet specified
 
-- Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
-  prerequisite is no longer part of this: it graduated into ticket 11, which leaves one constraint behind — the
-  prerequisite must be declared as a hard dependency in every format that can express one (deb/rpm `Depends`,
-  Homebrew `depends_on`), because dmg and a bare exe cannot, and those fall back to the runtime surface.
-  Ticket 21 adds a **second artifact** (the tray) and three constraints it must honour: the macOS tray is an
-  `.app`, ad-hoc signed and Homebrew-formula-only in v1, and **any other macOS channel requires Developer ID plus
-  notarisation**; the Windows installer must create a Start-menu shortcut carrying an AUMID, which is what makes
-  toasts display at all; and `ksni` is `Unlicense` rather than MIT/Apache-2.0.
-- Behaviour on network and removable filesystems, and on directories that disappear while watched.
-- Performance budget and how it is measured (snapshot latency, daemon idle cost, store growth per day).
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
   diagnostics/support-bundle command exists to collect state for a bug report. The health surface itself is
   settled — `keepster status`, live state, non-zero exit.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
-- The v1 SPA stack. The ticket 09 prototype runs on Vite, Svelte 5 and TypeScript, picked for the prototype and not
-  yet confirmed for v1.
 - The CI pipeline itself: format, clippy, the platform matrix, node for `make ui`, and which of the `make` targets
   ticket 14 defined run where. Ticket 14 deliberately added no CI files, so **`make check-api` is a manual release
   gate until a pipeline exists** — the one commitment that decays silently if nothing records it.
