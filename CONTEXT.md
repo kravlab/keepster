@@ -66,6 +66,12 @@ capturing anything. Distinct from Reconciliation, which compares a Working Tree 
 Capture Preview compares nothing, and is defined for a directory that is not yet a Root.
 _Avoid_: dry-run, simulation, scan, audit
 
+**Empty Directory**:
+A directory a Snapshot holds no content under, whether because nothing is there or because everything in it was
+excluded or Withheld. Narrower than the everyday sense in one direction and wider in the other: a directory full of
+excluded files is empty here, because the history holds nothing beneath it.
+_Avoid_: dangling directory, placeholder directory
+
 **Retention**:
 The rules deciding which Snapshots survive and which are discarded.
 _Avoid_: cleanup, expiry, garbage collection

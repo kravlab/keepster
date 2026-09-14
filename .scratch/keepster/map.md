@@ -326,6 +326,21 @@ a spec.
   describes the daemon rather than a Root is never settable at the Root level*. Refines tickets 04, 05, 07, 08
   and 21. See [24 — A CLI-only install](issues/24-cli-only-install.md).
 
+- **Empty directories are captured by default, as a `d` record in the sidecar, and "empty" means the Snapshot holds
+  no content under it** — so `logs/` containing only excluded `*.log` files counts, because git-unrepresentability
+  is the actual problem. Capturing won on internal consistency: `Withheld` and `incomplete` both exist to refuse
+  silent omissions, and a directory vanishing without a trace is that failure exactly, while a Restore that drops
+  one hands back a working tree broken for everything needing a directory to exist. Both objections in the ticket
+  dissolved on inspection — the directories that churn are excluded and, after ADR 0007, never entered, and a
+  directory is empty only in the `mkdir`-to-first-write window that ticket 04's debounce collapses; detection costs
+  **no system call**, being a prefix comparison on ADR 0004's sorted index. Every level of a chain gets its own
+  record, keeping its own mode through ticket 17's `m` mechanism. Two keys rather than one tri-state, because
+  recording is read at capture and recreating at restore: `empty_dirs` (per-Root, default on) and
+  `restore.empty_dirs` (default on), beside `restore.modes`. Export creates them regardless — a fresh copy missing
+  its directories is quietly wrong. Supersedes ticket 17's "empty directories stay invisible", and refines ticket
+  10: a directory created during Restore takes its recorded mode where one exists, the umask only where none does.
+  See [25 — Empty directories](issues/25-empty-directories.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -336,7 +351,6 @@ a spec.
   `.app`, ad-hoc signed and Homebrew-formula-only in v1, and **any other macOS channel requires Developer ID plus
   notarisation**; the Windows installer must create a Start-menu shortcut carrying an AUMID, which is what makes
   toasts display at all; and `ksni` is `Unlicense` rather than MIT/Apache-2.0.
-- Upgrade path for the on-disk history format once it changes.
 - Behaviour on network and removable filesystems, and on directories that disappear while watched.
 - Performance budget and how it is measured (snapshot latency, daemon idle cost, store growth per day).
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
