@@ -115,9 +115,10 @@ load and an older one is in force, or its coverage guarantee has been switched o
 _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:
-The state of a Root whose directory cannot be reached at all — missing, unmounted or unreadable — so that
-nothing can be captured. Distinct from Degraded, where watching continues on worse terms; an Unavailable Root is
-never deregistered and its History Store is kept, because the Root's identity does not depend on its path.
+The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, or its
+History Store was written by a version this one cannot open. Distinct from Degraded, where watching continues on
+worse terms; an Unavailable Root is never deregistered and its History Store is kept, because the Root's identity
+does not depend on its path.
 _Avoid_: offline, missing, lost, disconnected
 
 **Restore**:

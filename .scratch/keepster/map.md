@@ -360,6 +360,25 @@ a spec.
   warning rather than made `Degraded`. Amends tickets 04, 07, 13, 17
   and 24.
 
+- **There is no migration of history: the content format is a property of the Segment.** ADR 0001 made a Segment
+  self-contained and ticket 06 already established the pattern — a Segment property fixed at creation, of which a
+  store may hold a mix indefinitely, as it does with the Segment Period — so new Segments are written in the new
+  format, old ones stay readable, and the ladder retires them within about a month unaided. Automatic migration
+  was rejected as `forget`'s rewrite machinery applied unasked to the user's only copy, and as a one-way door that
+  punishes a downgrade; an explicit `keepster migrate` was rejected for leaving the insurance off until the user
+  reads the release notes. Four version numbers govern disjoint things — the container in `root.toml` (the one
+  thing rewritten automatically, being small, atomic and not history), the content in the Segment's root-commit
+  trailer, the sidecar's record grammar in its header (frozen in practice), and the index schema, whose every
+  mismatch is a rebuild and whose changes are therefore free. **The record alphabet is append-only**: an unknown
+  type is skipped *and reported*, and changing the meaning of an existing type is forbidden — an old daemon that
+  skips a new type behaves exactly as it always did, whereas a redefined type makes it confidently misread. An
+  unknown version is refused as narrowly as its level allows: a newer container makes the Root `Unavailable`
+  (`store_too_new`), a newer Segment leaves capture running in a new Segment of the daemon's own format, an
+  unknown record is skipped. `Unavailable` widens from "directory unreachable" to "nothing can be captured", and
+  ticket 11's git floor deliberately does not travel with the format. Recorded as
+  `docs/adr/0010-no-store-migration.md`. Refines tickets 03, 05, 06, 11 and 17. See
+  [26 — Versioning the on-disk store format](issues/26-store-format-versioning.md).
+
 ## Not yet specified
 
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
