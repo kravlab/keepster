@@ -292,6 +292,24 @@ a spec.
   gains `service restart | start | stop`, and ticket 08's workspace a ninth crate. See
   [21 — Tray icon and notifications](issues/21-tray-and-notifications.md).
 
+- **A Withheld path has no tree entry at all, and `.keepster-meta` becomes the one home for every per-path fact git
+  cannot express.** A zero-byte blob was rejected as the lie that propagates furthest — export would create an empty
+  file exactly where ticket 19 promised `skipped` with a reason — and a marker blob (or a marker symlink) as one
+  that charges filtering at five levels and collides with ticket 10's symlinks-as-symlinks rule. An absent entry
+  says only "no content here", which is true, and the sidecar says why; `entries` joins the two for free, because it
+  already reads the sidecar for modes. The `w` record carries a reason and a kind and **deliberately no size**: a
+  size would make a growing over-cap log mint one substantively empty Snapshot per capture, and ticket 20's Capture
+  Preview already answers the live version of that question. Ticket 17's sidecar gains three further record types
+  because two facts had no carrier at all — `i` (incomplete, with `unstable` or the errno), since ticket 10's
+  "name what it omits" cannot live in ticket 03's rebuildable index; `p` (a placeholder's mtime), since a git tree
+  has no mtime and without it a successfully captured file becomes `cloud_placeholder` forever once the OS
+  dehydrates it; and `j`, which finally gives ticket 10's junction marker a named home. **Withheld gets no retry
+  queue** — unlike `incomplete`, it is a classification of a successful observation, so it changes only when the
+  path changes, which is an event — but a config reload touching the classification inputs and a Registry change
+  now queue the Root for Reconciliation, refining ticket 04. Recorded as
+  `docs/adr/0009-withheld-has-no-tree-entry.md`. Refines tickets 04, 10, 12 and 19. See
+  [23 — How a Withheld path is represented in the git tree](issues/23-withheld-tree-representation.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
@@ -308,9 +326,6 @@ a spec.
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
   diagnostics/support-bundle command exists to collect state for a bug report. The health surface itself is
   settled — `keepster status`, live state, non-zero exit.
-- Empty directories, which git cannot represent and which therefore never reach history. Ticket 17's metadata
-  sidecar could carry them, as etckeeper's `mkdir -p` lines do, but that is a feature of its own: every build tool
-  creates and removes empty directories, and each would become a change by ticket 17's definition.
 - Testing strategy for filesystem-heavy and time-dependent code.
 - Search across snapshots (by content or by path) as a UI feature.
 - The v1 SPA stack. The ticket 09 prototype runs on Vite, Svelte 5 and TypeScript, picked for the prototype and not
