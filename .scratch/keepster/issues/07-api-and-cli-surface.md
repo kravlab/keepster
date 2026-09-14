@@ -279,7 +279,8 @@ presenting as a single store-wide period), plus the orphaned-store section. A Ro
 ### Configuration
 
 **Read-only, with provenance**: `GET /v1/roots/{r}/config` returns the effective merged configuration and, per key,
-the level that set it (default / global / root). Edits are made in the TOML files, which the daemon already
+the level that set it (`default / global / global-pattern / global-root / root` — the middle two are the global
+config's per-Root blocks, see ticket 04's Comments). Edits are made in the TOML files, which the daemon already
 reloads automatically (ticket 04).
 
 Write support was rejected for v1: the daemon would be rewriting a file the user keeps in git and edits by hand, and
@@ -304,8 +305,10 @@ the CLI.
 Conditions this endpoint cannot ship without:
 
 - **No shell.** The template is split into argv when the config is parsed and substitution goes into separate
-  arguments. `sh -c` with an interpolated path would turn a filename into executable code, and `.keepster.toml`
-  arrives from other people's clones.
+  arguments. `sh -c` with an interpolated path would turn a filename into executable code. This was written when
+  `ui.editor` could come from a `.keepster.toml` arriving in another person's clone; that key is now global config
+  only (see ticket 04's Comments), so the rule survives as defence in depth rather than as the boundary, and a
+  path under the Root is still attacker-influenced text.
 - The path is confined to the Root after canonicalisation; anything escaping it is `400 path_invalid`.
 - The process is spawned detached, its output is not collected (an editor outlives the daemon), and the response is
   `204`, not the editor's exit status.

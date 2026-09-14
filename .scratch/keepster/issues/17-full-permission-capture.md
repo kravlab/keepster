@@ -152,7 +152,8 @@ and the mode is now part of what a Restore restores:
 ### Configuration and contract
 
 - **`restore.modes = "ask" | "snapshot" | "keep"`**, default `ask`, an ordinary key at both of ticket 04's levels
-  with provenance `default / global / root`, answered by `explain?path=` like any other. The UI does not write it —
+  with provenance (`default / global / global-pattern / global-root / root`, extended by ticket 04's Comments),
+  answered by `explain?path=` like any other. The UI does not write it —
   the config is read-only (ticket 07), and the Restore dialog shows the value and its source. The accepted cost: a
   `.keepster.toml` committed to a project travels to other clones, so a colleague's Restore can apply modes without
   asking — reversible and local, but silent.

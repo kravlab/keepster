@@ -41,7 +41,9 @@ live", and the map's link text follows it.
 
 **One identifier was not covered by the rename decision and was settled here**: ticket 07 returns per-key
 configuration provenance as "the level that set it", and its values were `default / global / project`. The level is
-named after the entity, so it renames with it: the enum is now **`default / global / root`**. It is a wire-visible
+named after the entity, so it renames with it: the enum is now **`default / global / root`** — later extended to
+`default / global / global-pattern / global-root / root` when ticket 04's per-Root overrides moved into the global
+config (see ticket 04's Comments). It is a wire-visible
 value in the `/v1` contract, but no code exists, so the change is free now and would have cost a `/v2` later.
 Ticket 04's merge prose ("global layer first, Root layer second", "replaced wholesale by the Root level") now
 agrees with it.

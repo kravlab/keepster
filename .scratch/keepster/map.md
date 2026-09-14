@@ -72,8 +72,10 @@ a spec.
   as a derived cache that may be deleted and rebuilt from git objects at any time. Git notes are rejected outright.
   See [03 — Where the Root registry and the snapshot index live](issues/03-metadata-store.md).
 
-- **Configuration**: two TOML levels — a global daemon config and an unrestricted `.keepster.toml` in the
-  watched directory — merged by key class (pattern lists layer with negation, sets and scalars replace). Reload is
+- **Configuration**: two TOML levels — a global daemon config and a `.keepster.toml` in the watched directory,
+  unrestricted *within capture policy* — merged by key class (pattern lists layer with negation, sets and scalars
+  replace). Two classes never reach the Root level: keys describing the daemon (the HTTP port and the loopback
+  listener, per ticket 24) and keys that make the daemon **execute** something (`ui.editor`). Reload is
   automatic, an invalid config never applies and leaves the Root Degraded, and the store location is itself a
   key: global by default, optionally inside the Root. See
   [04 — Configuration schema and precedence](issues/04-configuration-schema.md).
@@ -128,8 +130,8 @@ a spec.
   attribute, so a folder-shaped word asserts the opposite, and `Project` implies code for a tool that will watch
   `~/Documents/notes`. The documentation-only pass is done: `CONTEXT.md`, this map, tickets `01`–`12`, the
   registry file (`project.toml` → `root.toml`) and the commit trailer (`Keepster-Project` → `Keepster-Root`).
-  The rename also settled one identifier ticket 07 had left behind — config provenance is now
-  `default / global / root`. See
+  The rename also settled one identifier ticket 07 had left behind — config provenance, now
+  `default / global / global-pattern / global-root / root` after the per-Root override relocation below. See
   [13 — Rename Project to Watched Root](issues/13-rename-project-to-root.md).
 
 - **Eight crates, and the core owns no ports**: `core` is a pure decision kernel (no traits, no I/O), `app` holds
@@ -340,6 +342,23 @@ a spec.
   its directories is quietly wrong. Supersedes ticket 17's "empty directories stay invisible", and refines ticket
   10: a directory created during Restore takes its recorded mode where one exists, the umask only where none does.
   See [25 — Empty directories](issues/25-empty-directories.md).
+
+- **Three keys leave `.keepster.toml` and their per-Root capability moves into the global config.** Ticket 24's
+  audit asked whether a key describes the daemon or a Root; `ui.editor`, the History Store location and the secret
+  opt-in list all pass it, being genuine per-project choices, so all three were left Root-settable. The test was
+  too weak. Two further classes cannot come from a file that arrives in someone else's repository whatever they
+  describe: **keys that make the daemon execute a command**, and **keys that decide where the user's data goes or
+  what may enter it** — a Root file could otherwise put the store where `git clean -xdf` destroys it, or opt `.env`
+  in past the secret denylist, and since reload is automatic an ordinary `git pull` would do either silently.
+  Nothing is lost: the global config gains `[roots.<RootId>]` blocks (the id is the identity, so a move never
+  detaches them) and `[[roots]]` path-glob blocks (readable, and they cover Roots not yet registered), with id
+  outranking pattern — and those blocks accept the **whole** schema, so **`.keepster.toml` becomes optional**: it
+  is now the way to share rules through a repository, not the way to configure a Root, and a user who never creates
+  one is not exposed to the clone vector at all. Levels become
+  `default / global / global-pattern / global-root / root`, which is also the new provenance enum ticket 13 owns.
+  The Root file stays outermost for the keys it may still set, and one setting an excluded key is ignored with a
+  warning rather than made `Degraded`. Amends tickets 04, 07, 13, 17
+  and 24.
 
 ## Not yet specified
 

@@ -52,7 +52,13 @@ in someone else's clone could relocate that surface.
 **The port, and the new listener key, are global-only**, and the durable form of the fix is a class test rather
 than a list: *a key that describes the daemon rather than a Root is never settable at the Root level.* Auditing
 ticket 04's scalars against it, the port is the only offender — Triggers, debounce, rate limit, retention, store
-location and `ui.editor` are all genuinely per-Root, and ticket 04 argued `ui.editor` explicitly.
+location and `ui.editor` appeared genuinely per-Root, and ticket 04 argued `ui.editor` explicitly.
+
+**That audit was later found too narrow.** Its test asks whether a key describes the daemon or a Root, and
+`ui.editor` passes it, because an editor really is a per-project choice. But a second class exists that the test
+does not catch: **a key that makes the daemon execute a command.** Such a key cannot come from a file that travels
+in someone else's repository regardless of what it describes, and ticket 07's argv splitting bounds the damage
+rather than removing the vector. `ui.editor` is therefore global-only too — see ticket 04's Comments.
 
 ### The listener is switchable, and on by default
 
