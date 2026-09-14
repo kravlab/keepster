@@ -274,12 +274,34 @@ a spec.
   `docs/adr/0007-pruning-wins-over-negation.md`. Closes a gap ticket 04 left
   open and refines ticket 02. See [20 — Capture Preview](issues/20-capture-dry-run.md).
 
+- **The tray ships on all three platforms as a separate process, and it is the only carrier of desktop
+  notifications** — reversing ticket 05's Out-of-scope line, which argued notifications "deliver nowhere on the
+  lingering headless daemon". On Windows there was never a choice: a per-user service gets a non-interactive
+  `Service-0xZ1-Z2$` window station, and Microsoft's own documented remedy is a separate process in the user's
+  session over IPC; on macOS `UNUserNotificationCenter` needs a `CFBundleIdentifier`, so the tray is an `.app`.
+  It is a `/v1` client over the CLI's socket (a live indicator cannot poll) and is governed by one invariant —
+  **a view, never a source**: everything it shows is derivable from `GET /v1/status` and the event stream, and no
+  notification carries a tray-only action. The daemon decides, the tray delivers, on every platform, which is
+  cheap because on Linux the tray process notifies even where stock GNOME cannot draw its icon. Alarms fire only
+  when the insurance stops (`Unavailable`, `Degraded`, capture halted at the disk cap, an unexpected daemon death,
+  plus a failed user-initiated job) on transition, coalesced, with recovery replacing rather than adding — and
+  muting is reported by `status`, so it never becomes a silent failure. Icon and notifications are two channels
+  that fail independently, so `status` carries two capability rows, neither affecting the exit code. macOS v1 is
+  ad-hoc signed through a Homebrew formula, with Developer ID and notarisation recorded as the precondition of any
+  other channel. Recorded as `docs/adr/0008-tray-is-a-separate-process.md`. Refines tickets 05, 07 and 11; the CLI
+  gains `service restart | start | stop`, and ticket 08's workspace a ninth crate. See
+  [21 — Tray icon and notifications](issues/21-tray-and-notifications.md).
+
 ## Not yet specified
 
 - Packaging and distribution per OS (single binary, package managers, code signing on macOS/Windows). The git
   prerequisite is no longer part of this: it graduated into ticket 11, which leaves one constraint behind — the
   prerequisite must be declared as a hard dependency in every format that can express one (deb/rpm `Depends`,
   Homebrew `depends_on`), because dmg and a bare exe cannot, and those fall back to the runtime surface.
+  Ticket 21 adds a **second artifact** (the tray) and three constraints it must honour: the macOS tray is an
+  `.app`, ad-hoc signed and Homebrew-formula-only in v1, and **any other macOS channel requires Developer ID plus
+  notarisation**; the Windows installer must create a Start-menu shortcut carrying an AUMID, which is what makes
+  toasts display at all; and `ksni` is `Unlicense` rather than MIT/Apache-2.0.
 - Upgrade path for the on-disk history format once it changes.
 - Behaviour on network and removable filesystems, and on directories that disappear while watched.
 - Performance budget and how it is measured (snapshot latency, daemon idle cost, store growth per day).
