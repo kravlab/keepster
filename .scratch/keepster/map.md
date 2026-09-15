@@ -407,6 +407,22 @@ a spec.
   survives — and **installation now needs administrator rights on none of the three platforms**. See
   [27 — Packaging and distribution per OS](issues/27-packaging-and-distribution.md).
 
+- **The v1 SPA stack is the prototype's: Svelte 5, Vite, TypeScript, pnpm** — confirmed rather than assumed, because
+  the prototype is the working code ticket 15's three view modes rest on, ticket 16 removed any need for SSR by
+  keeping `index.html` static, and runes fit a long-lived timeline fed by ticket 07's SSE stream. React's ecosystem
+  argument is weak here, since ticket 07 made `/v1` public so third parties write *their own* UI. **Budget: eager
+  ≤ 150 KiB gzip, total ≤ 400 KiB gzip**, held by `make check-ui-size` over the `measure/run.mjs` already written
+  for ticket 09 — split in two because the thirteen grammars are lazy chunks today and one stray static import moves
+  `lang-javascript` (32.6 KiB gzip) into the first paint while barely moving the total. Quality gates are
+  `svelte-check` strict, Prettier and a minimal ESLint, plus **Vitest on the non-visual logic** kept in `.ts`
+  modules — SSE reconnection, the `diffConfig.override` hunk feed, Restore's preflight — with no component tests and
+  no E2E in v1, the latter deferred to the testing-strategy fog with SSE reconnection named as its first candidate.
+  The browser floor is **Baseline "Widely available"** rather than a version table nobody would maintain, since the
+  audience is the browser of the person who installed the daemon; accessibility commits to keyboard operability and
+  a visible focus ring and claims no WCAG level, because asserting an unverified one is worse than stating what was
+  done. The pnpm lockfile pins versions, the node floor lives in `engines` plus `.nvmrc`, and the ES2022 target
+  moves only together with the budget. See [28 — The v1 SPA stack](issues/28-v1-spa-stack.md).
+
 ## Not yet specified
 
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
