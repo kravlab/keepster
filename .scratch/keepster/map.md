@@ -423,6 +423,29 @@ a spec.
   done. The pnpm lockfile pins versions, the node floor lives in `engines` plus `.nvmrc`, and the ES2022 target
   moves only together with the budget. See [28 — The v1 SPA stack](issues/28-v1-spa-stack.md).
 
+- **An empty tree is never read as a deletion without proof: the Registry records the volume's persistent identity
+  at registration and every capture verifies it.** The hazard was never the Snapshot — a mass deletion is the
+  insured event, and the previous Snapshot still holds everything — but ticket 06's ladder, which over a month of
+  "empty" captures from an unmounted disk ages the last Snapshot with real content off the end, silently, because
+  to Retention that is ordinary history ageing ordinarily. **Time Machine is the one tool in the field that solves
+  this, and solves it the same way**: `tmutil` keys volume exclusions to the filesystem UUID, *"persistent across
+  volume name and mount path changes"*. Mount-point detection stays a supporting signal, because Linux has no
+  kernel object for "a mount point with nothing mounted on it" — such a directory is just a directory, and only
+  `fstab` expresses intent. A sentinel file was rejected both on ticket 27's posture and because **no absence-based
+  sentinel convention exists anywhere** — every standard marker, from `CACHEDIR.TAG` to `--exclude-if-present`,
+  answers "skip because present", never "distrust because absent". Where identity cannot be determined, a capture
+  deleting *every* path is held and the Root goes `Degraded`, the narrow analogue of rsync's I/O-error deletion
+  interlock. **A network Root is accepted and marked `Degraded` where the watcher is actually blind**, which
+  refines ticket 02's Linux-shaped blanket claim: `inotify(7)` and `fanotify(7)` document the miss on Linux and
+  FUSE's reverse-invalidation path contains no `fsnotify_*` calls at all, but macOS `smbfs` maps `VNOP_MONITOR`
+  onto SMB change-notify for directories, and `ReadDirectoryChangesW` documents SMB 3.0 as supported. A remounted
+  volume is **followed automatically** when identity and the path within the volume both match — the OS chose that
+  mount point, not the user, so ticket 07's "a move is only ever explicit" does not govern it — with the no-overlap
+  rule re-run. **There is no fallback store**: nowhere to write means no capture, because a split history has no
+  merge. `Unavailable` explicitly does not mean the history is unreadable. Recorded as
+  `docs/adr/0011-volume-identity-gates-capture.md`. Refines tickets 02, 04, 05 and 07. See
+  [29 — Network and removable filesystems](issues/29-network-and-removable-filesystems.md).
+
 ## Not yet specified
 
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
