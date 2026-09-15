@@ -99,3 +99,14 @@ with the user, and its central argument — that notifications "deliver nowhere 
 no longer holds now that a tray process is on the table. The map's Out of scope line has been removed and the live
 question is [21 — Tray icon, and whether the daemon may push notifications](21-tray-and-notifications.md). The
 answer above is left unedited as the record of what was written then.
+
+## Comments
+
+- Superseded in part by [27 — Packaging and distribution per OS](27-packaging-and-distribution.md): the **Windows
+  per-user service** is replaced by a **Scheduled Task registered at logon**. `CreateService` does not document
+  `SERVICE_USER_OWN_PROCESS` among its accepted types, `sc.exe create` exposes no `userown`, Microsoft documents
+  per-user services only as its own templates, MSI's `ServiceInstall` cannot express the type and MSIX forbids it
+  outright — and any SCM write needs elevation. It also failed to deliver what it was chosen for: a per-user
+  service stops and is deleted at sign-out, so the logout coverage gap this answer accepted on macOS applied on
+  Windows too. Supervision now comes from the Task Scheduler's restart-on-failure, so "a running daemon is always
+  a supervised one" survives, and installation requires administrator rights on none of the three platforms.

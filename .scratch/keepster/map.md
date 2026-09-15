@@ -379,6 +379,34 @@ a spec.
   `docs/adr/0010-no-store-migration.md`. Refines tickets 03, 05, 06, 11 and 17. See
   [26 — Versioning the on-disk store format](issues/26-store-format-versioning.md).
 
+- **Packaging is tiered, and the universal mechanism is an archive plus `keepster install`** — every package format
+  is a wrapper over it rather than a separate install path. Tier 1 is archives with shell/PowerShell installers
+  plus a Homebrew formula in **our own tap** (homebrew-core rejects third-party prebuilt binaries); tier 2 is deb
+  and rpm, the only formats that can declare ticket 11's `git` prerequisite (`git` on Debian, **`git-core`** on
+  Fedora); AUR, nixpkgs, Scoop and Chocolatey are explicitly not ours, and owe only a stable tarball and a
+  committed `Cargo.lock`. **Flatpak, Snap and AppImage are ruled out on blocking facts**: Flatpak cannot export a
+  systemd user unit at all, its background portal *kills* an app whose permission is NO, host `git` needs a
+  documented sandbox escape, and Flathub's policy rejects all four categories we fall into; strict Snap sees only
+  non-hidden files, so the store is unreachable; AppImage has no dependency field and permits one `.desktop`.
+  **No MSI**, because after the two decisions below a Windows installer has no work left. **One package carries
+  both binaries**, since ticket 21's `ksni` choice already removed the GTK/X11 weight that usually justifies a
+  split, and splitting would make the base install silent when the insurance fails. **No install or uninstall path
+  ever deletes history** — ticket 26 made downgrade a supported path and on several channels a downgrade *is*
+  remove-then-install — so erasing is only ever an explicit command: `uninstall [--history|--roots|--purge]` with
+  `--yes` as separate consent, `purge <root>|--all`, and `unwatch --all`. **The package ships files; the user runs
+  `keepster install`**, which also enables linger (polkit allows `set-self-linger` unprompted, and no package could
+  do it for anyone). `ui/dist` is committed so `cargo build` needs no node, while the SPA stays embedded; and the
+  product, API and store-format versions are **independent by explicit statement**. Amends ticket 05 and ticket 21.
+  See [27 — Packaging and distribution per OS](issues/27-packaging-and-distribution.md).
+
+- **Windows autostart is a Scheduled Task, not a per-user service** — amending ticket 05. `CreateService` does not
+  document `SERVICE_USER_OWN_PROCESS`, `sc.exe` exposes no `userown`, Microsoft documents per-user services only as
+  its own templates, MSI cannot express the type and MSIX forbids it; every SCM write needs elevation. And it never
+  delivered its purpose, since a per-user service is deleted at sign-out, so Windows had macOS's logout gap anyway.
+  The Task Scheduler supplies restart-on-failure, so ticket 05's "a running daemon is always a supervised one"
+  survives — and **installation now needs administrator rights on none of the three platforms**. See
+  [27 — Packaging and distribution per OS](issues/27-packaging-and-distribution.md).
+
 ## Not yet specified
 
 - Observability leftovers after ticket 05: log rotation and retention per platform, and whether a

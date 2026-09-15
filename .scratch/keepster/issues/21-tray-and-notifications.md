@@ -229,3 +229,12 @@ matters precisely because promotion is user-only and not queryable. `notify-rust
 features (zbus, no `libdbus`), with `Hint::DesktopEntry` so GNOME resolves the right name and icon — which means
 the tray ships a `.desktop` file on Linux. One licensing note to carry into packaging: **`ksni` is `Unlicense`**,
 not MIT/Apache-2.0.
+
+## Comments
+
+- [27 — Packaging and distribution per OS](27-packaging-and-distribution.md) cancels one constraint this answer
+  left behind: **`ksni`'s `Unlicense` is not a packaging problem.** It is a current SPDX identifier with
+  `isOsiApproved: true` and `isFsfLibre: true`, Fedora lists it as `allowed`, and Debian main already ships it
+  (ripgrep, aho-corasick). Ticket 27 also refines the macOS channel: the Homebrew formula lives in **our own tap**,
+  since homebrew-core rejects third-party prebuilt binaries — which changes nothing about the quarantine argument
+  that made a formula the choice.
