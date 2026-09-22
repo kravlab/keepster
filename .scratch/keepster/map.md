@@ -446,16 +446,152 @@ a spec.
   `docs/adr/0011-volume-identity-gates-capture.md`. Refines tickets 02, 04, 05 and 07. See
   [29 — Network and removable filesystems](issues/29-network-and-removable-filesystems.md).
 
+- **The budget is two layers, and the read side is finally in it**: an *outcome budget* that states what the
+  product promises (reviewed at release, published per platform with macOS and Windows marked **unverified**) and
+  an *operation tripwire* that promises nothing and fails `make bench`. The split is what lets the tripwire be
+  gated from a first measurement while every daemon-side outcome number is still a prediction — no daemon-side code
+  exists. Ticket 28 handed this ticket three dimensions and all three were the write side, so **read latency** is
+  added: fetch a version ≤ 100 ms, diff ≤ 250 ms, a path's chronology ≤ 100 ms, beside capture ≤ 5 s (the daemon's
+  *contribution*, never the configured 3 s + 60 s), Reconciliation ≤ 30 s warm (cold is disk-bound and explicitly
+  not claimed), idle ≤ 0.5 % CPU / 150 MiB RSS, and store size **as a ratio**, ≤ 2× the Root's content — which
+  turns ticket 06's assertion that the ladder bounds growth into something checkable. Preview gets throughput and
+  time-to-first-row, never a total: its input is unbounded by design. **v1 claims 100k files / 10k directories /
+  10 GiB per Root**, and nothing refuses — registration above it runs ticket 20's Preview and asks, watch
+  exhaustion falls to F-L2. A per-Root ceiling cannot bound a per-user resource, so a **daemon-wide watch ceiling**
+  is added at half of `max_user_watches`, the rest being the editor's share; the 133,264 on record is one machine's
+  value, which research 02 said and nothing downstream honoured. **Every number now carries its environment**,
+  repairing tickets 02 and 12, which record none and are therefore unreproducible; the fixture never lives on
+  tmpfs. Fixtures are a **seeded generator committed as code** — small (5k files) for the tripwire, ceiling (100k)
+  for the claim — emitting a change stream as well as a tree, with declared compressibility of ~2.7×, since a
+  random-byte generator would overstate store growth by that factor (measured: zlib -6 gives +0.03 % on
+  `/dev/urandom` against 2.71× on this project's Markdown). **Thresholds carry 2× headroom and are committed**, the
+  shape ticket 14 chose for `openapi.json`: the headroom is sized to the failures this design has, all of them
+  multiples (5.1×, 12.3×, 26.4× from ticket 12), while 15-20 % is ordinary laptop spread and a flapping gate is a
+  disabled gate. A tripwire line exists **only** where it protects a named invariant or mirrors an outcome line,
+  and its first job is a baseline rather than a gate: `read_tree` has never been measured. Refines tickets 02, 06,
+  09, 12, 20 and 28. See [30 — Performance budget](issues/30-performance-budget.md).
+
+- **The suite gates what we promise and reports what it observes** — the rule ticket 30 applied to performance and
+  ticket 02 to platform behaviour, now applied to the tests themselves, which is what lets the gated layer be
+  deterministic enough for **zero retries**. Time becomes a workspace invariant rather than a signature convention:
+  **nothing below `keepster-daemon` reads a clock**, `SystemTime::now` and `git2::Signature::now` are banned by
+  `disallowed-methods` in `clippy.toml`, and a month of Retention history is produced by the real capture path at
+  injected times in seconds — see `docs/adr/0012-no-clock-below-the-daemon.md`; fabricating backdated refs was
+  rejected as a second implementation of ADR 0001 that drifts until the test passes. **The guarantee is tested with
+  the watcher switched off** — a real mutation, `Reconcile`, an exact content comparison — because a combined test
+  stays green under the one bug it exists to catch, and because "the watcher never reported it" is an assertion
+  about absence that would freeze a platform defect (ticket 29 shows them moving) as our contract; watcher tests
+  assert presence only, and platform behaviour becomes a manual conformance report. Fixtures live in a dev-only
+  `keepster-testkit` whose **bench profile is frozen behind a digest `#[test]`**, so a degenerate case added for a
+  bug can never move ticket 30's thresholds. The `/v1` contract gets an **in-process harness** (real server, real
+  stores, the real CLI over its socket) plus a handful of real-binary tests for flock, the SIGTERM drain and exit
+  codes, which splits SSE into harness-side replay and Vitest-side reconnection; **one** Playwright smoke test
+  survives, scoped to the only decision a browser makes for us — accepting the bootstrap cookie on plain-http
+  loopback. Coverage is a report answering "which crate has no test at all", never a threshold. And a skip stops
+  being a coverage claim: every (case, platform) pair is `ran`, `impossible` (`#[cfg]`, with a reason) or
+  `unavailable` (a capability probe), in a generated table where macOS and Windows carry `untested` exactly as
+  ticket 30's budget carries `unverified` — which hands ticket 32 its CI matrix as a list of rows. Refines tickets
+  02, 06, 08, 12, 28 and 30. See [31 — Testing strategy](issues/31-testing-strategy.md).
+
+- **CI runs on GitHub Actions, and one rule sorts every check: it gates the merge if and only if its verdict is a
+  property of the diff, not of the machine.** Bitbucket Pipelines, where the canonical remote lives, cannot host the
+  matrix at all — Atlassian-hosted runners are Linux/Docker only, `runs-on` being documented as self-hosted-only, so
+  the Windows and macOS legs ticket 27 requires have nowhere to run; Free gives 50 build minutes a month; release
+  hosting is flat repository Downloads with no tag-attached release object; and `dist`, which ticket 27 already
+  chose, generates GitHub CI only. Two preconditions follow from the canonical remote staying on Bitbucket with a
+  GitHub copy: **nothing mechanically blocks a merge there** (Bitbucket merge checks read only Bitbucket build
+  statuses), and **release tags must reach the copy**, or ticket 14's `check-api` compares against the wrong
+  baseline. The matrix builds and tests on `ubuntu`, `windows` and `macos-arm64` on every PR, builds Linux aarch64,
+  checks a declared MSRV on one cheap leg, and runs `bench` nowhere — which **removes ticket 31's `untested` rows
+  without touching ticket 30's `unverified` ones**, a shared runner being no reference machine on any OS. The rule
+  then places `fmt`, `clippy`, the three-platform `cargo test`, `check-api`, `check-ui-size`, a **byte-for-byte
+  `ui/dist` freshness rebuild** (with a source-hash fallback declared in advance) and `cargo deny check licenses
+  bans` in the merge gate; `make bench`, the platform table, the outcome-budget review and coverage at release; and
+  `cargo deny check advisories` on a schedule, because a database release must not block an unrelated PR. Node lands
+  in exactly one `ubuntu` UI job, never in a Rust leg (ticket 08). Releases are the `dist` workflow on a `v*` tag —
+  archives, installers, checksums, a GitHub Release, the Homebrew formula to our tap — plus `cargo-deb` and
+  `cargo-generate-rpm` steps, with tags created by hand. Two amendments to ticket 31: the **smoke E2E becomes
+  automatic on the release tag** but stays out of the gate, since a Chromium update can fail it on unchanged code
+  and zero retries make a lone browser gate the worst combination; and the **report layer — the platform table and
+  the watcher conformance report — is generated by CI on all three platforms**, gating nothing. Refines tickets 14,
+  27, 28, 30 and 31. See [32 — The CI pipeline](issues/32-ci-pipeline.md).
+
+- **One log mechanism on all three platforms, and a support bundle that discloses by inventory rather than by
+  redaction.** Ticket 05's "the platform's native sink" does not survive the platforms: macOS's unified log **does
+  not persist `info`** — ticket 05's own default level — nor `debug`, is a binary store readable only through
+  `log show`, and no current Apple document says where an unset-`StandardOutPath` LaunchAgent's output goes; on
+  Windows a non-elevated process may write the Application log (its SDDL grants BATCH LOGON write) but without a
+  message file "the Event Viewer … will display an error", and registering one lives in `HKLM`, i.e. needs the
+  administrator ticket 27 removed from installation. So the log is **our own rotated file** per user
+  (`$XDG_STATE_HOME`, which the XDG spec names for logs; `~/Library/Logs/Keepster`; `%LOCALAPPDATA%`), with only
+  startup and fatal lines left to Linux's journal — chosen because the bundle must be collected by our own code, and
+  journald would have meant shelling out to `journalctl`, a second external binary after ticket 11's `git`. Volume is
+  bounded by **size-triggered rotation plus a file count** (no Rust crate caps total bytes; a total is only ever
+  "size × files"), and the `debug` left on overnight is answered at its root rather than by the cap: **raising the
+  level expires** (`--for 30m`) and shows as a `status` row, because a 50 MiB budget full of one night's `debug`
+  retains nothing from the period being asked about. The carrier is `tracing` plus a **hand-written `MakeWriter`** —
+  a justified departure from preferring a library, since `tracing-appender` cannot rotate by size at all,
+  `flexi_logger` would import a second level system and a second configuration surface against ticket 04 and against
+  the expiring level, and `tracing-rolling-file`/`file-rotate` are pre-1.0 or dormant. The tray logs to its own file
+  for a reason that decides it: its most valuable line is "the daemon died", exactly when `/v1` is gone.
+  **`keepster diagnose`** writes a local zip with **fixed content** and `--dry-run` printing an inventory first (the
+  preflight discipline of tickets 10 and 19); the daemon collects it, and an unreachable daemon yields a **degraded**
+  bundle from files whose inventory names the missing sections, because ticket 08 forbids the CLI `git2` and
+  `rusqlite`. Paths go in as they are — redaction was rejected as a promise that cannot be kept, see
+  `docs/adr/0013-bundle-discloses-by-inventory.md` — while **no bytes of any file from history ever do**, and
+  **nothing is ever sent anywhere**, recorded as a product invariant. Log lines are human-readable with fields by
+  default, JSON by a global key, one file either way; format and ceiling describe the daemon, so ticket 24's class
+  test keeps them out of `.keepster.toml`. Refines tickets 04, 05, 08, 21 and 30. See
+  [33 — Log rotation and a diagnostics bundle](issues/33-observability-leftovers.md).
+
+- **Search ships in v1 as two operations that share nothing but a field in the header, and neither builds a
+  full-text index.** Path search turns out not to be a convenience but **the missing gesture**: every view mode of
+  ticket 15 navigates a tree taken from a Snapshot or from the Root, so a file that no longer exists in the Working
+  Tree has no gesture at all — while the deleted file is the product's central scenario. It is nearly free, being a
+  `GLOB` over the path-change rows ticket 03 already writes, inside ticket 30's ≤ 100 ms budget, and its row states
+  **whether the path still exists in the newest Snapshot**, without which "found" cannot be told from "found, and
+  already gone". Content search is counted by the **distinct blob** rather than by the Snapshot — git deduplicates,
+  so the cost is proportional to stored content and bounded by the 10 GiB ceiling — with attribution by a **derived
+  blob-OID column** on those same rows; an FTS index is rejected because rebuilding it would make ticket 03's
+  "delete the cache and rebuild it" promise *false* rather than merely slow, and adding one later is additive. Its
+  shape is ticket 20's: streamed NDJSON, no job, no lock, dies with the client, **explicitly outside the read
+  budget**. Paths span every Root by default, content one Root unless explicitly asked for all. Two endpoints, not
+  one with a `mode=`, because ticket 14 generates the document from the DTO types and a parameter-dependent response
+  is a union the client must guess at; `keepster find` and `keepster grep` mirror them. Substring and literal by
+  default, `--glob` reusing the Include Rules matcher so the product has one pattern language, `--regex` on the
+  `regex` crate whose linear-time guarantee keeps a public endpoint from being a way to hang the daemon. **The
+  content result unit is a content version with the Snapshot range it was current for**, not one row per Snapshot,
+  which at 1,440 Snapshots a day would be 1,400 identical rows. Nothing is skipped silently: binaries are counted,
+  `Withheld` paths reported with their reason, `.keepster-meta` always excluded, and the stream ends in a summary.
+  In the UI it is an **entrance, not a fourth mode** — it resolves to the (file, Snapshot) pair the modes already
+  carry. Refines tickets 03, 07, 15, 20 and 30. See
+  [34 — Search across Snapshots](issues/34-search-across-snapshots.md).
+
+- **The `stat` comparison is a filter in front of hashing, never the verdict** — the OID decides — so the two error
+  directions are asymmetric (a false positive costs one hash, a false negative costs the user's work) and the rule
+  is biased: **any doubt hashes**. Its inputs are a **stat-cache table in the derived index**, and this **amends
+  ticket 03's invariant**: the cache stays deletable, but this table is derived from *observation*, not from git, so
+  its loss costs one full hashing pass rather than a Segment walk — recorded as
+  `docs/adr/0014-stat-cache-is-derived-from-observation.md`. Putting mtimes in `.keepster-meta` was rejected by
+  ADR 0009's own argument, only stronger: an mtime changes for every touched file, so a `touch` would mint a Snapshot
+  in which nothing changed but our metadata. Compared are **size and mtime by inequality** — not "newer", because a
+  file restored with its original timestamp (`cp -p`, `rsync -a`, an unpacked archive) would otherwise be invisible
+  forever — plus the mode from the same `stat`, which settles ticket 17's permission-only change with no hash at all;
+  inode and device add nothing an atomic save does not already move, and ctime means *creation* time on Windows,
+  which is why git carries `core.trustctime`. The racy window takes **git's rule**: an entry whose mtime is not
+  strictly older than the pass's start is re-hashed next pass, self-tuning to a filesystem's granularity where a
+  fixed N-second window is both too large and too small. Where mtime cannot be trusted there is a key
+  (`reconcile.verify`) and a `status` row, never automatic escalation — on a network Root that would mean reading the
+  whole Root over the wire hourly, breaking exactly the case ticket 29 accepted. All five occasions share one rule
+  and differ only in the **area** walked; hashing everything at startup was rejected because downtime does not weaken
+  the evidence, it only increases the number of changed files. Refines tickets 02, 03, 12, 17, 29 and 30. See
+  [35 — What Reconciliation treats as evidence of change](issues/35-reconciliation-change-evidence.md).
+
 ## Not yet specified
 
-- Observability leftovers after ticket 05: log rotation and retention per platform, and whether a
-  diagnostics/support-bundle command exists to collect state for a bug report. The health surface itself is
-  settled — `keepster status`, live state, non-zero exit.
-- Testing strategy for filesystem-heavy and time-dependent code.
-- Search across snapshots (by content or by path) as a UI feature.
-- The CI pipeline itself: format, clippy, the platform matrix, node for `make ui`, and which of the `make` targets
-  ticket 14 defined run where. Ticket 14 deliberately added no CI files, so **`make check-api` is a manual release
-  gate until a pipeline exists** — the one commitment that decays silently if nothing records it.
+<!-- empty: the frontier reached the destination — no open tickets remain -->
+
+<!-- historical: every patch graduated into a ticket when ticket 30 resolved; see 31-35 -->
 
 ## Out of scope
 
