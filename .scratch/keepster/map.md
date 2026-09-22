@@ -589,7 +589,9 @@ a spec.
 
 ## Not yet specified
 
-<!-- empty: the frontier reached the destination — no open tickets remain -->
+<!-- empty: the frontier reached the destination, and the one ticket reopened since is sharp enough to be a ticket —
+     see 71, which asks whether a repository's own git configuration becomes capturable after a real incident where a
+     script an agent ran corrupted it -->
 
 <!-- historical: every patch graduated into a ticket when ticket 30 resolved; see 31-35 -->
 
