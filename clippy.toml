@@ -1,0 +1,18 @@
+# ADR 0012: nothing below `keepster-daemon` reads a clock.
+#
+# Every timestamp the History Store records must derive from a `now` passed in from the daemon, so that
+# a month of Retention history can be produced by the real capture path at injected times. A single
+# stray `SystemTime::now()` deep in the store would leave every ladder test passing while proving
+# nothing, and the failure is invisible in review — which is why this is a lint rather than a rule in a
+# document.
+#
+# `keepster-daemon` is the one place allowed to read the clock, and it does so behind an explicit
+# `#[allow(clippy::disallowed_methods)]` at the call site, so each exception is greppable and reviewed.
+# `Instant::now` is deliberately absent from this list: it is monotonic and measures elapsed time
+# rather than naming a moment.
+#
+# `git2::Signature::now` joins this list with ticket 38, which introduces the git dependency: clippy
+# warns about paths it cannot resolve, and the merge gate treats warnings as errors.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "ADR 0012: take the time as a parameter from the daemon" },
+]

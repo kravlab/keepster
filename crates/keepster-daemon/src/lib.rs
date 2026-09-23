@@ -1,0 +1,280 @@
+//! The daemon: the only process that touches a History Store, and the only crate allowed to read a
+//! clock (ADR 0012).
+//!
+//! One HTTP API is served on the control channel — a permission-protected socket on Unix, a named
+//! pipe on Windows — and, from ticket 60, on a loopback listener for the browser. Everything below
+//! this crate takes the time it needs as a parameter.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use axum::extract::State;
+use axum::{Json, Router, routing::get};
+use keepster_api::{API_VERSION, DaemonStatus, Reported, Status, VersionInfo};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+
+/// How to run a daemon instance.
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    /// Where the control channel is created. Tests use a short temporary path deliberately:
+    /// `sun_path` holds 104 bytes on macOS and 108 on Linux.
+    pub control_path: PathBuf,
+}
+
+/// A daemon that is listening, and the handle that stops it.
+///
+/// Dropping it asks the daemon to stop; awaiting [`RunningDaemon::shutdown`] waits until it has.
+pub struct RunningDaemon {
+    control_path: PathBuf,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl RunningDaemon {
+    /// The control channel this daemon is listening on.
+    pub fn control_path(&self) -> &Path {
+        &self.control_path
+    }
+
+    /// Stop serving and wait for the listener to close, returning whatever the server returned.
+    ///
+    /// Ticket 61 extends this into the full stop sequence: drain the capture in flight, then flush
+    /// every pending debounce window.
+    pub async fn shutdown(mut self) -> io::Result<()> {
+        if let Some(signal) = self.shutdown.take() {
+            let _ = signal.send(());
+        }
+        match (&mut self.task).await {
+            Ok(result) => result,
+            Err(joined) => Err(io::Error::other(joined)),
+        }
+    }
+}
+
+impl Drop for RunningDaemon {
+    fn drop(&mut self) {
+        if let Some(signal) = self.shutdown.take() {
+            let _ = signal.send(());
+        }
+    }
+}
+
+/// Bind the control channel and start serving, returning once the channel is connectable.
+///
+/// Binding happens before the task is spawned, so a caller that gets an `Ok` can connect
+/// immediately without polling for readiness.
+pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
+    let listener = bind_control_channel(&config.control_path)?;
+    let (shutdown, stop) = oneshot::channel();
+    let task = tokio::spawn(serve(listener, router(DaemonState::new()), stop));
+
+    Ok(RunningDaemon {
+        control_path: config.control_path,
+        shutdown: Some(shutdown),
+        task,
+    })
+}
+
+/// What this build tells a client about itself.
+pub fn version_info() -> VersionInfo {
+    VersionInfo {
+        build_version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_hash: build_hash().to_owned(),
+        api_version: API_VERSION.to_owned(),
+    }
+}
+
+/// The commit of this build, or `unknown` when it was built without a repository.
+///
+/// The hash is recorded in full: an abbreviation's length depends on repository size and clone
+/// depth, so it is not a stable identifier. Anything that is not a full hash — including vergen's
+/// idempotent placeholder — is reported as `unknown` rather than passed through.
+fn build_hash() -> &'static str {
+    const FULL_HASH_LENGTH: usize = 40;
+
+    match option_env!("VERGEN_GIT_SHA") {
+        Some(hash) if hash.len() == FULL_HASH_LENGTH => hash,
+        _ => "unknown",
+    }
+}
+
+/// Everything the handlers share. Cheap to clone, because axum hands each request a copy.
+#[derive(Debug, Clone)]
+struct DaemonState {
+    /// When this daemon started serving. Monotonic: uptime must not move when the wall clock does,
+    /// and ADR 0012 keeps wall-clock reads out of everything below this crate anyway.
+    started: Instant,
+}
+
+impl DaemonState {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+fn router(state: DaemonState) -> Router {
+    Router::new()
+        .route("/v1/version", get(version))
+        .route("/v1/status", get(status))
+        .with_state(state)
+}
+
+async fn version() -> Json<VersionInfo> {
+    Json(version_info())
+}
+
+async fn status(State(state): State<DaemonState>) -> Json<Status> {
+    Json(Status {
+        daemon: DaemonStatus {
+            version: version_info(),
+            pid: std::process::id(),
+            uptime_seconds: state.started.elapsed().as_secs(),
+            // Reported as unknown until the tickets that can determine these land: ticket 61 for
+            // autostart and linger, ticket 52 for maintenance.
+            autostart: Reported::Unknown,
+            linger: Reported::Unknown,
+            maintenance: Reported::Unknown,
+        },
+        roots: Vec::new(),
+    })
+}
+
+#[cfg(unix)]
+fn bind_control_channel(path: &Path) -> io::Result<tokio::net::UnixListener> {
+    use std::fs::{self, Permissions};
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, Permissions::from_mode(0o700))?;
+    }
+
+    // A socket file left by a crash is stale precisely when nothing is listening on it. Ticket 61
+    // makes the flock'd pid file the authority on that, and unlinks only once the lock proves free;
+    // until then the daemon assumes the path is its own.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let listener = tokio::net::UnixListener::bind(path)?;
+    fs::set_permissions(path, Permissions::from_mode(0o600))?;
+
+    Ok(listener)
+}
+
+#[cfg(windows)]
+fn bind_control_channel(path: &Path) -> io::Result<pipe::PipeListener> {
+    pipe::PipeListener::bind(path)
+}
+
+/// Serve until the stop signal arrives, whatever the platform's control channel is.
+///
+/// One function over both listeners: only the binding differs per platform, and the serving does not.
+async fn serve<L>(listener: L, router: Router, stop: oneshot::Receiver<()>) -> io::Result<()>
+where
+    L: axum::serve::Listener,
+    L::Addr: std::fmt::Debug,
+{
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            let _ = stop.await;
+        })
+        .await
+}
+
+/// The Windows control channel, which is a named pipe rather than a socket file.
+///
+/// A pipe has no file to bind and unlink: each accepted connection consumes one *instance*, so the
+/// listener always keeps the next instance ready. All of the Win32 work — the owner's SID, the
+/// security descriptor, the creation call — lives in `keepster-service`, which keeps every `unsafe`
+/// block in the workspace in one module.
+#[cfg(windows)]
+mod pipe {
+    use std::ffi::OsString;
+    use std::io;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use axum::serve::Listener;
+    use keepster_service::{OwnerOnlyAccess, create_control_pipe, current_user_sid};
+    use tokio::net::windows::named_pipe::NamedPipeServer;
+
+    /// How long to wait before retrying a failed instance creation, so a transient failure does not
+    /// become a busy loop.
+    const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+    pub(crate) struct PipeListener {
+        name: OsString,
+        access: OwnerOnlyAccess,
+        /// The instance clients can connect to right now.
+        ready: Option<NamedPipeServer>,
+    }
+
+    impl PipeListener {
+        /// Create the pipe and its first instance.
+        ///
+        /// The first instance is created with the first-instance flag, which is what makes a second
+        /// daemon fail here instead of quietly serving the same name beside this one — the pipe's own
+        /// half of the single-instance rule ticket 61 completes with the pid file's lock.
+        pub(crate) fn bind(path: &Path) -> io::Result<Self> {
+            let name = path.as_os_str().to_os_string();
+            let access = OwnerOnlyAccess::for_sid(&current_user_sid()?)?;
+            let ready = create_control_pipe(&name, &access, true)?;
+
+            Ok(Self {
+                name,
+                access,
+                ready: Some(ready),
+            })
+        }
+    }
+
+    impl Listener for PipeListener {
+        type Io = NamedPipeServer;
+        /// A pipe connection has no peer address to report.
+        type Addr = ();
+
+        async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+            loop {
+                let instance = match self.ready.take() {
+                    Some(instance) => instance,
+                    None => match create_control_pipe(&self.name, &self.access, false) {
+                        Ok(instance) => instance,
+                        Err(error) => {
+                            tracing::warn!(%error, "could not create a control pipe instance");
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            continue;
+                        }
+                    },
+                };
+
+                if let Err(error) = instance.connect().await {
+                    tracing::warn!(%error, "a control pipe connection failed");
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    continue;
+                }
+
+                // The next instance is created before this one is handed over, so a client arriving
+                // while the previous connection is still being served is not told the pipe is busy.
+                match create_control_pipe(&self.name, &self.access, false) {
+                    Ok(next) => self.ready = Some(next),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not prepare the next control pipe instance");
+                    }
+                }
+
+                return (instance, ());
+            }
+        }
+
+        fn local_addr(&self) -> io::Result<Self::Addr> {
+            Ok(())
+        }
+    }
+}

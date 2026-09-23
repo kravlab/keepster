@@ -1,0 +1,32 @@
+# Licence and duplicate-dependency policy.
+#
+# Ticket 27 made licences load-bearing: every dependency's licence must be expressible in each package
+# format's own manifest (`debian/copyright`, an SPDX expression in rpm, nixpkgs' licence set), and that
+# ticket had to clear `ksni`'s `Unlicense` by hand. The allow-list below is derived from the licences
+# actually present in the dependency graph, so an addition that widens it is a reviewable diff rather
+# than a surprise at packaging time.
+#
+# The licence half of `cargo deny` gates the merge, because its verdict is a property of the diff. The
+# advisory half runs on a schedule instead: a database release must never block an unrelated change
+# (ticket 32).
+
+# Exactly the licences the dependency graph actually carries, so the list stays a statement of fact:
+# an addition is a reviewable diff that says a new kind of licence entered the product, rather than a
+# generous list nobody can audit. A licence that only appears as one alternative of an `OR` is absent
+# here, because another allowed licence already satisfies it.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A workspace member depends on its siblings by path and therefore without a version requirement,
+# which is not the unpinned third-party dependency this check exists to catch.
+allow-wildcard-paths = true

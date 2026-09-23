@@ -1,0 +1,6 @@
+//! All git plumbing and the derived index; the only crate that names a git concept.
+//!
+//! Deliberately empty: ticket 36 creates the crate so the workspace has ticket 08's shape from the
+//! first commit. Cargo enforces a rule as soon as the crates involved have content — a crate cannot
+//! use what it does not depend on — and the one rule that already matters, that `keepster-cli` links
+//! no store, is checked by the merge gate.

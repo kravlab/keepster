@@ -1,0 +1,10 @@
+# A crate that deliberately breaks ADR 0012, so a test can prove the lint *fails a build* rather than
+# merely being present in `clippy.toml`. Its own `[workspace]` table keeps it out of the real
+# workspace, so the violation never reaches the project's own build or its lint runs.
+[package]
+name = "clock-violation"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
