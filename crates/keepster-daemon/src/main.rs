@@ -25,8 +25,19 @@ async fn main() -> ExitCode {
     };
 
     let code = match &cli.command {
-        Command::Daemon => run_daemon(control_path).await,
+        Command::Daemon => {
+            let Some(store_base) = keepster_service::default_store_base() else {
+                eprintln!("keepster: this platform has no per-user data directory for the store");
+                return ExitCode::from(exit::OTHER);
+            };
+
+            run_daemon(control_path, store_base).await
+        }
         Command::Status(args) => keepster_cli::status(args, &control_path).await,
+        Command::Watch(args) => keepster_cli::watch(args, &control_path).await,
+        Command::Roots => keepster_cli::roots(&control_path).await,
+        Command::Unwatch(args) => keepster_cli::unwatch(args, &control_path).await,
+        Command::Move(args) => keepster_cli::move_root(args, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -36,8 +47,13 @@ async fn main() -> ExitCode {
 ///
 /// Ticket 61 turns this into the full stop sequence — drain the capture in flight, then flush every
 /// pending debounce window — and makes the pid file's lock the single-instance authority.
-async fn run_daemon(control_path: PathBuf) -> u8 {
-    let daemon = match keepster_daemon::start(DaemonConfig { control_path }).await {
+async fn run_daemon(control_path: PathBuf, store_base: PathBuf) -> u8 {
+    let daemon = match keepster_daemon::start(DaemonConfig {
+        control_path,
+        store_base,
+    })
+    .await
+    {
         Ok(daemon) => daemon,
         Err(error) => {
             eprintln!("keepster: could not start the daemon: {error}");

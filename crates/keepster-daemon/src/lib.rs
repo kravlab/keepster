@@ -5,13 +5,18 @@
 //! pipe on Windows — and, from ticket 60, on a loopback listener for the browser. Everything below
 //! this crate takes the time it needs as a parameter.
 
+mod problem;
+mod roots;
+
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use axum::extract::State;
 use axum::{Json, Router, routing::get};
 use keepster_api::{API_VERSION, DaemonStatus, Reported, Status, VersionInfo};
+use keepster_store::Registry;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -21,6 +26,9 @@ pub struct DaemonConfig {
     /// Where the control channel is created. Tests use a short temporary path deliberately:
     /// `sun_path` holds 104 bytes on macOS and 108 on Linux.
     pub control_path: PathBuf,
+    /// The directory that holds one subdirectory per Watched Root: its Registry record and, from
+    /// ticket 38, its History Store.
+    pub store_base: PathBuf,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -66,9 +74,10 @@ impl Drop for RunningDaemon {
 /// Binding happens before the task is spawned, so a caller that gets an `Ok` can connect
 /// immediately without polling for readiness.
 pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
+    let registry = Registry::open(&config.store_base).map_err(io::Error::other)?;
     let listener = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
-    let task = tokio::spawn(serve(listener, router(DaemonState::new()), stop));
+    let task = tokio::spawn(serve(listener, router(DaemonState::new(registry)), stop));
 
     Ok(RunningDaemon {
         control_path: config.control_path,
@@ -106,13 +115,31 @@ struct DaemonState {
     /// When this daemon started serving. Monotonic: uptime must not move when the wall clock does,
     /// and ADR 0012 keeps wall-clock reads out of everything below this crate anyway.
     started: Instant,
+    /// The Registry of Watched Roots, on disk, behind the exclusion that makes its rules hold.
+    registry: Arc<Mutex<Registry>>,
 }
 
 impl DaemonState {
-    fn new() -> Self {
+    fn new(registry: Registry) -> Self {
         Self {
             started: Instant::now(),
+            registry: Arc::new(Mutex::new(registry)),
         }
+    }
+
+    /// The Registry, held for the length of one operation.
+    ///
+    /// Registering is list, then check for an overlap, then insert — which is only a rule if nothing
+    /// interleaves, or two requests arriving together would both pass the check and produce the nested
+    /// Roots ticket 07 forbids. The daemon is the only process that touches this state (ticket 05), so
+    /// one mutex is the whole exclusion.
+    ///
+    /// A panic while the lock is held does not disable the daemon: the Registry's files are replaced
+    /// atomically, so there is no half-updated state for a poisoned lock to protect.
+    fn registry(&self) -> MutexGuard<'_, Registry> {
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -120,6 +147,13 @@ fn router(state: DaemonState) -> Router {
     Router::new()
         .route("/v1/version", get(version))
         .route("/v1/status", get(status))
+        .route("/v1/roots", get(roots::list).post(roots::register))
+        .route(
+            "/v1/roots/{id}",
+            get(roots::show)
+                .delete(roots::deregister)
+                .patch(roots::move_root),
+        )
         .with_state(state)
 }
 
@@ -127,8 +161,12 @@ async fn version() -> Json<VersionInfo> {
     Json(version_info())
 }
 
-async fn status(State(state): State<DaemonState>) -> Json<Status> {
-    Json(Status {
+async fn status(
+    State(state): State<DaemonState>,
+) -> Result<Json<Status>, problem::ProblemResponse> {
+    let registered = roots::reported(&state.registry())?;
+
+    Ok(Json(Status {
         daemon: DaemonStatus {
             version: version_info(),
             pid: std::process::id(),
@@ -139,8 +177,8 @@ async fn status(State(state): State<DaemonState>) -> Json<Status> {
             linger: Reported::Unknown,
             maintenance: Reported::Unknown,
         },
-        roots: Vec::new(),
-    })
+        roots: registered,
+    }))
 }
 
 #[cfg(unix)]

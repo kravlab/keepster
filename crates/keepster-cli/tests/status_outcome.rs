@@ -6,10 +6,10 @@
 //! non-zero code once Roots exist.
 
 use hyper::StatusCode;
-use keepster_api::{DaemonStatus, Reported, RootState, RootStatus, Status, VersionInfo};
+use keepster_api::{DaemonStatus, Reported, Root, RootState, Status, VersionInfo};
 use keepster_cli::{ClientError, Response, outcome};
 
-fn status_with(roots: Vec<RootStatus>) -> Status {
+fn status_with(roots: Vec<Root>) -> Status {
     Status {
         daemon: DaemonStatus {
             version: VersionInfo {
@@ -27,10 +27,12 @@ fn status_with(roots: Vec<RootStatus>) -> Status {
     }
 }
 
-fn root(id: &str, state: RootState) -> RootStatus {
-    RootStatus {
+fn root(id: &str, state: RootState) -> Root {
+    Root {
         id: id.to_owned(),
+        path: format!("/home/someone/projects/{}", id.to_lowercase()),
         state,
+        state_code: (state != RootState::Watching).then(|| "capture_unavailable".to_owned()),
     }
 }
 
@@ -68,7 +70,13 @@ fn every_root_watching_is_success() {
 
     assert_eq!(result.code, 0);
     let printed = String::from_utf8_lossy(&result.stdout);
-    assert!(printed.contains("01ARZ3NDEKTSV4RRFFQ69G5FAV"), "{printed}");
+    // Ticket 07 names a Root the way a person recognises it: the directory's own name plus the first
+    // eight characters of the identity. The full ULID is what URLs and scripts use.
+    assert!(printed.contains("01ARZ3ND"), "{printed}");
+    assert!(
+        printed.contains("01arz3ndektsv4rrffq69g5fav"),
+        "the path must be shown too:\n{printed}"
+    );
     assert!(printed.contains("watching"), "{printed}");
 }
 

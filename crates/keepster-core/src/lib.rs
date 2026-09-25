@@ -1,6 +1,9 @@
 //! Pure decision kernel: domain types, policy, Retention, Include Rules. No traits, no I/O, no clock.
 //!
-//! Deliberately empty: ticket 36 creates the crate so the workspace has ticket 08's shape from the
-//! first commit. Cargo enforces a rule as soon as the crates involved have content — a crate cannot
-//! use what it does not depend on — and the one rule that already matters, that `keepster-cli` links
-//! no store, is checked by the merge gate.
+//! Everything here is a value or a function over values (ADR 0003), which is what lets the policy this
+//! product turns on — when a Snapshot is warranted, which Snapshots survive, which paths are captured
+//! — be tested without a disk and replayed without a daemon.
+
+mod root;
+
+pub use root::{NotARootId, RootId, containing, overlapping};

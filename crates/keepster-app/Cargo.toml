@@ -8,3 +8,8 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+keepster-core.workspace = true
+keepster-store.workspace = true
+thiserror = "2.0.21"

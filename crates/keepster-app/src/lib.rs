@@ -1,6 +1,6 @@
 //! Use-cases over the concrete snapshot store, synchronous.
 //!
-//! Deliberately empty: ticket 36 creates the crate so the workspace has ticket 08's shape from the
-//! first commit. Cargo enforces a rule as soon as the crates involved have content — a crate cannot
-//! use what it does not depend on — and the one rule that already matters, that `keepster-cli` links
-//! no store, is checked by the merge gate.
+//! A use-case takes the time it needs as a parameter and returns values; health, scheduling and
+//! transport belong to the daemon above it (ticket 08). Nothing here decides how anything is rendered.
+
+pub mod roots;

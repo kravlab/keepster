@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -60,6 +60,30 @@ impl DaemonClient {
 
     /// Perform a `GET` against the daemon.
     pub async fn get(&self, path: &str) -> Result<Response, ClientError> {
+        self.send("GET", path, None).await
+    }
+
+    /// Perform a `POST` of a JSON body against the daemon.
+    pub async fn post(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
+        self.send("POST", path, Some(body)).await
+    }
+
+    /// Perform a `PATCH` of a JSON body against the daemon.
+    pub async fn patch(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
+        self.send("PATCH", path, Some(body)).await
+    }
+
+    /// Perform a `DELETE` against the daemon.
+    pub async fn delete(&self, path: &str) -> Result<Response, ClientError> {
+        self.send("DELETE", path, None).await
+    }
+
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Response, ClientError> {
         let stream = connect(&self.control_path).await?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
@@ -71,11 +95,14 @@ impl DaemonClient {
         });
 
         // HTTP/1.1 requires a Host header, and the control channel has no meaningful authority.
-        let request = Request::builder()
-            .method("GET")
+        let mut request = Request::builder()
+            .method(method)
             .uri(path)
-            .header(hyper::header::HOST, "keepster.local")
-            .body(Empty::<Bytes>::new())?;
+            .header(hyper::header::HOST, "keepster.local");
+        if body.is_some() {
+            request = request.header(hyper::header::CONTENT_TYPE, "application/json");
+        }
+        let request = request.body(Full::new(Bytes::copy_from_slice(body.unwrap_or_default())))?;
 
         let response = sender.send_request(request).await?;
         let status = response.status();

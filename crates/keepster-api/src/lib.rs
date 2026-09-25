@@ -6,6 +6,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Percent-encode a path for the `path=` query parameter, which is how every endpoint takes a path.
+///
+/// Paths travel as bytes (ticket 10), so this encodes bytes rather than characters: a name that is not
+/// UTF-8 survives the trip. The unreserved set of RFC 3986 plus `/`, which is a path separator here and
+/// needs no escaping.
+pub fn encode_path_query(path: &str) -> String {
+    path.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
 /// The API version this build serves. It is part of the URL prefix and of every version handshake.
 pub const API_VERSION: &str = "v1";
 
@@ -36,7 +52,7 @@ pub struct Status {
     /// The daemon itself.
     pub daemon: DaemonStatus,
     /// One entry per Watched Root, in registration order.
-    pub roots: Vec<RootStatus>,
+    pub roots: Vec<Root>,
 }
 
 /// The daemon's own rows.
@@ -72,13 +88,51 @@ pub enum Reported {
     Unknown,
 }
 
-/// One Watched Root's health.
+/// A Watched Root, as both the registry endpoints and `status` serve it.
+///
+/// One shape, not two: ticket 07 keeps a Root's state on the Root itself rather than duplicating it
+/// into a second per-Root health resource, so a client learns a Root's health from the same object it
+/// learned the Root from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootStatus {
+pub struct Root {
     /// The Root's identity, which survives renaming or moving its directory.
     pub id: String,
+    /// Where its directory is right now. A path is a mutable attribute of the registration.
+    pub path: String,
     /// What the daemon can currently promise for it.
     pub state: RootState,
+    /// The machine-readable reason behind a state that is not `Watching`, so a client can branch on it
+    /// rather than on prose. Absent while the Root is `Watching`.
+    pub state_code: Option<String>,
+}
+
+/// What a client sends to register a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterRoot {
+    /// The directory to watch. Made absolute by the daemon; not resolved through symlinks.
+    pub path: String,
+}
+
+/// A failure, in the one shape every endpoint uses.
+///
+/// RFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's
+/// library already parses, and `code` — not the prose of `title` or `detail` — is the stable part
+/// clients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it
+/// does not know as its HTTP status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problem {
+    /// A short, human-readable summary of the problem type.
+    pub title: String,
+    /// The HTTP status code, repeated in the body as RFC 9457 prescribes.
+    pub status: u16,
+    /// A human-readable explanation of this occurrence.
+    pub detail: String,
+    /// The stable machine-readable code. Contract; the prose above is not.
+    pub code: String,
+    /// Machine-readable particulars — which path, which id, which limit — so a client composes its own
+    /// message instead of parsing ours.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub details: std::collections::BTreeMap<String, String>,
 }
 
 /// What a Root's state means for the insurance it provides.

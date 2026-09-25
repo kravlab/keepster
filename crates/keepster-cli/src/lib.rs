@@ -7,11 +7,15 @@
 pub mod client;
 pub mod command;
 pub mod render;
+pub mod resolve;
+pub mod roots;
 pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
-pub use command::{Cli, Command, StatusArgs};
-pub use render::{write_human, write_json};
+pub use command::{Cli, Command, MoveArgs, StatusArgs, UnwatchArgs, WatchArgs};
+pub use render::{write_human, write_json, write_roots};
+pub use resolve::resolve;
+pub use roots::{move_root, roots, unwatch, watch};
 pub use status::{Outcome, exit_code_for, outcome, status};
 
 /// The process exit codes, which are contract: a script must be able to tell one failure from
@@ -22,8 +26,14 @@ pub use status::{Outcome, exit_code_for, outcome, status};
 pub mod exit {
     /// The command did what was asked.
     pub const SUCCESS: u8 = 0;
+    /// The command line itself was wrong, including an ambiguous Root selector.
+    pub const USAGE: u8 = 2;
     /// No daemon is listening on the control channel.
     pub const DAEMON_UNREACHABLE: u8 = 3;
+    /// What was asked for does not exist.
+    pub const NOT_FOUND: u8 = 4;
+    /// The daemon refused because of the state something is in, not because of the request.
+    pub const STATE_CONFLICT: u8 = 5;
     /// `status` found at least one Root that is not `Watching`.
     pub const ROOT_NOT_WATCHING: u8 = 10;
     /// Anything else, deliberately narrow.

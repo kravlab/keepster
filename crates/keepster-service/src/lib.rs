@@ -49,3 +49,42 @@ pub fn default_control_path() -> Option<PathBuf> {
         None
     }
 }
+
+/// Where Keepster keeps its own data: one directory per Watched Root, holding that Root's Registry
+/// record and its History Store.
+///
+/// This is the **global** store, which is the default; a Root may instead keep its History Store inside
+/// its own directory, and ticket 42 makes that a configuration key — settable only from the global
+/// configuration, because a file arriving in someone else's repository must not decide where your
+/// history goes.
+///
+/// Returns `None` when the platform's per-user data directory cannot be determined.
+pub fn default_store_base() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        // The XDG specification's directory for user-specific data files.
+        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+            return Some(PathBuf::from(data_home).join("keepster"));
+        }
+
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/keepster"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/Keepster"))
+    }
+
+    #[cfg(windows)]
+    {
+        // Per-user and not roamed: the store holds every version of every watched file, which has no
+        // business travelling to another machine.
+        std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Keepster"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}
