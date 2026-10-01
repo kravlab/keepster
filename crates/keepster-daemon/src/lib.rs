@@ -7,11 +7,15 @@
 
 mod problem;
 mod roots;
+mod snapshots;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
+
+use keepster_core::RootId;
 
 use axum::extract::State;
 use axum::{Json, Router, routing::get};
@@ -117,6 +121,9 @@ struct DaemonState {
     started: Instant,
     /// The Registry of Watched Roots, on disk, behind the exclusion that makes its rules hold.
     registry: Arc<Mutex<Registry>>,
+    /// One lock per History Store, so that a capture and — from ticket 52 — a maintenance pass are
+    /// never in the same store at once.
+    store_locks: Arc<Mutex<HashMap<RootId, Arc<Mutex<()>>>>>,
 }
 
 impl DaemonState {
@@ -124,7 +131,23 @@ impl DaemonState {
         Self {
             started: Instant::now(),
             registry: Arc::new(Mutex::new(registry)),
+            store_locks: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// The exclusive lock on one Root's History Store.
+    ///
+    /// Held by a capture or, from ticket 52, by a maintenance pass, and never by both: git's own
+    /// documentation concedes a corruption risk under concurrent access, and two captures racing would
+    /// leave one of them unreferenced in any case (ticket 06). One lock per store rather than one for
+    /// all of them, because an unrelated Root has no reason to wait.
+    fn store_lock(&self, id: RootId) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .store_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        Arc::clone(locks.entry(id).or_default())
     }
 
     /// The Registry, held for the length of one operation.
@@ -148,6 +171,10 @@ fn router(state: DaemonState) -> Router {
         .route("/v1/version", get(version))
         .route("/v1/status", get(status))
         .route("/v1/roots", get(roots::list).post(roots::register))
+        .route(
+            "/v1/roots/{id}/snapshots",
+            axum::routing::post(snapshots::create),
+        )
         .route(
             "/v1/roots/{id}",
             get(roots::show)

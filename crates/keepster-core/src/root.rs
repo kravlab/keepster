@@ -1,48 +1,17 @@
 //! The identity of a Watched Root.
 
-use std::fmt;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::time::SystemTime;
 
-use ulid::Ulid;
+use crate::identity::ulid_identity;
 
-/// A Watched Root's identity: a surrogate id that survives renaming or moving its directory.
-///
-/// The path cannot serve as the identity — it is a mutable attribute, and a Root that moves keeps its
-/// history — and an autoincrement could not survive a store copied to another machine. A ULID orders
-/// lexicographically by time, which is what makes a registry listing and a timeline agree without a
-/// sort key of their own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RootId(Ulid);
-
-impl RootId {
-    /// Mint an identity for a Root registered at `now`.
+ulid_identity! {
+    /// A Watched Root's identity: a surrogate id that survives renaming or moving its directory.
     ///
-    /// The moment is a parameter rather than a clock read, because a ULID embeds its timestamp and
-    /// ADR 0012 keeps every wall-clock read in `keepster-daemon`.
-    pub fn generate(now: SystemTime) -> Self {
-        Self(Ulid::from_datetime(now))
-    }
-}
-
-impl fmt::Display for RootId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.0)
-    }
-}
-
-/// Why a string is not a Root identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("not a Root identity")]
-pub struct NotARootId;
-
-impl FromStr for RootId {
-    type Err = NotARootId;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        Ulid::from_string(text).map(Self).map_err(|_| NotARootId)
-    }
+    /// The path cannot serve as the identity — it is a mutable attribute, and a Root that moves keeps
+    /// its history — and an autoincrement could not survive a store copied to another machine. A ULID
+    /// orders lexicographically by time, which is what makes a registry listing and a timeline agree
+    /// without a sort key of their own.
+    RootId
 }
 
 /// Which registered Root holds `path`, if any.

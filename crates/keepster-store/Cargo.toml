@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 keepster-core.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"

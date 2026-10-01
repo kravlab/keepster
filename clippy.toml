@@ -11,8 +11,7 @@
 # `Instant::now` is deliberately absent from this list: it is monotonic and measures elapsed time
 # rather than naming a moment.
 #
-# `git2::Signature::now` joins this list with ticket 38, which introduces the git dependency: clippy
-# warns about paths it cannot resolve, and the merge gate treats warnings as errors.
 disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "ADR 0012: take the time as a parameter from the daemon" },
+    { path = "git2::Signature::now", reason = "ADR 0012: a Snapshot is dated by the moment passed in, not by the clock" },
 ]

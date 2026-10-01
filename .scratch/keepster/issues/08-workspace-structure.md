@@ -30,6 +30,8 @@ every rule in this ticket as a comment. The lines below are therefore crate boun
 
 ```
 keepster-core     std              domain types, policy, retention, include/exclude rules
+                                   (also `ulid`, `jiff` and `regex`: value types and pure
+                                   predicates, none of which is I/O or a port)
 keepster-api      serde            /v1 DTOs, RFC 9457 Problem, error-code table
 keepster-store    core             git2 + rusqlite; all git plumbing and the derived index
 keepster-watch    core             notify -> core::Event

@@ -343,3 +343,17 @@ and `folders/{id}/entries?path=<folder>` would use one word for two things. `Pro
 development for a tool that will watch `~/Documents/notes`. The rename touches `CONTEXT.md`, tickets 03–06, both
 ADRs, the registry file name (`project.toml` → `root.toml`) and the `Keepster-Project` commit trailer, and is
 tracked as [13 — Rename Project to Watched Root](13-rename-project-to-root.md).
+
+## Comments
+
+- **Added by ticket 38:** `POST /v1/roots/{id}/snapshots` takes a Snapshot on demand and returns the Snapshot shape.
+  The endpoint list above predates it because capture was framed as automatic; a manual capture is what ticket 38's
+  first criterion asks for, and the CLI's `keepster snapshot` needs somewhere to send it. Additive, and the error
+  codes it introduces — `capture_failed`, `clock_unusable` — are legitimate under ADR 0005's open set.
+- **Added by ticket 38:** the Snapshot shape carries `incomplete` and `omitted`, which is this ticket's own rule
+  ("every shape that returns a Snapshot needs a place to say so and to list the omitted paths") applied as soon as
+  there was a Snapshot to say it about. `omitted` is absent rather than empty when there is nothing to report.
+- **Unchanged on purpose:** a Root whose Registry record cannot be read answers `root_unavailable`, not
+  `root_degraded`. `CONTEXT.md` reserves `Degraded` for a Root that is watched but limited, while a record that
+  cannot be read leaves the daemon unable to capture at all — which is `Unavailable`, and is what `/v1/status`
+  already reports for the same condition.

@@ -10,5 +10,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+jiff = "0.2.37"
 thiserror = "2.0.21"
 ulid = "3.0.0"

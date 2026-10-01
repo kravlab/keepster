@@ -113,6 +113,29 @@ pub struct RegisterRoot {
     pub path: String,
 }
 
+/// A Snapshot, as the API serves it.
+///
+/// Ticket 39 widens this with what the timeline needs — the Trigger that fired, the incomplete flag,
+/// the changed-path count — each of which arrives with the behaviour that can determine it. Adding a
+/// field is an additive change inside `/v1`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The Snapshot's stable identity, which outlives the commit that holds it.
+    pub id: String,
+    /// The Segment it belongs to, named for the period it falls in.
+    pub segment: String,
+    /// When it was taken, in UTC, as RFC 3339.
+    pub taken_at: String,
+    /// Whether some file that was meant to be captured could not be read.
+    ///
+    /// A Snapshot is taken anyway — an honest partial Snapshot beats no Snapshot (ticket 05) — so every
+    /// shape that returns one has to be able to say that it is not whole, and to name what it omitted.
+    pub incomplete: bool,
+    /// The paths that could not be read, each one the reason this Snapshot is incomplete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<String>,
+}
+
 /// A failure, in the one shape every endpoint uses.
 ///
 /// RFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's

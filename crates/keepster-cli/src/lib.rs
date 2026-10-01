@@ -9,13 +9,15 @@ pub mod command;
 pub mod render;
 pub mod resolve;
 pub mod roots;
+pub mod snapshots;
 pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
-pub use command::{Cli, Command, MoveArgs, StatusArgs, UnwatchArgs, WatchArgs};
+pub use command::{Cli, Command, MoveArgs, SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs};
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
 pub use roots::{move_root, roots, unwatch, watch};
+pub use snapshots::snapshot;
 pub use status::{Outcome, exit_code_for, outcome, status};
 
 /// The process exit codes, which are contract: a script must be able to tell one failure from

@@ -6,7 +6,7 @@ use axum::{Json, response::IntoResponse};
 use keepster_api::{RegisterRoot, Root, RootState};
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::RootId;
-use keepster_store::{RegistryEntry, RegistryError};
+use keepster_store::{RegistryEntry, RegistryError, RootRecord};
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
@@ -112,12 +112,33 @@ pub(crate) fn reported(registry: &keepster_store::Registry) -> Result<Vec<Root>,
     Ok(entries.iter().map(describe).collect())
 }
 
+/// The Registry's record for one Root, or the problem that explains why there is none.
+///
+/// Shared by every endpoint that acts on a Root rather than reporting on one: a Root that is not
+/// registered is not found, and one whose record cannot be read is `Unavailable`, which is what
+/// `CONTEXT.md` calls a Root that cannot be captured at all.
+pub(crate) fn record(
+    registry: &keepster_store::Registry,
+    id: RootId,
+) -> Result<RootRecord, ProblemResponse> {
+    let entry = roots::list(registry)
+        .map_err(registry_problem)?
+        .into_iter()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| not_found(&id.to_string()))?;
+
+    entry.record.map_err(|error| {
+        ProblemResponse::new(StatusCode::CONFLICT, "root_unavailable", error.to_string())
+            .with_detail("root", id.to_string())
+    })
+}
+
 /// A Root identity from a URL segment.
 ///
 /// Only the canonical form is accepted: giving one resource two URLs would make a bookmarked link
 /// depend on which form produced it (ticket 07). Prefixes and paths are the CLI's convenience, resolved
 /// before a request is made.
-fn parse_id(segment: &str) -> Result<RootId, ProblemResponse> {
+pub(crate) fn parse_id(segment: &str) -> Result<RootId, ProblemResponse> {
     segment.parse().map_err(|_| not_found(segment))
 }
 
@@ -155,7 +176,7 @@ fn absolute_query_path(path: &str) -> Result<std::path::PathBuf, ProblemResponse
     clippy::disallowed_methods,
     reason = "ADR 0012: the daemon is where a moment enters the domain, and this is that point"
 )]
-fn now() -> std::time::SystemTime {
+pub(crate) fn now() -> std::time::SystemTime {
     std::time::SystemTime::now()
 }
 

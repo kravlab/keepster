@@ -4,6 +4,12 @@
 //! product turns on — when a Snapshot is warranted, which Snapshots survive, which paths are captured
 //! — be tested without a disk and replayed without a daemon.
 
+mod identity;
 mod root;
+mod segment;
+mod snapshot;
 
-pub use root::{NotARootId, RootId, containing, overlapping};
+pub use identity::NotAnIdentity;
+pub use root::{RootId, containing, overlapping};
+pub use segment::{SegmentName, UnnameableMoment};
+pub use snapshot::SnapshotId;

@@ -41,6 +41,18 @@ pub enum Command {
 
     /// Record that a Watched Root's directory has moved.
     Move(MoveArgs),
+
+    /// Capture the Root's current contents now.
+    Snapshot(SnapshotArgs),
+}
+
+/// Options of `keepster snapshot`.
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
 }
 
 /// Options of `keepster unwatch`.

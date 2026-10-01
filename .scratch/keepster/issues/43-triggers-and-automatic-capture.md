@@ -23,5 +23,8 @@ function, not a second code path.
 - [ ] Shutdown stops accepting Triggers, finishes the capture in flight through its ref update, then takes a Snapshot
       for every Root whose debounce window is still counting down, bypassing the rate limit
 - [ ] Being killed past the stop timeout is survivable: at worst an unreferenced object and a lagging index
+- [ ] A capture that arrives while the store's lock is held **coalesces into one Snapshot** once the lock is
+      released, rather than blocking or being dropped — transferred from ticket 38, which built the lock and left
+      coalescing to the policy that owns accumulated paths and the rate limit
 - [ ] The trigger machine is tested as values over scripted event-and-time sequences; watcher tests assert only that
       an event eventually arrives, never that one did not

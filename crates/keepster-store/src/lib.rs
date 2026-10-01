@@ -4,6 +4,8 @@
 //! daemon's state by whether git can reproduce it, and this crate is where both halves live so that no
 //! use-case above it can write them in the wrong order.
 
+mod history;
 mod registry;
 
+pub use history::{CapturedSnapshot, HistoryStore, StoreError};
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};
