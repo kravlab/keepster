@@ -1,10 +1,11 @@
 //! `keepster log` and `keepster cat`: the timeline and one version's bytes, as a person reads them.
 
 use std::io::{self, Write};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use keepster_api::{Change, Root, Snapshot, Timeline, encode_path_query};
+use serde::Deserialize;
 
 use crate::client::{ClientError, DaemonClient};
 use crate::command::{CatArgs, LogArgs};
@@ -77,27 +78,35 @@ pub async fn log(args: &LogArgs, control_path: &Path, now: SystemTime) -> u8 {
         }
     }
 
-    let mut out = io::stdout().lock();
-    let written = if args.json {
-        serde_json::to_writer(&mut out, &items)
+    write_log(&items, args.json, &mut io::stdout().lock())
+}
+
+/// Write the listing and return the exit code it deserves.
+///
+/// A reader that stopped early — `keepster log | head -1` — closed the pipe on purpose, so that is
+/// success, as it is for `cat`; a script under `pipefail` must not fail because it read enough.
+fn write_log(items: &[serde_json::Value], json: bool, out: &mut impl Write) -> u8 {
+    let written = if json {
+        serde_json::to_writer(&mut *out, items)
             .map_err(io::Error::from)
             .and_then(|()| writeln!(out))
     } else {
-        items.iter().try_for_each(
-            |item| match serde_json::from_value::<Snapshot>(item.clone()) {
-                Ok(snapshot) => write_snapshot(&snapshot, &mut out),
+        items
+            .iter()
+            .try_for_each(|item| match Snapshot::deserialize(item) {
+                Ok(snapshot) => write_snapshot(&snapshot, out),
                 Err(error) => {
                     eprintln!(
                         "keepster: a Snapshot in the daemon's answer could not be read: {error}"
                     );
                     Ok(())
                 }
-            },
-        )
+            })
     };
 
     match written.and_then(|()| out.flush()) {
         Ok(()) => exit::SUCCESS,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => exit::SUCCESS,
         Err(error) => {
             eprintln!("keepster: could not write the answer: {error}");
             exit::OTHER
@@ -216,7 +225,13 @@ async fn located(
     root: Option<&str>,
     path: Option<&Path>,
 ) -> Result<(Root, Option<String>), u8> {
-    let absolute = match path.map(std::path::absolute).transpose() {
+    // Made absolute and then rid of `.` and `..` by name, as the shell that typed the path reads them:
+    // `std::path::absolute` keeps `..` on Unix, so `../notes.md` from a subdirectory would otherwise
+    // never be found inside the Root it is in.
+    let absolute = match path
+        .map(|path| std::path::absolute(path).map(|path| lexical(&path)))
+        .transpose()
+    {
         Ok(absolute) => absolute,
         Err(error) => {
             eprintln!("keepster: the path could not be resolved: {error}");
@@ -248,6 +263,31 @@ async fn located(
     }
 }
 
+/// `path` with `.` and `..` resolved by name, without touching the filesystem.
+///
+/// By name, as a shell's own `cd ..` does: the file may be one that no longer exists, so there may be
+/// nothing on disk to resolve against, and a Root is registered by the path the person typed rather
+/// than through its symlinks. A `..` at the filesystem root stays there.
+fn lexical(path: &Path) -> PathBuf {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    resolved.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    resolved.pop();
+                }
+            }
+            other => resolved.push(other),
+        }
+    }
+
+    resolved
+}
+
 /// `path` relative to `root`, `/`-separated as every endpoint takes it — the separators of this
 /// platform are the client's to normalise (ticket 07).
 fn relative_to(path: &Path, root: &Path) -> Option<String> {
@@ -275,9 +315,10 @@ fn write_snapshot(snapshot: &Snapshot, out: &mut impl Write) -> io::Result<()> {
     match snapshot.change {
         Some(change) => write!(out, "  {}", change_word(change))?,
         None => match snapshot.changed_paths {
-            0 => write!(out, "  no changes")?,
-            1 => write!(out, "  1 path changed")?,
-            count => write!(out, "  {count} paths changed")?,
+            Some(0) => write!(out, "  no changes")?,
+            Some(1) => write!(out, "  1 path changed")?,
+            Some(count) => write!(out, "  {count} paths changed")?,
+            None => write!(out, "  changes not counted")?,
         },
     }
     if snapshot.incomplete {
@@ -292,5 +333,71 @@ fn change_word(change: Change) -> &'static str {
         Change::Added => "added",
         Change::Modified => "modified",
         Change::Deleted => "deleted",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+
+    use super::{lexical, relative_to, write_log};
+    use crate::exit;
+
+    /// A reader that has gone away, as `head` has once it read enough.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    fn item() -> serde_json::Value {
+        serde_json::json!({
+            "id": "01K6DX3QR7M2V8C9WZ4PN5YQ1A",
+            "segment": "2026-09-30T14",
+            "taken_at": "2026-09-30T14:37:05Z",
+            "trigger": "manual",
+            "incomplete": false,
+            "changed_paths": 1,
+        })
+    }
+
+    #[test]
+    fn a_reader_that_stopped_early_is_not_a_failure() {
+        assert_eq!(write_log(&[item()], false, &mut ClosedPipe), exit::SUCCESS);
+        assert_eq!(write_log(&[item()], true, &mut ClosedPipe), exit::SUCCESS);
+    }
+
+    #[test]
+    fn dot_dot_climbs_out_of_a_subdirectory_by_name() {
+        assert_eq!(
+            lexical(Path::new("/proj/sub/../notes.md")),
+            PathBuf::from("/proj/notes.md")
+        );
+        assert_eq!(
+            lexical(Path::new("/proj/./a/b/../../c")),
+            PathBuf::from("/proj/c")
+        );
+        assert_eq!(lexical(Path::new("/../x")), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn a_climbed_path_is_still_inside_its_root() {
+        let path = lexical(Path::new("/proj/sub/../notes.md"));
+
+        assert_eq!(
+            relative_to(&path, Path::new("/proj")),
+            Some("notes.md".to_owned())
+        );
+        assert_eq!(
+            relative_to(&lexical(Path::new("/proj/../other")), Path::new("/proj")),
+            None
+        );
     }
 }

@@ -87,4 +87,32 @@ resource that also answers "which Snapshots changed this path".
   test, whose own `git rev-parse` refuses a repository owned by another user, pass as root).
 - Verified: `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`, the CLI dependency gate,
   `cargo +1.87 check`, the whole suite as described above. **No test has run on Windows or macOS.**
+- **Review, after the first commit: six defects fixed, four transferred.**
+  - *A read could rebuild the index backwards.* `catch_up` read the Segment tips before taking the write lock, so
+    a read racing a capture compared the capture's fresh watermarks with its own stale tips, took them for a
+    rewritten Segment and rebuilt the whole index back to the older state. The tips are now read under the lock,
+    where they are at least as new as any committed watermark. No test can force that interleaving without a hook
+    in production code; the fix is argued in the comment beside it.
+  - *An index that could not be opened refused the capture.* The store opened SQLite eagerly, before git was
+    written. It now opens the index on first use, so a capture writes its commit and ref whatever the index does,
+    and an index that cannot even be opened shows up as `index_lag` — tested with a directory in the index's place.
+  - *A failed count after the commit failed the request.* `changed_paths` is now a `Result` in the store and an
+    optional field on the wire, absent only from a capture's own answer when the count failed; the request
+    succeeds, so a client does not retry into a second Snapshot. Inducing a diff failure needs a damaged object
+    store mid-capture, so this path is not tested.
+  - *Two first opens of an empty index raced to create the schema.* Creation now re-checks inside `BEGIN
+    IMMEDIATE`. The test — eight readers on a deleted index, twenty times — failed three runs out of three on the
+    previous code, and on the way to passing it found two more defects of the same race. Switching a fresh file
+    to WAL can answer `SQLITE_BUSY` without running the busy handler, so the switch is now retried briefly, and an
+    index already in WAL is only asked, which takes no lock. And the version and the table count were two
+    separate reads, which could straddle another connection's commit, call a healthy index foreign and discard it
+    from under its readers (`SQLITE_IOERR_FSTAT`); an unversioned file is now judged only under the write lock.
+    Thirty consecutive runs pass, as root and as an unprivileged user.
+  - *`keepster cat ../notes.md` from a subdirectory was "not inside the Root".* `std::path::absolute` keeps `..`
+    on Unix; the CLI now resolves `.` and `..` by name, as the shell does, before resolving the Root.
+  - *`keepster log | head` exited 1.* A closed pipe is success for `log` as it already was for `cat`.
+  - Transferred: the all-or-nothing rebuild after thinning or a backwards clock step (ticket 51), the cost of
+    `entries` and `content` on a packed store (ticket 52), and taking the single-instance lock before index
+    recovery (ticket 61). Still open here, as a known cost: `keepster log` without `-n` collects every page before
+    printing the first line.
 

@@ -125,7 +125,7 @@ fn the_timeline_lists_snapshots_newest_first_with_what_each_changed() {
             second.changed_paths,
             third.changed_paths
         ],
-        [2, 2, 1],
+        [Ok(2), Ok(2), Ok(1)],
         "the capture's own answer agrees with the timeline"
     );
 
@@ -589,4 +589,61 @@ fn a_root_never_captured_has_no_store_to_read() {
             .is_none()
     );
     assert!(!fixture.git().exists(), "reading created nothing");
+}
+
+#[test]
+fn an_index_that_cannot_be_opened_costs_the_capture_nothing() {
+    // The commit and the ref come first, so the Snapshot is durable whatever the index does; an index
+    // that cannot even be opened must leave it lagging, not refuse the capture.
+    let fixture = Fixture::new();
+    fixture.write("a.txt", b"one");
+    fs::create_dir_all(fixture.index()).expect("something that is not a database in the way");
+
+    let captured = fixture
+        .store()
+        .capture(fixture.id, &fixture.root, Trigger::Manual, at(MOMENT))
+        .expect("the Snapshot is taken anyway");
+
+    assert!(captured.index_lag.is_some(), "and the lag is reported");
+    assert_eq!(captured.changed_paths, Ok(1));
+
+    fs::remove_dir(fixture.index()).expect("the obstacle removed");
+    let page = fixture.timeline(everything());
+    assert_eq!(
+        page.snapshots
+            .iter()
+            .map(|snapshot| snapshot.id)
+            .collect::<Vec<_>>(),
+        [captured.id],
+        "and the next catch-up indexes it"
+    );
+}
+
+#[test]
+fn several_first_opens_of_a_missing_index_all_succeed() {
+    // Two connections finding the same empty file must not both create the schema: the second would
+    // fail on a table that now exists. Many readers at once, many times over, make the race likely.
+    let fixture = Fixture::new();
+    three_snapshots(&fixture);
+
+    for _ in 0..20 {
+        delete_index(&fixture.index());
+        let readers: Vec<_> = (0..8)
+            .map(|_| {
+                let (git, index) = (fixture.git(), fixture.index());
+                std::thread::spawn(move || {
+                    HistoryStore::open_existing(git, index)
+                        .and_then(|store| store.expect("an existing store").timeline(&everything()))
+                        .map(|page| page.snapshots.len())
+                })
+            })
+            .collect();
+
+        for reader in readers {
+            match reader.join().expect("no panic") {
+                Ok(seen) => assert_eq!(seen, 3, "every reader sees the whole history"),
+                Err(error) => panic!("a first open failed: {error:?}"),
+            }
+        }
+    }
 }

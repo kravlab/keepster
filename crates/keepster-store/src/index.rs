@@ -137,9 +137,7 @@ impl Index {
         // WAL so a reader never blocks the writer and the writer never blocks a reader; `NORMAL` is
         // safe from corruption in WAL mode and gives up only durability, which a cache can afford
         // because the Snapshots themselves are already durable git objects (ticket 03).
-        let mode: String = connection
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-            .map_err(failed("opened"))?;
+        let mode = write_ahead(&connection).map_err(failed("opened"))?;
         if !mode.eq_ignore_ascii_case("wal") {
             // WAL is refused on a filesystem that cannot share memory between processes — a network
             // mount above all, where ticket 03 forbids the index anyway. Not damage: a rebuild would
@@ -168,18 +166,17 @@ impl Index {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(failed("read"))?;
-        let tables: i64 = connection
-            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
-            .map_err(failed("read"))?;
 
-        match (version, tables) {
-            (SCHEMA_VERSION, _) => {}
-            (0, 0) => {
-                connection
-                    .execute_batch(&format!(
-                        "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-                    ))
-                    .map_err(failed("created"))?;
+        // An unversioned file is either empty or being given its schema by another connection right
+        // now; only a look under the write lock can tell which, so the decision is made there. Two
+        // separate reads here could see the version from before another connection's commit and the
+        // tables from after it, and call a healthy index foreign.
+        match version {
+            SCHEMA_VERSION => {}
+            0 => {
+                if !create_schema(&connection).map_err(failed("created"))? {
+                    return Ok(None);
+                }
             }
             _ => return Ok(None),
         }
@@ -198,11 +195,10 @@ impl Index {
     /// before one already indexed — invalidates the predecessors the change rows were computed against,
     /// and the whole index is rebuilt by the same loop with every watermark treated as absent.
     pub(crate) fn catch_up(&mut self, repository: &git2::Repository) -> Result<(), StoreError> {
-        let tips = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
-
         // A read path calls this on every request, so the common answer — nothing to do — must not
         // take the write lock.
-        if self.watermarks()? == tips {
+        let glance = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
+        if self.watermarks()? == glance {
             return Ok(());
         }
 
@@ -211,6 +207,13 @@ impl Index {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(index_failed(&path, "written"))?;
+
+        // The tips are read again *under* the write lock, never reused from the glance above. A ref
+        // only ever moves before its index write, and every writer reads its tips under this lock, so
+        // tips read here are at least as new as any watermark already committed. Tips read before the
+        // lock could be older than the watermarks a capture wrote meanwhile — which would look like a
+        // rewritten Segment and rebuild the whole index back to the older state.
+        let tips = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
 
         let mut rebuild = false;
         loop {
@@ -574,6 +577,72 @@ fn parse_oid(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<git2::O
             Box::new(error),
         )
     })
+}
+
+/// Put the database in WAL mode, returning the mode it is in afterwards.
+///
+/// The mode is persistent, so an existing index is only asked — which takes no lock. Switching a new
+/// file needs an exclusive lock, and SQLite does not always run the busy handler for that upgrade: two
+/// first opens of one fresh file can see `SQLITE_BUSY` at once, however long the busy timeout. The
+/// switch is therefore retried briefly, for about as long as the busy timeout would have waited.
+fn write_ahead(connection: &Connection) -> rusqlite::Result<String> {
+    const ATTEMPTS: u32 = 100;
+    const PAUSE: Duration = Duration::from_millis(50);
+
+    let mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if mode.eq_ignore_ascii_case("wal") {
+        return Ok(mode);
+    }
+
+    let mut attempt = 0;
+    loop {
+        match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Err(error)
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+                    && attempt < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(PAUSE);
+            }
+            answer => return answer,
+        }
+    }
+}
+
+/// Create the schema in an empty database, unless another connection has just done so.
+///
+/// Two first opens of a fresh file can both find it empty; the check is therefore repeated under the
+/// write lock, so the second sees the first's schema instead of failing on a table that exists.
+/// Returns whether the file now holds this build's schema.
+fn create_schema(connection: &Connection) -> rusqlite::Result<bool> {
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+
+    let created = (|| {
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let tables: i64 =
+            connection.query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))?;
+
+        match (version, tables) {
+            (SCHEMA_VERSION, _) => Ok(true),
+            (0, 0) => {
+                connection
+                    .execute_batch(&format!("{SCHEMA} PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    })();
+
+    match created {
+        Ok(created) => {
+            connection.execute_batch("COMMIT")?;
+            Ok(created)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 /// Whether a failure says the file is not a usable database, rather than that this attempt failed.

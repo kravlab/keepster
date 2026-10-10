@@ -6,11 +6,11 @@
 //! must not be probed from the filesystem, and reflogs must stay off or a deleted ref stays reachable
 //! and Retention frees nothing.
 //!
-//! Beside the repository lives the derived index (ticket 03), which this type opens with it and writes
-//! only after the repository, so the ordering that keeps the index safe is a fact of one function here
-//! rather than of whichever caller sequences two calls.
+//! Beside the repository lives the derived index (ticket 03), which this type opens on first use and
+//! writes only after the repository, so the ordering that keeps the index safe is a fact of one function
+//! here rather than of whichever caller sequences two calls.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -158,8 +158,12 @@ pub struct CapturedSnapshot {
     /// carried-forward entry; the commit records how many there were, and ticket 48 is where each one
     /// becomes a record of the Snapshot itself.
     pub unreadable: Vec<PathBuf>,
-    /// How many paths differ from the Snapshot before it, counted exactly as the index counts them.
-    pub changed_paths: u64,
+    /// How many paths differ from the Snapshot before it, counted exactly as the index counts them —
+    /// or why they could not be counted.
+    ///
+    /// Counting happens after the commit and the ref update, so a failure here is not the capture's:
+    /// the Snapshot exists, and refusing the request would only invite a retry that takes a second one.
+    pub changed_paths: Result<u64, String>,
     /// Why the derived index could not be brought up to date, if it could not.
     ///
     /// The Snapshot itself is durable either way — the commit and the ref came first — so a failing
@@ -325,7 +329,12 @@ impl Content<'_> {
 pub struct HistoryStore {
     repository: git2::Repository,
     path: PathBuf,
-    index: RefCell<Index>,
+    /// Where the derived index lives, and whether its integrity is checked when it is first opened.
+    index_path: PathBuf,
+    verify_index: bool,
+    /// The derived index, opened on first use. Lazily, because a capture must not depend on it: the
+    /// commit and the ref come first, and an index that cannot even be opened only lags.
+    index: RefCell<Option<Index>>,
 }
 
 impl HistoryStore {
@@ -355,7 +364,9 @@ impl HistoryStore {
         Ok(Self {
             repository,
             path,
-            index: RefCell::new(Index::open(index.as_ref(), false)?),
+            index_path: index.as_ref().to_path_buf(),
+            verify_index: false,
+            index: RefCell::new(None),
         })
     }
 
@@ -408,7 +419,9 @@ impl HistoryStore {
         Ok(Some(Self {
             repository,
             path: path.to_path_buf(),
-            index: RefCell::new(Index::open(index, verify)?),
+            index_path: index.to_path_buf(),
+            verify_index: verify,
+            index: RefCell::new(None),
         }))
     }
 
@@ -419,7 +432,19 @@ impl HistoryStore {
 
     /// Bring the derived index up to date with the Segment refs.
     pub fn catch_up(&self) -> Result<(), StoreError> {
-        self.index.borrow_mut().catch_up(&self.repository)
+        self.index()?.catch_up(&self.repository)
+    }
+
+    /// The derived index, opened — and, at a daemon's start, verified — on first use.
+    fn index(&self) -> Result<RefMut<'_, Index>, StoreError> {
+        let mut slot = self.index.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Index::open(&self.index_path, self.verify_index)?);
+        }
+
+        Ok(RefMut::map(slot, |slot| {
+            slot.as_mut().expect("the index was opened just above")
+        }))
     }
 
     /// Capture the Root's current contents as a Snapshot.
@@ -517,15 +542,15 @@ impl HistoryStore {
             baseline_tree.as_ref().map(git2::Tree::id),
             tree_id,
         )
-        .map_err(self.failed("read"))?
-        .len();
+        .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
+        .map_err(|source| self.failed("read")(source).to_string());
 
         Ok(CapturedSnapshot {
             id,
             segment,
             trigger,
             unreadable: walked.unreadable,
-            changed_paths: u64::try_from(changed_paths).unwrap_or(u64::MAX),
+            changed_paths,
             index_lag: self.catch_up().err().map(|error| error.to_string()),
         })
     }
@@ -534,7 +559,7 @@ impl HistoryStore {
     pub fn timeline(&self, query: &TimelineQuery) -> Result<TimelinePage, StoreError> {
         self.catch_up()?;
 
-        let mut found = self.index.borrow().timeline(
+        let mut found = self.index()?.timeline(
             query.path.as_ref(),
             query.before,
             query.not_before,
@@ -655,8 +680,7 @@ impl HistoryStore {
         self.catch_up()?;
 
         let indexed = self
-            .index
-            .borrow()
+            .index()?
             .snapshot(snapshot)?
             .ok_or(StoreError::SnapshotNotFound(snapshot))?;
 

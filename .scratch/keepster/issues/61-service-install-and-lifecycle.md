@@ -25,3 +25,12 @@ any documented form and would have carried the same logout gap anyway.
 - [ ] `status` carries the autostart and linger rows, reading as unavailable with the logout-gap wording on macOS,
       and "service never installed" is a state distinct from "stopped"
 - [ ] The stop path drains and flushes as specified, and a kill past the timeout leaves a recoverable store
+
+## Comments
+
+- **From ticket 39's review: the startup index recovery is only safe once the single-instance lock exists.**
+  `recover_indexes` runs before the control channel is bound, with `quick_check` and, on damage or a schema
+  mismatch, a discard of `index.sqlite` and its `-wal`/`-shm`. A second daemon started beside a running one would
+  therefore unlink indexes the first holds open — the corruption vector the ordering was meant to avoid — and then
+  rebind the socket. The flock'd pid file this ticket adds must be taken *before* `recover_indexes` runs, and the
+  test for a refused second instance should assert that it touched no index.

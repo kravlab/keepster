@@ -58,6 +58,9 @@ pub(crate) async fn create(
 
     let captured =
         snapshots::capture(&root, &location, Trigger::Manual, now).map_err(capture_problem)?;
+    if let Err(reason) = &captured.changed_paths {
+        tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
+    }
     if let Some(reason) = &captured.index_lag {
         // The Snapshot is durable — git came first — so this is not the request's failure. The index
         // lags, every read catches it up, and so does the next start.
@@ -320,7 +323,7 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
-        changed_paths: captured.changed_paths,
+        changed_paths: captured.changed_paths.clone().ok(),
         change: None,
     }
 }
@@ -334,7 +337,7 @@ fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
         trigger: summary.trigger.clone(),
         incomplete: summary.omitted > 0,
         omitted: Vec::new(),
-        changed_paths: summary.changed_paths,
+        changed_paths: Some(summary.changed_paths),
         change: summary.change.map(|kind| match kind {
             ChangeKind::Added => Change::Added,
             ChangeKind::Modified => Change::Modified,

@@ -29,3 +29,12 @@ requires pruning immediately, which the exclusive per-store lock is the precondi
       capture
 - [ ] With maintenance unavailable, capture pauses at the cap instead of filling the disk, and `status` says why
 - [ ] Keepster prints the platform's install command and never runs a package manager
+
+## Comments
+
+- **From ticket 39's review: packing changes the cost of two read paths.** libgit2 cannot stream a packed object,
+  so once this ticket's maintenance packs a store, `content` reads the whole blob into memory before handing on
+  the requested range, and `entries` inflates every file whole just to test its first 8000 bytes for the binary
+  flag — `depth=infinity` would then read essentially the entire Snapshot. `entries` also opens a fresh ODB handle
+  per size lookup and per binary probe. Before packing ships: open the ODB once per listing, bound the probe for a
+  packed object (or make `binary` lazy or opt-in), and measure the `content` bound on a packed store.

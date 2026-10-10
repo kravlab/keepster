@@ -140,7 +140,11 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
     /// How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.
-    pub changed_paths: u64,
+    ///
+    /// Absent only from the answer to a capture whose count failed after the Snapshot was already
+    /// written — the Snapshot exists, and the timeline carries its count once the index has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_paths: Option<u64>,
     /// With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,

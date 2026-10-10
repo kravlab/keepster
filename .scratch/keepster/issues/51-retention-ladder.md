@@ -39,3 +39,14 @@ keep = "daily"
       overlaps a capture
 - [ ] A month of history is built through the real capture path at injected times, and the pass's effect on it is
       asserted against the real store
+
+## Comments
+
+- **From ticket 39's review: the index rebuild is all-or-nothing, and this ticket makes it routine.** The derived
+  index computes each Snapshot's changes against its predecessor in `SnapshotId` order, across Segments, so a
+  watermark that is no longer an ancestor of its Segment's tip — which every thinning produces — rebuilds the
+  whole index under the write lock (`Index::catch_up` in `keepster-store`). The same happens on every catch-up
+  after the clock steps backwards, until wall time passes the old maximum, because each new Snapshot sorts below
+  the newest indexed one. Both are correct but cost a full re-diff of the history while readers wait up to the
+  5 s busy timeout. Narrow it here: rebuild only the thinned Segment plus the first Snapshot after it, and insert
+  an out-of-order Snapshot by recomputing just its successor's rows.

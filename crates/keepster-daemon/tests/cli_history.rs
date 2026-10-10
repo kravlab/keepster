@@ -210,3 +210,32 @@ async fn cat_of_something_that_is_not_a_file_is_a_usage_error() {
         .await;
     assert_eq!(selector.exit_code, Some(2), "stderr: {}", selector.stderr);
 }
+
+#[tokio::test]
+async fn a_path_that_climbs_out_of_a_subdirectory_is_still_inside_the_root() {
+    let daemon = Harness::start().await;
+    let (_, project, _) = history(&daemon).await;
+    let inside = daemon.scratch("project/sub");
+
+    let cat = daemon
+        .run_cli_in(&inside, KEEPSTER, &["cat", "../other.txt"])
+        .await;
+    assert_eq!(cat.exit_code, Some(0), "stderr: {}", cat.stderr);
+    assert_eq!(text(cat.stdout), "third");
+
+    let log = daemon
+        .run_cli_in(&inside, KEEPSTER, &["log", "../other.txt"])
+        .await;
+    assert_eq!(log.exit_code, Some(0), "stderr: {}", log.stderr);
+    assert_eq!(text(log.stdout).lines().count(), 3, "it changed in three");
+
+    let outside = daemon
+        .run_cli_in(&project, KEEPSTER, &["cat", "../elsewhere.txt"])
+        .await;
+    assert_eq!(
+        outside.exit_code,
+        Some(4),
+        "outside every Root: {}",
+        outside.stderr
+    );
+}
