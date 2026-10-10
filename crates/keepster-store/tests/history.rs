@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::RootId;
+use keepster_core::{RootId, Trigger};
 use keepster_store::HistoryStore;
 
 #[test]
@@ -13,7 +13,8 @@ fn a_new_store_is_bare_with_file_modes_and_reflogs_off() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("history.git");
 
-    let store = HistoryStore::open(&path).expect("a new store");
+    let store =
+        HistoryStore::open(&path, directory.path().join("index.sqlite")).expect("a new store");
 
     let repository = git2::Repository::open_bare(store.path()).expect("a bare repository");
     assert!(
@@ -46,9 +47,11 @@ fn opening_a_store_twice_leaves_it_as_it_was() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("history.git");
 
-    let first = HistoryStore::open(&path).expect("a new store");
+    let first =
+        HistoryStore::open(&path, directory.path().join("index.sqlite")).expect("a new store");
     drop(first);
-    let again = HistoryStore::open(&path).expect("the same store, reopened");
+    let again = HistoryStore::open(&path, directory.path().join("index.sqlite"))
+        .expect("the same store, reopened");
 
     assert_eq!(again.path(), path);
     let repository = git2::Repository::open_bare(&path).expect("still a bare repository");
@@ -100,11 +103,15 @@ fn working_tree(directory: &Path) -> PathBuf {
 fn the_first_snapshot_of_a_segment_is_a_parentless_commit_carrying_its_identity() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let root_id = RootId::generate(at(MOMENT));
 
     let captured = store
-        .capture(root_id, &root, at(MOMENT))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
         .expect("a Snapshot");
 
     assert_eq!(
@@ -165,10 +172,19 @@ fn the_roots_own_git_directory_never_enters_history() {
     // this ticket's half.
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
 
     let captured = store
-        .capture(RootId::generate(at(MOMENT)), &root, at(MOMENT))
+        .capture(
+            RootId::generate(at(MOMENT)),
+            &root,
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("a Snapshot");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -186,15 +202,19 @@ fn the_roots_own_git_directory_never_enters_history() {
 fn a_later_snapshot_in_the_same_hour_chains_onto_the_first() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, at(MOMENT))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
         .expect("the first");
     fs::write(root.join("a.txt"), "changed").expect("an edit");
     let second = store
-        .capture(root_id, &root, at(MOMENT + 60))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
         .expect("the second");
 
     assert_eq!(
@@ -230,14 +250,18 @@ fn capturing_an_unchanged_working_tree_repeats_the_previous_tree() {
     // nearly free.
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, at(MOMENT))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
         .expect("the first");
     let second = store
-        .capture(root_id, &root, at(MOMENT + 60))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
         .expect("the second");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -268,9 +292,18 @@ fn an_executable_file_is_recorded_as_one() {
     fs::write(&script, "#!/bin/sh\n").expect("a script");
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("its mode");
 
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let captured = store
-        .capture(RootId::generate(at(MOMENT)), &root, at(MOMENT))
+        .capture(
+            RootId::generate(at(MOMENT)),
+            &root,
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("a Snapshot");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -291,15 +324,19 @@ fn a_file_removed_from_the_working_tree_leaves_the_next_snapshot() {
     // Working Tree no longer has — the silent disagreement with reality that ADR 0004 refuses.
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let root_id = RootId::generate(at(MOMENT));
 
     store
-        .capture(root_id, &root, at(MOMENT))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
         .expect("the first");
     fs::remove_file(root.join("a.txt")).expect("a deletion");
     let second = store
-        .capture(root_id, &root, at(MOMENT + 60))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
         .expect("the second");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -325,9 +362,18 @@ fn a_file_beside_a_directory_of_the_same_stem_is_captured() {
     let root = working_tree(directory.path());
     fs::write(root.join("sub.txt"), "beside").expect("a file beside the directory");
 
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let captured = store
-        .capture(RootId::generate(at(MOMENT)), &root, at(MOMENT))
+        .capture(
+            RootId::generate(at(MOMENT)),
+            &root,
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("a Snapshot");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -351,9 +397,18 @@ fn an_unreadable_file_does_not_cost_the_whole_snapshot() {
     fs::write(&unreadable, "secret").expect("a file");
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).expect("its mode");
 
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let captured = store
-        .capture(RootId::generate(at(MOMENT)), &root, at(MOMENT))
+        .capture(
+            RootId::generate(at(MOMENT)),
+            &root,
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("a Snapshot is still taken");
 
     assert_eq!(
@@ -384,18 +439,22 @@ fn the_first_snapshot_of_a_new_hour_is_still_based_on_the_previous_one() {
     // baseline crossed the boundary.
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = working_tree(directory.path());
-    let store = HistoryStore::open(directory.path().join("history.git")).expect("a store");
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, at(MOMENT))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
         .expect("the first");
     fs::set_permissions(root.join("a.txt"), fs::Permissions::from_mode(0o000))
         .expect("the file becomes unreadable");
 
     const AN_HOUR: u64 = 3_600;
     let second = store
-        .capture(root_id, &root, at(MOMENT + AN_HOUR))
+        .capture(root_id, &root, Trigger::Manual, at(MOMENT + AN_HOUR))
         .expect("the second");
 
     assert_ne!(

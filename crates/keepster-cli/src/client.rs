@@ -17,14 +17,16 @@ pub struct DaemonClient {
     control_path: PathBuf,
 }
 
-/// What the daemon answered: the status line's code and the whole body.
+/// What the daemon answered: the status line's code, its headers and the whole body.
 ///
-/// Bodies here are small (`status`, `version`); the endpoints that stream or serve file content get
-/// their own path in the tickets that add them.
+/// Bodies here are small JSON documents; a version's content, which may be any size, is written
+/// through [`DaemonClient::get_to`] instead of being held here.
 #[derive(Debug, Clone)]
 pub struct Response {
     /// The HTTP status, the coarse layer of the error model (ticket 07).
     pub status: StatusCode,
+    /// The response headers, for the few answers whose meaning lives there — `ETag`, `Content-Range`.
+    pub headers: hyper::HeaderMap,
     /// The response body, unparsed, so a caller can pass it through verbatim.
     pub body: Vec<u8>,
 }
@@ -48,6 +50,9 @@ pub enum ClientError {
     /// The request could not be constructed, which is a programming error in the CLI.
     #[error("malformed request: {0}")]
     Request(#[from] hyper::http::Error),
+    /// The answer arrived but could not be written out, such as to a closed pipe.
+    #[error("the answer could not be written: {0}")]
+    Output(#[source] std::io::Error),
 }
 
 impl DaemonClient {
@@ -60,22 +65,69 @@ impl DaemonClient {
 
     /// Perform a `GET` against the daemon.
     pub async fn get(&self, path: &str) -> Result<Response, ClientError> {
-        self.send("GET", path, None).await
+        self.send("GET", path, None, &[]).await
+    }
+
+    /// Perform a `GET` with extra request headers, such as `Range`.
+    pub async fn get_with(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<Response, ClientError> {
+        self.send("GET", path, None, headers).await
+    }
+
+    /// Perform a `GET` and write a successful body to `out` as it arrives, a frame at a time.
+    ///
+    /// For a version's content, whose size is the file's: holding it whole would bound `keepster cat`
+    /// by memory. A refusal's body is small and is returned in the [`Response`] instead, so the caller
+    /// can read the Problem it carries; a successful one is returned empty.
+    pub async fn get_to(
+        &self,
+        path: &str,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> Result<Response, ClientError> {
+        let response = self.exchange("GET", path, None, &[]).await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mut body = response.into_body();
+
+        if !status.is_success() {
+            let body = body.collect().await?.to_bytes().to_vec();
+            return Ok(Response {
+                status,
+                headers,
+                body,
+            });
+        }
+
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame?.into_data() {
+                out.write_all(&data).map_err(ClientError::Output)?;
+            }
+        }
+        out.flush().map_err(ClientError::Output)?;
+
+        Ok(Response {
+            status,
+            headers,
+            body: Vec::new(),
+        })
     }
 
     /// Perform a `POST` of a JSON body against the daemon.
     pub async fn post(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
-        self.send("POST", path, Some(body)).await
+        self.send("POST", path, Some(body), &[]).await
     }
 
     /// Perform a `PATCH` of a JSON body against the daemon.
     pub async fn patch(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
-        self.send("PATCH", path, Some(body)).await
+        self.send("PATCH", path, Some(body), &[]).await
     }
 
     /// Perform a `DELETE` against the daemon.
     pub async fn delete(&self, path: &str) -> Result<Response, ClientError> {
-        self.send("DELETE", path, None).await
+        self.send("DELETE", path, None, &[]).await
     }
 
     async fn send(
@@ -83,7 +135,27 @@ impl DaemonClient {
         method: &str,
         path: &str,
         body: Option<&[u8]>,
+        headers: &[(&str, &str)],
     ) -> Result<Response, ClientError> {
+        let response = self.exchange(method, path, body, headers).await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.into_body().collect().await?.to_bytes().to_vec();
+
+        Ok(Response {
+            status,
+            headers,
+            body,
+        })
+    }
+
+    async fn exchange(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        headers: &[(&str, &str)],
+    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError> {
         let stream = connect(&self.control_path).await?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
@@ -102,13 +174,12 @@ impl DaemonClient {
         if body.is_some() {
             request = request.header(hyper::header::CONTENT_TYPE, "application/json");
         }
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
         let request = request.body(Full::new(Bytes::copy_from_slice(body.unwrap_or_default())))?;
 
-        let response = sender.send_request(request).await?;
-        let status = response.status();
-        let body = response.into_body().collect().await?.to_bytes().to_vec();
-
-        Ok(Response { status, body })
+        Ok(sender.send_request(request).await?)
     }
 }
 

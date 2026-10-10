@@ -113,27 +113,101 @@ pub struct RegisterRoot {
     pub path: String,
 }
 
-/// A Snapshot, as the API serves it.
+/// A Snapshot, as the API serves it — from a capture and from the timeline alike.
 ///
-/// Ticket 39 widens this with what the timeline needs — the Trigger that fired, the incomplete flag,
-/// the changed-path count — each of which arrives with the behaviour that can determine it. Adding a
-/// field is an additive change inside `/v1`.
+/// One shape for both, so a client renders the Snapshot it just took with the same code as the ones it
+/// pages through. Adding a field is an additive change inside `/v1`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The Snapshot's stable identity, which outlives the commit that holds it.
     pub id: String,
     /// The Segment it belongs to, named for the period it falls in.
     pub segment: String,
-    /// When it was taken, in UTC, as RFC 3339.
+    /// When it was taken, in UTC, as RFC 3339, to the millisecond its identity carries.
     pub taken_at: String,
+    /// The Trigger that caused it: `manual` for one a person or a script asked for. The set grows
+    /// inside `/v1` as Triggers are added, so a client must accept a name it does not know.
+    pub trigger: String,
     /// Whether some file that was meant to be captured could not be read.
     ///
     /// A Snapshot is taken anyway — an honest partial Snapshot beats no Snapshot (ticket 05) — so every
-    /// shape that returns one has to be able to say that it is not whole, and to name what it omitted.
+    /// shape that returns one has to be able to say that it is not whole.
     pub incomplete: bool,
     /// The paths that could not be read, each one the reason this Snapshot is incomplete.
+    ///
+    /// Named by the answer to a capture. The timeline carries the flag but not the list, which ticket
+    /// 48 makes a record of the Snapshot itself and `entries` the place to read it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
+    /// How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.
+    pub changed_paths: u64,
+    /// With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<Change>,
+}
+
+/// How one path differs between a Snapshot and the Snapshot before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Change {
+    /// The path holds content here and held none before.
+    Added,
+    /// Its content or its mode differs from before.
+    Modified,
+    /// It held content before and holds none here.
+    Deleted,
+}
+
+/// One page of a Root's chronology, as `GET /v1/roots/{id}/snapshots` serves it.
+///
+/// Newest first, and paged by cursor rather than offset: the list grows at one end and erodes at the
+/// other, so an offset would shift under the reader in both directions (ticket 07).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timeline {
+    /// The Snapshots on this page, newest first.
+    pub snapshots: Vec<Snapshot>,
+    /// The `cursor` that fetches the next, older page; absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// The paths a Snapshot holds under a directory, as `…/entries` serves them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entries {
+    /// One per path, in byte order of the path.
+    pub entries: Vec<Entry>,
+}
+
+/// One path a Snapshot holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    /// Where it is, relative to the Root, `/`-separated.
+    pub path: String,
+    /// What it is.
+    pub kind: EntryKind,
+    /// Its size in bytes. Absent for a directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Its permission bits, as a number (`420` is `0o644`). Absent where nothing is recorded; until
+    /// ticket 50 a file carries only the executable bit's distinction, `0o644` or `0o755`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    /// Whether the content is binary by git's rule. A display flag only: binary files are stored as
+    /// they are (ticket 10). Absent for anything but a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<bool>,
+}
+
+/// What kind of thing a Snapshot holds at a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Dir,
+    /// A symbolic link, held as a link.
+    Symlink,
 }
 
 /// A failure, in the one shape every endpoint uses.

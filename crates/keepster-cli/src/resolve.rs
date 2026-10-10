@@ -63,7 +63,7 @@ async fn by_selector(client: &DaemonClient, selector: &str) -> Result<Root, u8> 
     }
 }
 
-async fn by_path(client: &DaemonClient, path: &str) -> Result<Root, u8> {
+pub(crate) async fn by_path(client: &DaemonClient, path: &str) -> Result<Root, u8> {
     let absolute = std::path::absolute(path).map_err(|error| {
         eprintln!("keepster: {path} could not be resolved: {error}");
         exit::OTHER

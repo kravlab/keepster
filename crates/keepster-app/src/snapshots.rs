@@ -1,16 +1,25 @@
-//! Taking a Snapshot of a Watched Root.
+//! Taking a Snapshot of a Watched Root, and reading its history back.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::RootId;
-use keepster_store::{CapturedSnapshot, HistoryStore, RegistryError, RootRecord, StoreError};
+use keepster_core::{RootId, RootPath, SnapshotId, Trigger};
+use keepster_store::{
+    CapturedSnapshot, Depth, Entry, HistoryStore, RegistryError, RootRecord, StoreError,
+    TimelinePage, TimelineQuery,
+};
 
 /// The directory inside a Root's own directory that holds its History Store.
 ///
 /// A name of its own rather than the Root directory itself, so that the Registry's record, the derived
-/// index of ticket 39 and the store each have a place and none has to be told apart from the others.
+/// index and the store each have a place and none has to be told apart from the others.
 const STORE_DIRECTORY: &str = "history.git";
+
+/// The file inside a Root's own directory that holds its derived index.
+///
+/// Beside the store rather than inside it: nothing but SQLite may ever open this file (ticket 03), and
+/// a file inside a git directory is one a git command might be pointed at.
+const INDEX_FILE: &str = "index.sqlite";
 
 /// Why a Snapshot could not be taken.
 #[derive(Debug, thiserror::Error)]
@@ -44,9 +53,21 @@ pub enum CaptureError {
     Store(#[from] StoreError),
 }
 
+/// Where one Root's history lives: its History Store and the derived index beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreLocation {
+    /// The History Store, a bare git repository.
+    pub store: PathBuf,
+    /// The derived index, a SQLite database that may be deleted at any time.
+    pub index: PathBuf,
+}
+
 /// Where one Root's history lives, given the directory the Registry keeps it in.
-pub fn store_path(root_dir: &Path) -> PathBuf {
-    root_dir.join(STORE_DIRECTORY)
+pub fn location(root_dir: &Path) -> StoreLocation {
+    StoreLocation {
+        store: root_dir.join(STORE_DIRECTORY),
+        index: root_dir.join(INDEX_FILE),
+    }
 }
 
 /// Capture the Root's current contents.
@@ -61,7 +82,8 @@ pub fn store_path(root_dir: &Path) -> PathBuf {
 /// racing would leave one of them unreferenced in any case (ticket 06).
 pub fn capture(
     root: &RootRecord,
-    store_path: &Path,
+    location: &StoreLocation,
+    trigger: Trigger,
     now: SystemTime,
 ) -> Result<CapturedSnapshot, CaptureError> {
     if !root.path.is_dir() {
@@ -70,7 +92,51 @@ pub fn capture(
         });
     }
 
-    let store = HistoryStore::open(store_path)?;
+    let store = HistoryStore::open(&location.store, &location.index)?;
 
-    Ok(store.capture(root.id, &root.path, now)?)
+    Ok(store.capture(root.id, &root.path, trigger, now)?)
+}
+
+/// Bring a Root's derived index up to date, rebuilding it if it is damaged or missing.
+///
+/// What the daemon does for every Root at start: a daemon killed between a ref update and an index
+/// write left the index lagging, and the watermark repairs it here (ticket 03). A Root with no history
+/// yet has nothing to catch up.
+pub fn recover(location: &StoreLocation) -> Result<(), StoreError> {
+    HistoryStore::recover(&location.store, &location.index).map(|_| ())
+}
+
+/// Open a Root's history for reading, or `None` if nothing was ever captured into it.
+pub fn open_for_reading(location: &StoreLocation) -> Result<Option<HistoryStore>, StoreError> {
+    HistoryStore::open_existing(&location.store, &location.index)
+}
+
+/// One page of a Root's chronology, newest first.
+///
+/// A Root never captured has an empty chronology rather than a missing one: the question has an
+/// answer, and the answer is "nothing yet".
+pub fn timeline(
+    location: &StoreLocation,
+    query: &TimelineQuery,
+) -> Result<TimelinePage, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.timeline(query),
+        None => Ok(TimelinePage {
+            snapshots: Vec::new(),
+            more: false,
+        }),
+    }
+}
+
+/// The paths one Snapshot holds under a directory.
+pub fn entries(
+    location: &StoreLocation,
+    snapshot: SnapshotId,
+    directory: &RootPath,
+    depth: Depth,
+) -> Result<Vec<Entry>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.entries(snapshot, directory, depth),
+        None => Err(StoreError::SnapshotNotFound(snapshot)),
+    }
 }

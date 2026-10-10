@@ -76,7 +76,7 @@ fn accepted(answer: Result<Response, ClientError>) -> Result<(), u8> {
 /// A transport failure, a refusal carrying a Problem Details body, and a success are three different
 /// outcomes with three different exit codes (ticket 07), and every command needs exactly this — so it
 /// lives once.
-fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, u8> {
+pub(crate) fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, u8> {
     let response = match answer {
         Ok(response) => response,
         Err(error) => {
@@ -84,7 +84,9 @@ fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, u8> {
 
             return Err(match error {
                 ClientError::Unreachable { .. } => exit::DAEMON_UNREACHABLE,
-                ClientError::Exchange(_) | ClientError::Request(_) => exit::OTHER,
+                ClientError::Exchange(_) | ClientError::Request(_) | ClientError::Output(_) => {
+                    exit::OTHER
+                }
             });
         }
     };
@@ -111,9 +113,14 @@ fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, u8> {
 /// grows inside `/v1`.
 fn exit_code_for(problem: Option<&Problem>, status: u16) -> u8 {
     match problem.map(|problem| problem.code.as_str()) {
-        Some("root_not_found") => exit::NOT_FOUND,
+        Some("root_not_found" | "snapshot_not_found" | "path_not_found") => exit::NOT_FOUND,
         Some("root_overlaps" | "store_too_new") => exit::STATE_CONFLICT,
-        Some("path_invalid") => exit::USAGE,
+        // Asking for the content of a directory, or the entries of a file, is a mistake in what was
+        // asked rather than a state anything is in.
+        Some(
+            "path_invalid" | "limit_invalid" | "cursor_invalid" | "moment_invalid"
+            | "depth_invalid" | "not_a_file" | "not_a_directory",
+        ) => exit::USAGE,
         _ => match status {
             404 => exit::NOT_FOUND,
             409 => exit::STATE_CONFLICT,

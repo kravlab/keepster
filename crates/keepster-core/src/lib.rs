@@ -5,11 +5,13 @@
 //! — be tested without a disk and replayed without a daemon.
 
 mod identity;
+mod path;
 mod root;
 mod segment;
 mod snapshot;
 
 pub use identity::NotAnIdentity;
+pub use path::{InvalidPath, RootPath};
 pub use root::{RootId, containing, overlapping};
 pub use segment::{SegmentName, UnnameableMoment};
-pub use snapshot::SnapshotId;
+pub use snapshot::{ChangeKind, SnapshotId, Trigger};

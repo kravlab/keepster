@@ -37,7 +37,11 @@ fn root(id: &str, state: RootState) -> Root {
 }
 
 fn answered(status: StatusCode, body: Vec<u8>) -> Result<Response, ClientError> {
-    Ok(Response { status, body })
+    Ok(Response {
+        status,
+        headers: Default::default(),
+        body,
+    })
 }
 
 fn served(status: &Status) -> Result<Response, ClientError> {

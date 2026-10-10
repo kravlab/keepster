@@ -44,6 +44,59 @@ pub enum Command {
 
     /// Capture the Root's current contents now.
     Snapshot(SnapshotArgs),
+
+    /// List a Root's Snapshots, newest first — or the ones that changed a path.
+    Log(LogArgs),
+
+    /// Write one captured version of a file to standard output.
+    Cat(CatArgs),
+}
+
+/// Options of `keepster log`.
+#[derive(Debug, Args)]
+pub struct LogArgs {
+    /// Only the Snapshots that changed this file. It also decides the Root, unless `--root` does.
+    pub path: Option<PathBuf>,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the path, or the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Show at most this many Snapshots.
+    #[arg(short = 'n', long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Only Snapshots taken at or before this moment: a timestamp, a local date and time, or a
+    /// duration ago such as `2h`.
+    #[arg(long, value_name = "WHEN")]
+    pub before: Option<String>,
+
+    /// Only Snapshots taken after this moment, in the same forms as `--before`.
+    #[arg(long, value_name = "WHEN")]
+    pub after: Option<String>,
+
+    /// Print the Snapshots as one JSON array of the daemon's own items.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `keepster cat`.
+#[derive(Debug, Args)]
+pub struct CatArgs {
+    /// The file, as a path on this machine; it need not exist any more.
+    pub path: PathBuf,
+
+    /// Which Snapshot: `latest` (the default), `~N` for N Snapshots before it, a Snapshot's full
+    /// identity, a timestamp or local date and time, or a duration ago such as `2h` — the last two
+    /// meaning the Snapshot current at that moment.
+    #[arg(short = 's', long, value_name = "SELECTOR")]
+    pub snapshot: Option<String>,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the file.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
 }
 
 /// Options of `keepster snapshot`.

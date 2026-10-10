@@ -104,6 +104,15 @@ impl Harness {
             .unwrap_or_else(|error| panic!("GET {path} failed: {error}"))
     }
 
+    /// `GET` the given path with extra request headers, failing the test if the daemon could not be
+    /// reached.
+    pub async fn get_with(&self, path: &str, headers: &[(&str, &str)]) -> Response {
+        self.client
+            .get_with(path, headers)
+            .await
+            .unwrap_or_else(|error| panic!("GET {path} failed: {error}"))
+    }
+
     /// `POST` JSON to the given path, failing the test if the daemon could not be reached.
     pub async fn post(&self, path: &str, body: &serde_json::Value) -> Response {
         self.client

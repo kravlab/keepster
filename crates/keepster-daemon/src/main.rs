@@ -39,6 +39,8 @@ async fn main() -> ExitCode {
         Command::Unwatch(args) => keepster_cli::unwatch(args, &control_path).await,
         Command::Move(args) => keepster_cli::move_root(args, &control_path).await,
         Command::Snapshot(args) => keepster_cli::snapshot(args, &control_path).await,
+        Command::Log(args) => keepster_cli::log(args, &control_path, now()).await,
+        Command::Cat(args) => keepster_cli::cat(args, &control_path, now()).await,
     };
 
     ExitCode::from(code)
@@ -74,4 +76,16 @@ async fn run_daemon(control_path: PathBuf, store_base: PathBuf) -> u8 {
             exit::OTHER
         }
     }
+}
+
+/// The moment a selector such as `2h` is counted back from.
+///
+/// Read here rather than in `keepster-cli`, because this crate is the one place allowed to read the
+/// clock (ADR 0012); the CLI takes the moment as a parameter like everything else below it.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "ADR 0012: the daemon crate is where a moment enters, and the CLI is linked from it"
+)]
+fn now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
 }

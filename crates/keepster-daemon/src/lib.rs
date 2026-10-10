@@ -5,6 +5,7 @@
 //! pipe on Windows — and, from ticket 60, on a loopback listener for the browser. Everything below
 //! this crate takes the time it needs as a parameter.
 
+mod content;
 mod problem;
 mod roots;
 mod snapshots;
@@ -79,6 +80,12 @@ impl Drop for RunningDaemon {
 /// immediately without polling for readiness.
 pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     let registry = Registry::open(&config.store_base).map_err(io::Error::other)?;
+    let registry = tokio::task::spawn_blocking(move || {
+        recover_indexes(&registry);
+        registry
+    })
+    .await
+    .map_err(io::Error::other)?;
     let listener = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
     let task = tokio::spawn(serve(listener, router(DaemonState::new(registry)), stop));
@@ -88,6 +95,31 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         shutdown: Some(shutdown),
         task,
     })
+}
+
+/// Bring every Root's derived index up to date before anything is served.
+///
+/// This is where a daemon killed between a ref update and an index write is repaired: the watermark
+/// shows how far the index got, and the gap is indexed by the same code that rebuilds a deleted index
+/// (ticket 03). It runs before the control channel exists, so no request can hold the index open while
+/// a damaged one is discarded — deleting a database another connection holds is itself a corruption
+/// vector. A Root whose history cannot be recovered is reported and passed over: its reads will say
+/// why, and one Root must not keep the daemon from serving the others.
+fn recover_indexes(registry: &Registry) {
+    let records = match registry.readable() {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(%error, "the Registry could not be read to recover history indexes");
+            return;
+        }
+    };
+
+    for record in records {
+        let location = keepster_app::snapshots::location(&registry.root_dir(record.id));
+        if let Err(error) = keepster_app::snapshots::recover(&location) {
+            tracing::warn!(root = %record.id, %error, "the history index could not be recovered");
+        }
+    }
 }
 
 /// What this build tells a client about itself.
@@ -173,7 +205,15 @@ fn router(state: DaemonState) -> Router {
         .route("/v1/roots", get(roots::list).post(roots::register))
         .route(
             "/v1/roots/{id}/snapshots",
-            axum::routing::post(snapshots::create),
+            get(snapshots::list).post(snapshots::create),
+        )
+        .route(
+            "/v1/roots/{id}/snapshots/{snapshot}/entries",
+            get(snapshots::entries),
+        )
+        .route(
+            "/v1/roots/{id}/snapshots/{snapshot}/content",
+            get(snapshots::content),
         )
         .route(
             "/v1/roots/{id}",

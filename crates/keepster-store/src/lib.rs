@@ -5,7 +5,11 @@
 //! use-case above it can write them in the wrong order.
 
 mod history;
+mod index;
 mod registry;
 
-pub use history::{CapturedSnapshot, HistoryStore, StoreError};
+pub use history::{
+    CapturedSnapshot, Content, Depth, Entry, EntryKind, HistoryStore, SnapshotSummary, StoreError,
+    TimelinePage, TimelineQuery,
+};
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

@@ -6,14 +6,19 @@
 
 pub mod client;
 pub mod command;
+pub mod history;
 pub mod render;
 pub mod resolve;
 pub mod roots;
+pub mod selector;
 pub mod snapshots;
 pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
-pub use command::{Cli, Command, MoveArgs, SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs};
+pub use command::{
+    CatArgs, Cli, Command, LogArgs, MoveArgs, SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs,
+};
+pub use history::{cat, log};
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
 pub use roots::{move_root, roots, unwatch, watch};
