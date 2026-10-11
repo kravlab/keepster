@@ -1,4 +1,4 @@
-//! What changed between two versions of a Root, computed where both are (ticket 46): two Snapshots, or a
+//! What changed from a Snapshot to another, computed where both are (ticket 46): two Snapshots, or a
 //! Snapshot and the Working Tree as the next Snapshot would hold it.
 
 use std::fs;
@@ -11,6 +11,7 @@ use keepster_core::{
 };
 use keepster_store::{
     DIFF_MAX_SIZE, DiffTarget, FileChange, FileDiff, HistoryStore, LineKind, StoreError,
+    WithheldReason,
 };
 
 /// A fixed moment, 2026-09-30T14:37:05Z; each Snapshot is a minute after the one before.
@@ -83,11 +84,15 @@ impl Fixture {
     }
 
     fn summary(&self, from: SnapshotId, to: &DiffTarget<'_>) -> Vec<FileDiff> {
-        self.store.diff(from, to, None).expect("a diff")
+        self.store.diff(from, to, None).expect("a diff").files
     }
 
     fn file(&self, from: SnapshotId, to: &DiffTarget<'_>, path: &str) -> FileDiff {
-        let mut files = self.store.diff(from, to, Some(&rp(path))).expect("a diff");
+        let mut files = self
+            .store
+            .diff(from, to, Some(&rp(path)))
+            .expect("a diff")
+            .files;
         assert_eq!(
             files.len(),
             1,
@@ -402,4 +407,106 @@ fn a_directory_is_not_a_file_to_diff() {
         .diff(before, &DiffTarget::Snapshot(after), Some(&rp("sub")));
 
     assert!(matches!(answer, Err(StoreError::NotAFile(_))), "{answer:?}");
+}
+
+#[test]
+fn a_file_the_next_snapshot_would_withhold_is_not_reported_as_simply_deleted() {
+    let mut fixture = fixture();
+    fixture.write("grows.bin", b"small for now");
+    let before = fixture.take();
+    fixture.policy = CapturePolicy::new(RuleSet::default(), RuleSet::default(), 16, Vec::new());
+    fixture.write("grows.bin", b"now well past a sixteen-byte cap");
+
+    let working = fixture.working();
+    let file = fixture.file(before, &working, "grows.bin");
+
+    assert_eq!(file.change, Some(FileChange::Deleted));
+    assert_eq!(
+        file.withheld,
+        Some(WithheldReason::TooLarge),
+        "it is still there, only not held"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_change_of_mode_alone_says_which_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    fixture.write("run.sh", b"echo hi\n");
+    let before = fixture.take();
+    fs::set_permissions(
+        fixture.root.join("run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("made executable");
+    let after = fixture.take();
+
+    let file = fixture.file(before, &DiffTarget::Snapshot(after), "run.sh");
+
+    assert_eq!(file.change, Some(FileChange::Modified));
+    assert_eq!((file.old_mode, file.new_mode), (Some(0o644), Some(0o755)));
+    assert!(file.hunks.is_empty());
+}
+
+#[test]
+fn a_file_too_large_to_diff_is_still_found_when_moved_unchanged() {
+    let mut fixture = fixture();
+    let size = usize::try_from(DIFF_MAX_SIZE).expect("a size") + 1;
+    fixture.write("big.log", &b"z".repeat(size));
+    fixture.write("small.txt", &b"a line that stays the same\n".repeat(10));
+    let before = fixture.take();
+    fs::rename(fixture.root.join("big.log"), fixture.root.join("moved.log")).expect("moved");
+    let mut small = b"a line that stays the same\n".repeat(10);
+    small.extend_from_slice(b"and one more\n");
+    fixture.remove("small.txt");
+    fixture.write("renamed.txt", &small);
+    let after = fixture.take();
+
+    let summary = fixture.summary(before, &DiffTarget::Snapshot(after));
+
+    let big = summary
+        .iter()
+        .find(|file| file.path.as_str() == "moved.log")
+        .expect("the large file");
+    assert_eq!(big.change, Some(FileChange::Renamed));
+    assert!(big.too_large);
+    // With a candidate too large to read, renames are found by identical content only, so the edited
+    // small file is a deletion and an addition — never a 100 MiB read to find out.
+    assert!(
+        summary
+            .iter()
+            .any(|file| file.path.as_str() == "renamed.txt"
+                && file.change == Some(FileChange::Added)),
+        "{summary:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_working_file_that_cannot_be_read_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    fixture.write("locked.txt", b"readable at first\n");
+    let before = fixture.take();
+    fixture.write("locked.txt", b"changed, then locked\n");
+    fs::set_permissions(
+        fixture.root.join("locked.txt"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .expect("made unreadable");
+
+    let comparison = fixture
+        .store
+        .diff(before, &fixture.working(), None)
+        .expect("a diff");
+
+    assert_eq!(comparison.unreadable, [fixture.root.join("locked.txt")]);
+    assert!(
+        comparison.files.is_empty(),
+        "its last content is kept, as a capture keeps it: {:?}",
+        comparison.files
+    );
 }

@@ -338,9 +338,13 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
-/// What changed between two versions of a Root — the answer of `GET /v1/roots/{id}/diff` (ticket 46).
+/// The `to` of a diff that names the Working Tree rather than a Snapshot.
+pub const WORKING_TREE: &str = "working";
+
+/// What changed from a Snapshot to another Snapshot or the Working Tree — the answer of
+/// `GET /v1/roots/{id}/diff` (ticket 46).
 ///
-/// Computed by the daemon, which holds both versions, so binary detection, rename detection and the size
+/// Computed by the daemon, which holds both sides, so binary detection, rename detection and the size
 /// past which no hunks are computed are decided once and every client shows the same lines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -353,6 +357,10 @@ pub struct Diff {
     /// Without `path`, every changed file in path order and without hunks; with it, that one file with
     /// its hunks.
     pub files: Vec<DiffFile>,
+    /// Working Tree files that could not be read. Each keeps its last captured content, as a capture
+    /// keeps it, so the comparison is not whole there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<String>,
 }
 
 /// One file's part of a diff.
@@ -372,12 +380,23 @@ pub struct DiffFile {
     /// Whether either version is larger than the daemon diffs, 8 MiB: no hunks are computed for it, and
     /// it is not probed for being binary.
     pub too_large: bool,
+    /// Why the next Snapshot would not hold a file that is still in the Working Tree — `too_large` in
+    /// this version — which is why it reads as deleted, and is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<String>,
+    /// The file's mode on the older side, `0o644` or `0o755` as `entries` gives it — present, with
+    /// `new_mode`, when the mode is what changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_mode: Option<u32>,
+    /// The file's mode on the newer side, when it differs from `old_mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_mode: Option<u32>,
     /// The changed lines with their context. Empty in a summary, and for a binary or too large file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hunks: Vec<DiffHunk>,
 }
 
-/// How a file changed between two versions.
+/// How a file changed between the two sides of a diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]

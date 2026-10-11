@@ -323,14 +323,14 @@ pub async fn cat(args: &CatArgs, control_path: &Path, now: SystemTime) -> u8 {
         return exit::USAGE;
     };
 
-    let selected = match selector::parse(args.snapshot.as_deref().unwrap_or("latest"), now) {
-        Ok(selected) => selected,
-        Err(message) => {
-            eprintln!("keepster: {message}");
-            return exit::USAGE;
-        }
-    };
-    let snapshot = match resolve_snapshot(&client, &root, &selected).await {
+    let snapshot = match selected(
+        &client,
+        &root,
+        args.snapshot.as_deref().unwrap_or("latest"),
+        now,
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
@@ -356,8 +356,24 @@ pub async fn cat(args: &CatArgs, control_path: &Path, now: SystemTime) -> u8 {
     }
 }
 
+/// The Snapshot a selector as a person typed it names — `latest`, `~N`, an identity, a moment or a
+/// duration ago — as its identity.
+pub(crate) async fn selected(
+    client: &DaemonClient,
+    root: &Root,
+    typed: &str,
+    now: SystemTime,
+) -> Result<String, u8> {
+    let parsed = selector::parse(typed, now).map_err(|message| {
+        eprintln!("keepster: {message}");
+        exit::USAGE
+    })?;
+
+    resolve_snapshot(client, root, &parsed).await
+}
+
 /// Reduce a selector to one Snapshot's identity through ordinary timeline queries.
-pub(crate) async fn resolve_snapshot(
+async fn resolve_snapshot(
     client: &DaemonClient,
     root: &Root,
     selected: &Selector,

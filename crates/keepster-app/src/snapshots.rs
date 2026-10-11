@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId};
 use keepster_store::{
-    CaptureRequest, Depth, DiffTarget, Entry, FileDiff, HistoryStore, Pass, RegistryError,
+    CaptureRequest, Comparison, Depth, DiffTarget, Entry, HistoryStore, Pass, RegistryError,
     RootRecord, StoreError, TimelinePage, TimelineQuery,
 };
 
@@ -156,7 +156,7 @@ pub fn diff(
     from: SnapshotId,
     to: &DiffTarget<'_>,
     path: Option<&RootPath>,
-) -> Result<Vec<FileDiff>, StoreError> {
+) -> Result<Comparison, StoreError> {
     match open_for_reading(location)? {
         Some(store) => store.diff(from, to, path),
         None => Err(StoreError::SnapshotNotFound(from)),

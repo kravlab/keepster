@@ -1,21 +1,24 @@
-//! What changed between two versions of a Root, computed where both versions are (ticket 46).
+//! What changed from a Snapshot to another Snapshot or the Working Tree, computed where both sides
+//! are (ticket 46).
 //!
 //! The daemon holds both sides, so binary detection, rename detection and the size past which no hunks
 //! are computed are decided here once, and every client shows the same answer.
 
+use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use keepster_core::{CapturePolicy, RootPath, SegmentName, SnapshotId};
 
-use super::{HistoryStore, SEGMENT_REFS, StoreError};
+use super::{HistoryStore, SEGMENT_REFS, StoreError, WithheldReason};
 
 /// The size past which a file's versions are not compared line by line: 8 MiB, either side.
 ///
-/// libgit2 inflates a blob whole to diff it, so this bounds the daemon's memory per request; it is
-/// generous enough for a 60,000-line source file, the size ticket 09 found the web UI's editor still
-/// renders smoothly. A larger file is reported as too large, never as a nonsense diff.
+/// libgit2 inflates a blob whole to diff it, so this bounds the daemon's memory per file compared — a
+/// whole patch of many files is as large as their patches together; it is generous enough for a
+/// 60,000-line source file, the size ticket 09 found the web UI's editor still renders smoothly. A
+/// larger file is reported as too large, never as a nonsense diff.
 pub const DIFF_MAX_SIZE: u64 = 8 * 1024 * 1024;
 
 /// What a Snapshot is compared with.
@@ -48,6 +51,16 @@ pub enum FileChange {
     Renamed,
 }
 
+/// A diff: the files, and — when the newer side is the Working Tree — what of it could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comparison {
+    /// Every changed file in path order, or the one asked for.
+    pub files: Vec<FileDiff>,
+    /// Working Tree files that could not be read, which keep their last content as a capture keeps
+    /// it: the comparison is not whole, and says where.
+    pub unreadable: Vec<PathBuf>,
+}
+
 /// One file's part of a diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
@@ -61,6 +74,13 @@ pub struct FileDiff {
     pub binary: bool,
     /// Whether either version is larger than [`DIFF_MAX_SIZE`].
     pub too_large: bool,
+    /// Why the next Snapshot would not hold a file that is still in the Working Tree — which is why it
+    /// reads as deleted, and is not (ADR 0009).
+    pub withheld: Option<WithheldReason>,
+    /// The file's mode on each side, `0o644` or `0o755`, when that is what changed between them.
+    pub old_mode: Option<u32>,
+    /// See [`FileDiff::old_mode`].
+    pub new_mode: Option<u32>,
     /// The changed lines, in order; empty in a summary, and for a binary or too large file.
     pub hunks: Vec<Hunk>,
 }
@@ -107,6 +127,23 @@ struct Compared<'store> {
     diff: git2::Diff<'store>,
     from: git2::Tree<'store>,
     to: git2::Tree<'store>,
+    /// What the walk of the Working Tree found it could not hold, when it is the newer side.
+    working: Working,
+}
+
+/// What a walk of the Working Tree left out of the tree it built.
+#[derive(Default)]
+struct Working {
+    withheld: HashMap<RootPath, WithheldReason>,
+    unreadable: Vec<PathBuf>,
+}
+
+/// Which deltas a request is about.
+enum Selection {
+    /// These, in this order.
+    Deltas(Vec<usize>),
+    /// A path no delta names, which is a file on one side or the other.
+    Unchanged(FileDiff),
 }
 
 impl HistoryStore {
@@ -121,24 +158,24 @@ impl HistoryStore {
         from: SnapshotId,
         to: &DiffTarget<'_>,
         path: Option<&RootPath>,
-    ) -> Result<Vec<FileDiff>, StoreError> {
+    ) -> Result<Comparison, StoreError> {
         let compared = self.compared(from, to)?;
-
-        match path {
-            None => compared
-                .in_path_order()
+        let files = match self.select(&compared, path)? {
+            Selection::Deltas(positions) => positions
                 .into_iter()
-                .map(|position| self.file_diff(&compared.diff, position, false))
-                .collect(),
-            Some(path) => match compared.position_of(path) {
-                Some(position) => Ok(vec![self.file_diff(&compared.diff, position, true)?]),
-                None => Ok(vec![self.unchanged(&compared, path)?]),
-            },
-        }
+                .map(|position| self.file_diff(&compared, position, path.is_some()))
+                .collect::<Result<_, _>>()?,
+            Selection::Unchanged(file) => vec![file],
+        };
+
+        Ok(Comparison {
+            files,
+            unreadable: compared.working.unreadable,
+        })
     }
 
     /// The same comparison as [`HistoryStore::diff`], as the unified patch git prints — every changed
-    /// file's, or the one `path` names.
+    /// file's, or the one `path` names; empty for a path that did not change.
     ///
     /// A client that wants the text never reassembles it from hunks, so the bytes are the same for every
     /// client. A file too large to diff gets a line saying so where its hunks would be.
@@ -149,21 +186,13 @@ impl HistoryStore {
         path: Option<&RootPath>,
     ) -> Result<Vec<u8>, StoreError> {
         let compared = self.compared(from, to)?;
-        let positions = match path {
-            None => compared.in_path_order(),
-            Some(path) => match compared.position_of(path) {
-                Some(position) => vec![position],
-                // Unchanged: an empty patch — once the path is known to exist at all.
-                None => {
-                    self.unchanged(&compared, path)?;
-                    Vec::new()
-                }
-            },
+        let Selection::Deltas(positions) = self.select(&compared, path)? else {
+            return Ok(Vec::new());
         };
 
         let mut text = Vec::new();
         for position in positions {
-            let described = self.file_diff(&compared.diff, position, false)?;
+            let described = self.file_diff(&compared, position, false)?;
             if described.too_large {
                 let (old, new) = sides(&described);
                 let _ = writeln!(text, "diff --git a/{old} b/{new}");
@@ -181,11 +210,27 @@ impl HistoryStore {
         Ok(text)
     }
 
+    /// The deltas `path` is about: every one, in path order, without it; the one that names it with it —
+    /// or, when none does, the file it names, unchanged.
+    fn select(
+        &self,
+        compared: &Compared<'_>,
+        path: Option<&RootPath>,
+    ) -> Result<Selection, StoreError> {
+        Ok(match path {
+            None => Selection::Deltas(compared.in_path_order()),
+            Some(path) => match compared.position_of(path) {
+                Some(position) => Selection::Deltas(vec![position]),
+                None => Selection::Unchanged(self.unchanged(compared, path)?),
+            },
+        })
+    }
+
     /// The two trees, compared, with renames found.
     fn compared(&self, from: SnapshotId, to: &DiffTarget<'_>) -> Result<Compared<'_>, StoreError> {
         let from = self.snapshot_tree(from)?;
-        let to = match *to {
-            DiffTarget::Snapshot(snapshot) => self.snapshot_tree(snapshot)?,
+        let (to, working) = match *to {
+            DiffTarget::Snapshot(snapshot) => (self.snapshot_tree(snapshot)?, Working::default()),
             DiffTarget::WorkingTree {
                 root_path,
                 policy,
@@ -196,20 +241,28 @@ impl HistoryStore {
         let mut options = git2::DiffOptions::new();
         options
             .include_typechange(true)
-            // Past the threshold libgit2 does not load a blob at all, for hunks or for similarity.
+            // Past the threshold libgit2 loads no blob for hunks.
             .max_size(i64::try_from(DIFF_MAX_SIZE).unwrap_or(i64::MAX));
         let mut diff = self
             .repository
             .diff_tree_to_tree(Some(&from), Some(&to), Some(&mut options))
             .map_err(self.failed("read"))?;
-        // git's own defaults: a pair at least half similar is a rename, among at most a few hundred
+        // git's own defaults: a pair at least half similar is a rename, among at most a thousand
         // candidates, so a large reorganisation degrades to deletions and additions rather than stalling.
+        // Measuring similarity reads every candidate whole, whatever its size, so when one is too large to
+        // diff, renames are found by identical content alone, which needs no read at all.
         let mut find = git2::DiffFindOptions::new();
-        find.renames(true);
+        find.renames(true)
+            .exact_match_only(self.any_candidate_too_large(&diff)?);
         diff.find_similar(Some(&mut find))
             .map_err(self.failed("read"))?;
 
-        Ok(Compared { diff, from, to })
+        Ok(Compared {
+            diff,
+            from,
+            to,
+            working,
+        })
     }
 
     /// The Working Tree as the next Snapshot would hold it, as a tree in this store.
@@ -222,7 +275,7 @@ impl HistoryStore {
         root_path: &Path,
         policy: &CapturePolicy,
         now: SystemTime,
-    ) -> Result<git2::Tree<'_>, StoreError> {
+    ) -> Result<(git2::Tree<'_>, Working), StoreError> {
         let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
         let reference = format!("{SEGMENT_REFS}/{segment}");
         let (_, baseline) = self.parent_and_baseline(&segment, &reference)?;
@@ -235,24 +288,53 @@ impl HistoryStore {
             .and_then(|index| index.observations())
             .unwrap_or_default();
 
-        let (tree, _) = self.write_working_tree(
+        let (tree, walked) = self.write_working_tree(
             baseline_tree.as_ref(),
             root_path,
             policy,
             &observations,
             now,
         )?;
+        let working = Working {
+            withheld: walked
+                .withheld
+                .into_iter()
+                .map(|withheld| (withheld.path, withheld.reason))
+                .collect(),
+            unreadable: walked.unreadable,
+        };
+        let tree = self
+            .repository
+            .find_tree(tree)
+            .map_err(self.failed("read"))?;
 
-        self.repository.find_tree(tree).map_err(self.failed("read"))
+        Ok((tree, working))
+    }
+
+    /// Whether an added or deleted file — a rename candidate — is larger than the diff threshold.
+    fn any_candidate_too_large(&self, diff: &git2::Diff<'_>) -> Result<bool, StoreError> {
+        for delta in diff.deltas() {
+            let blob = match delta.status() {
+                git2::Delta::Added => delta.new_file().id(),
+                git2::Delta::Deleted => delta.old_file().id(),
+                _ => continue,
+            };
+            if self.blob_size(blob)? > DIFF_MAX_SIZE {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     /// One delta as a file's part of the diff, with its hunks when `with_hunks`.
     fn file_diff(
         &self,
-        diff: &git2::Diff<'_>,
+        compared: &Compared<'_>,
         position: usize,
         with_hunks: bool,
     ) -> Result<FileDiff, StoreError> {
+        let diff = &compared.diff;
         let delta = diff
             .get_delta(position)
             .expect("a position taken from this very diff");
@@ -268,6 +350,17 @@ impl HistoryStore {
             FileChange::Deleted => (old, None),
             FileChange::Renamed => (new, Some(old)),
             _ => (new, None),
+        };
+        let withheld = match change {
+            FileChange::Deleted => compared.working.withheld.get(&path).copied(),
+            _ => None,
+        };
+        let (old_mode, new_mode) = match (
+            regular_mode(delta.old_file().mode()),
+            regular_mode(delta.new_file().mode()),
+        ) {
+            (Some(before), Some(after)) if before != after => (Some(before), Some(after)),
+            _ => (None, None),
         };
 
         let blobs: Vec<git2::Oid> = [delta.old_file().id(), delta.new_file().id()]
@@ -291,6 +384,9 @@ impl HistoryStore {
             change: Some(change),
             binary,
             too_large,
+            withheld,
+            old_mode,
+            new_mode,
             hunks,
         })
     }
@@ -312,6 +408,7 @@ impl HistoryStore {
         Ok((false, false))
     }
 
+    /// A patch's hunks, line by line, with each line's ending taken off and remembered.
     fn hunks(&self, patch: &git2::Patch<'_>) -> Result<Vec<Hunk>, StoreError> {
         let mut hunks = Vec::with_capacity(patch.num_hunks());
         for number in 0..patch.num_hunks() {
@@ -361,6 +458,9 @@ impl HistoryStore {
                         change: None,
                         binary,
                         too_large,
+                        withheld: None,
+                        old_mode: None,
+                        new_mode: None,
                         hunks: Vec::new(),
                     });
                 }
@@ -422,6 +522,15 @@ fn path_of(file: &git2::DiffFile<'_>) -> RootPath {
         .map(String::from_utf8_lossy)
         .and_then(|path| RootPath::parse(&path).ok())
         .unwrap_or_else(RootPath::root)
+}
+
+/// A regular file's mode as `entries` reports it, or `None` for anything that is not a regular file.
+fn regular_mode(mode: git2::FileMode) -> Option<u32> {
+    match mode {
+        git2::FileMode::Blob => Some(0o644),
+        git2::FileMode::BlobExecutable => Some(0o755),
+        _ => None,
+    }
 }
 
 /// The two names a too-large file goes by in a patch header.

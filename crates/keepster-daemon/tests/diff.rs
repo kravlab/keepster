@@ -177,3 +177,62 @@ async fn a_comparison_that_cannot_be_made_is_refused_with_a_reason() {
         assert_eq!(problem_code(&answer.body), code, "{query}");
     }
 }
+
+#[tokio::test]
+async fn a_file_the_next_snapshot_would_withhold_says_so_instead_of_reading_as_lost() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "grows.bin", b"small");
+    let saved = take(&daemon, &root).await;
+    daemon.write_global_config(
+        b"[triggers]\nactive = []\n\n[reconcile]\nat_start = false\n\n[files]\nmax_size = \"8B\"\n",
+    );
+    write(&project, "grows.bin", b"well past eight bytes now");
+
+    // The configuration is re-read within a second; until then the file is still simply modified.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let file = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the new size cap was never applied"
+        );
+        let summary = daemon
+            .get_json(&format!("/v1/roots/{root}/diff?from={saved}&to=working"))
+            .await;
+        if summary["files"][0]["change"] == "deleted" {
+            break summary["files"][0].clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+
+    assert_eq!(file["withheld"], "too_large");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_change_of_mode_alone_names_both_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "run.sh", b"echo hi\n");
+    let before = take(&daemon, &root).await;
+    std::fs::set_permissions(
+        project.join("run.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("made executable");
+    let after = take(&daemon, &root).await;
+
+    let summary = daemon
+        .get_json(&format!("/v1/roots/{root}/diff?from={before}&to={after}"))
+        .await;
+
+    assert_eq!(
+        summary["files"][0],
+        serde_json::json!({
+            "path": "run.sh", "change": "modified", "binary": false, "too_large": false,
+            "old_mode": 0o644, "new_mode": 0o755,
+        })
+    );
+}

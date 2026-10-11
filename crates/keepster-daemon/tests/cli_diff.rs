@@ -137,3 +137,31 @@ async fn diff_as_json_is_the_daemons_answer() {
     assert_eq!(answer["to"], "working");
     assert_eq!(answer["files"][0]["change"], "modified");
 }
+
+#[tokio::test]
+async fn a_refused_diff_leaves_the_output_file_as_it_was() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "notes.txt", b"one\n");
+    take(&daemon, &root).await;
+    let patch = daemon.scratch("out").join("kept.patch");
+    std::fs::write(&patch, b"what was there before\n").expect("an existing file");
+
+    let run = daemon
+        .run_cli_in(
+            &project,
+            KEEPSTER,
+            &["diff", "nowhere.txt", "-o", patch.to_str().expect("UTF-8")],
+        )
+        .await;
+
+    assert_eq!(run.exit_code, Some(4), "not found: {}", run.stderr);
+    assert_eq!(
+        std::fs::read(&patch).expect("the file"),
+        b"what was there before\n"
+    );
+    assert!(
+        !patch.with_file_name("kept.patch.partial").exists(),
+        "nothing is left behind"
+    );
+}

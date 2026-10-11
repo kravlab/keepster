@@ -511,7 +511,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.",
+            "description": "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1423,7 +1423,7 @@
       },
       "Diff": {
         "type": "object",
-        "description": "What changed between two versions of a Root — the answer of `GET /v1/roots/{id}/diff` (ticket 46).\n\nComputed by the daemon, which holds both versions, so binary detection, rename detection and the size\npast which no hunks are computed are decided once and every client shows the same lines.",
+        "description": "What changed from a Snapshot to another Snapshot or the Working Tree — the answer of\n`GET /v1/roots/{id}/diff` (ticket 46).\n\nComputed by the daemon, which holds both sides, so binary detection, rename detection and the size\npast which no hunks are computed are decided once and every client shows the same lines.",
         "required": [
           "from",
           "to",
@@ -1440,6 +1440,13 @@
           "from": {
             "type": "string",
             "description": "The older side: a Snapshot's identity."
+          },
+          "omitted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Working Tree files that could not be read. Each keeps its last captured content, as a capture\nkeeps it, so the comparison is not whole there."
           },
           "to": {
             "type": "string",
@@ -1478,6 +1485,24 @@
             },
             "description": "The changed lines with their context. Empty in a summary, and for a binary or too large file."
           },
+          "new_mode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The file's mode on the newer side, when it differs from `old_mode`.",
+            "minimum": 0
+          },
+          "old_mode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The file's mode on the older side, `0o644` or `0o755` as `entries` gives it — present, with\n`new_mode`, when the mode is what changed.",
+            "minimum": 0
+          },
           "old_path": {
             "type": [
               "string",
@@ -1492,6 +1517,13 @@
           "too_large": {
             "type": "boolean",
             "description": "Whether either version is larger than the daemon diffs, 8 MiB: no hunks are computed for it, and\nit is not probed for being binary."
+          },
+          "withheld": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the next Snapshot would not hold a file that is still in the Working Tree — `too_large` in\nthis version — which is why it reads as deleted, and is not."
           }
         }
       },
@@ -1926,7 +1958,7 @@
       },
       "FileChange": {
         "type": "string",
-        "description": "How a file changed between two versions.",
+        "description": "How a file changed between the two sides of a diff.",
         "enum": [
           "added",
           "modified",

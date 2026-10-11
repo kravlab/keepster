@@ -9,8 +9,8 @@ mod index;
 mod registry;
 
 pub use history::{
-    CaptureRequest, CapturedSnapshot, Content, DIFF_MAX_SIZE, Depth, DiffLine, DiffTarget, Entry,
-    EntryKind, FileChange, FileDiff, HistoryStore, Hunk, LineKind, Pass, SnapshotSummary,
-    StoreError, TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
+    CaptureRequest, CapturedSnapshot, Comparison, Content, DIFF_MAX_SIZE, Depth, DiffLine,
+    DiffTarget, Entry, EntryKind, FileChange, FileDiff, HistoryStore, Hunk, LineKind, Pass,
+    SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
 };
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

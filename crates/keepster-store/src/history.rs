@@ -24,6 +24,12 @@ use keepster_core::{
 
 use crate::index::{self, Index, Observation};
 
+mod diff;
+
+pub use diff::{
+    Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
+};
+
 /// What the trailer carrying a Snapshot's identity is called.
 ///
 /// The identity lives in the message rather than being the commit hash, because thinning a Segment
@@ -32,10 +38,6 @@ pub(crate) const SNAPSHOT_TRAILER: &str = "Keepster-Snapshot";
 
 /// What the trailer carrying the Root's identity is called, so a store found on its own says which
 /// Root it belongs to.
-mod diff;
-
-pub use diff::{DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind};
-
 const ROOT_TRAILER: &str = "Keepster-Root";
 
 /// What the trailer naming the Trigger that caused a Snapshot is called.

@@ -1,23 +1,19 @@
 //! `keepster diff`: the daemon's diff, as a person reads it or as the patch text itself.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_api::{Diff, FileChange, encode_path_query};
+use keepster_api::{Diff, FileChange, WORKING_TREE, encode_path_query};
 
 use crate::client::{ClientError, DaemonClient};
 use crate::command::DiffArgs;
 use crate::exit;
-use crate::history::{located, resolve_snapshot};
+use crate::history::{located, selected};
 use crate::roots::{answered, body_of};
-use crate::selector;
 
-/// The `--to` that names the Working Tree, as the API spells it.
-const WORKING: &str = "working";
-
-/// Show what changed between two versions of a Root.
+/// Show what changed from a Snapshot to another Snapshot or the Working Tree.
 ///
 /// The daemon computes every line; this prints what it answered — the summary rendered, the unified text
 /// and the JSON passed through untouched — so every client shows the same diff.
@@ -32,7 +28,7 @@ pub async fn diff(args: &DiffArgs, control_path: &Path, now: SystemTime) -> u8 {
     // The Root itself is every path, which is what no path means.
     let relative = relative.filter(|relative| !relative.is_empty());
 
-    let from = match side(
+    let from = match selected(
         &client,
         &root,
         args.from.as_deref().unwrap_or("latest"),
@@ -44,8 +40,8 @@ pub async fn diff(args: &DiffArgs, control_path: &Path, now: SystemTime) -> u8 {
         Err(code) => return code,
     };
     let to = match args.to.as_deref() {
-        None | Some(WORKING) => WORKING.to_owned(),
-        Some(selected) => match side(&client, &root, selected, now).await {
+        None | Some(WORKING_TREE) => WORKING_TREE.to_owned(),
+        Some(typed) => match selected(&client, &root, typed, now).await {
             Ok(to) => to,
             Err(code) => return code,
         },
@@ -61,20 +57,52 @@ pub async fn diff(args: &DiffArgs, control_path: &Path, now: SystemTime) -> u8 {
         url.push_str(&format!("&path={}", encode_path_query(relative)));
     }
 
-    let mut out: Box<dyn Write + Send> = match &args.output {
-        Some(path) => match File::create(path) {
+    // A file is written beside its destination and put in place only once the whole answer is in it,
+    // so a refusal or a failure leaves whatever was there before rather than an empty or partial file.
+    let partial = args.output.as_deref().map(partial_path);
+    let mut out: Box<dyn Write + Send> = match &partial {
+        Some(partial) => match File::create(partial) {
             Ok(file) => Box::new(io::BufWriter::new(file)),
             Err(error) => {
-                eprintln!("keepster: {} could not be written: {error}", path.display());
+                eprintln!(
+                    "keepster: {} could not be written: {error}",
+                    partial.display()
+                );
                 return exit::OTHER;
             }
         },
         None => Box::new(io::stdout()),
     };
 
-    let written = if unified || args.json {
+    let code = write_answer(&client, &url, unified, args.json, &mut out).await;
+    drop(out);
+    if let (Some(partial), Some(destination)) = (&partial, &args.output) {
+        if code != exit::SUCCESS {
+            let _ = fs::remove_file(partial);
+        } else if let Err(error) = fs::rename(partial, destination) {
+            eprintln!(
+                "keepster: {} could not be written: {error}",
+                destination.display()
+            );
+            let _ = fs::remove_file(partial);
+            return exit::OTHER;
+        }
+    }
+
+    code
+}
+
+/// Write the daemon's answer to `out` and return the exit code it deserves.
+async fn write_answer(
+    client: &DaemonClient,
+    url: &str,
+    unified: bool,
+    json: bool,
+    out: &mut Box<dyn Write + Send>,
+) -> u8 {
+    let written = if unified || json {
         // Passed through as the daemon sent it: the patch is bytes, not text to re-encode.
-        let answer = client.get_to(&url, &mut out).await;
+        let answer = client.get_to(url, out.as_mut()).await;
         if let Err(ClientError::Output(error)) = &answer {
             if error.kind() == io::ErrorKind::BrokenPipe {
                 return exit::SUCCESS;
@@ -84,13 +112,13 @@ pub async fn diff(args: &DiffArgs, control_path: &Path, now: SystemTime) -> u8 {
             return code;
         }
         // JSON ends its line, as `log --json` does; a patch already ends with one, or is empty.
-        if args.json { writeln!(out) } else { Ok(()) }
+        if json { writeln!(out) } else { Ok(()) }
     } else {
-        let diff: Diff = match answered(client.get(&url).await) {
+        let diff: Diff = match answered(client.get(url).await) {
             Ok(diff) => diff,
             Err(code) => return code,
         };
-        write_summary(&diff, &mut out)
+        write_summary(&diff, out)
     };
 
     match written.and_then(|()| out.flush()) {
@@ -103,23 +131,17 @@ pub async fn diff(args: &DiffArgs, control_path: &Path, now: SystemTime) -> u8 {
     }
 }
 
-/// One side of the comparison, as a Snapshot's identity.
-async fn side(
-    client: &DaemonClient,
-    root: &keepster_api::Root,
-    selected: &str,
-    now: SystemTime,
-) -> Result<String, u8> {
-    let selected = selector::parse(selected, now).map_err(|message| {
-        eprintln!("keepster: {message}");
-        exit::USAGE
-    })?;
+/// Where `-o` writes before the answer is whole: beside the destination, so the rename stays on one
+/// filesystem.
+fn partial_path(destination: &Path) -> PathBuf {
+    let mut name = destination.file_name().unwrap_or_default().to_os_string();
+    name.push(".partial");
 
-    resolve_snapshot(client, root, &selected).await
+    destination.with_file_name(name)
 }
 
 /// One line per changed path, with a letter for how it changed, as `git diff --name-status` does — and
-/// the words that keep a binary or oversized file from reading as an ordinary change.
+/// the words that keep a binary, oversized, withheld or re-moded file from reading as an ordinary change.
 fn write_summary(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
     for file in &diff.files {
         let letter = match file.change {
@@ -139,7 +161,16 @@ fn write_summary(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
         if file.too_large {
             write!(out, "  (too large to diff)")?;
         }
+        if let Some(reason) = &file.withheld {
+            write!(out, "  (still there, withheld: {reason})")?;
+        }
+        if let (Some(old), Some(new)) = (file.old_mode, file.new_mode) {
+            write!(out, "  (mode {old:o} -> {new:o})")?;
+        }
         writeln!(out)?;
+    }
+    for omitted in &diff.omitted {
+        eprintln!("keepster: {omitted} could not be read; its last captured content is compared");
     }
 
     Ok(())

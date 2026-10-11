@@ -1,21 +1,21 @@
-//! What changed between two versions of a Root, computed here where both are (ticket 46).
+//! What changed from a Snapshot to another Snapshot or the Working Tree, computed here where both
+//! sides are (ticket 46).
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use keepster_api::{Diff, DiffFile, DiffHunk, DiffLine, ErrorCode, FileChange, LineKind, Problem};
+use keepster_api::{
+    Diff, DiffFile, DiffHunk, DiffLine, ErrorCode, FileChange, LineKind, Problem, WORKING_TREE,
+};
 use keepster_app::snapshots;
 use keepster_core::{RootPath, SnapshotId};
-use keepster_store::{DiffTarget, FileDiff};
+use keepster_store::{Comparison, DiffTarget, FileDiff, StoreError};
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
-use crate::snapshots::{blocking, located, parse_path, prepare};
-
-/// The `to` that names the Working Tree rather than a Snapshot.
-const WORKING: &str = "working";
+use crate::snapshots::{blocking, located, parse_path, prepare, store_problem};
 
 /// What to compare, and how to answer.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -34,9 +34,55 @@ pub(crate) struct DiffParameters {
 }
 
 /// The newer side, as asked for.
+#[derive(Clone, Copy)]
 enum Side {
     Snapshot(SnapshotId),
     Working,
+}
+
+impl Side {
+    fn parse(given: Option<&str>) -> Result<Self, ProblemResponse> {
+        match given {
+            Some(WORKING_TREE) => Ok(Self::Working),
+            Some(to) => to.parse().map(Self::Snapshot).map_err(|_| {
+                comparison_invalid("`to` must be a Snapshot's identity or `working`")
+                    .with_detail("to", to)
+            }),
+            None => Err(comparison_invalid(
+                "`to` must be a Snapshot's identity or `working`",
+            )),
+        }
+    }
+
+    /// The side as the answer names it.
+    fn name(self) -> String {
+        match self {
+            Self::Snapshot(snapshot) => snapshot.to_string(),
+            Self::Working => WORKING_TREE.to_owned(),
+        }
+    }
+}
+
+/// How the answer is written.
+#[derive(Clone, Copy)]
+enum Format {
+    Json,
+    Unified,
+}
+
+impl Format {
+    fn parse(given: Option<&str>) -> Result<Self, ProblemResponse> {
+        match given {
+            None | Some("json") => Ok(Self::Json),
+            Some("unified") => Ok(Self::Unified),
+            Some(other) => Err(ProblemResponse::new(
+                StatusCode::BAD_REQUEST,
+                ErrorCode::FormatInvalid,
+                "`format` must be `json` or `unified`",
+            )
+            .with_detail("format", other)),
+        }
+    }
 }
 
 /// What changed between a Snapshot and another Snapshot or the Working Tree.
@@ -47,7 +93,7 @@ enum Side {
     tag = "snapshots",
     params(RootAddress, DiffParameters),
     responses(
-        (status = 200, description = "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.", content(
+        (status = 200, description = "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.", content(
             (Diff = "application/json"),
             (String = "text/x-diff"),
         )),
@@ -66,25 +112,16 @@ pub(crate) async fn diff(
         .from
         .as_deref()
         .and_then(|from| from.parse::<SnapshotId>().ok())
-        .ok_or_else(|| comparison_invalid("from", parameters.from.as_deref()))?;
-    let to = match parameters.to.as_deref() {
-        Some(WORKING) => Side::Working,
-        Some(to) => Side::Snapshot(to.parse().map_err(|_| comparison_invalid("to", Some(to)))?),
-        None => return Err(comparison_invalid("to", None)),
-    };
+        .ok_or_else(|| {
+            let problem = comparison_invalid("`from` must be a Snapshot's identity");
+            match parameters.from.as_deref() {
+                Some(given) => problem.with_detail("from", given),
+                None => problem,
+            }
+        })?;
+    let to = Side::parse(parameters.to.as_deref())?;
     let path = parameters.path.as_deref().map(parse_path).transpose()?;
-    let unified = match parameters.format.as_deref() {
-        None | Some("json") => false,
-        Some("unified") => true,
-        Some(other) => {
-            return Err(ProblemResponse::new(
-                StatusCode::BAD_REQUEST,
-                ErrorCode::FormatInvalid,
-                "`format` must be `json` or `unified`",
-            )
-            .with_detail("format", other));
-        }
-    };
+    let format = Format::parse(parameters.format.as_deref())?;
 
     let answer = match to {
         Side::Snapshot(to) => {
@@ -95,91 +132,108 @@ pub(crate) async fn diff(
                     from,
                     &DiffTarget::Snapshot(to),
                     path.as_ref(),
-                    unified,
+                    format,
                 )
             })
             .await?
         }
-        Side::Working => {
-            let id = roots::parse_id(&id)?;
-            let (root, location, loaded) = prepare(&state, id)?;
-            if !root.path.is_dir() {
-                return Err(ProblemResponse::new(
-                    StatusCode::CONFLICT,
-                    ErrorCode::RootUnavailable,
-                    format!("the Root's directory {} is missing", root.path.display()),
-                )
-                .with_detail("root", id.to_string()));
-            }
-            let now = roots::now();
-            let state = state.clone();
-            blocking(move || {
-                // The Working Tree is written into the store as a capture writes it, so it takes the
-                // store's lock as a capture does: never two writers in one store (ticket 06).
-                let store = state.store_lock(id);
-                let _held = store
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let working = DiffTarget::WorkingTree {
-                    root_path: &root.path,
-                    policy: &loaded.policy,
-                    now,
-                };
-                compute(&location, from, &working, path.as_ref(), unified)
-            })
-            .await?
-        }
+        Side::Working => working(state, &id, from, path, format).await?,
     };
 
     Ok(match answer {
         Answer::Unified(patch) => ([(header::CONTENT_TYPE, "text/x-diff")], patch).into_response(),
-        Answer::Files(files) => Json(Diff {
+        Answer::Files(comparison) => Json(Diff {
             from: from.to_string(),
-            to: match to {
-                Side::Snapshot(to) => to.to_string(),
-                Side::Working => WORKING.to_owned(),
-            },
-            files: files.into_iter().map(wire).collect(),
+            to: to.name(),
+            files: comparison.files.into_iter().map(wire).collect(),
+            omitted: comparison
+                .unreadable
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
         })
         .into_response(),
     })
 }
 
+/// The diff from the Snapshot `from` to the Root's Working Tree.
+///
+/// The Working Tree is written into the store as a capture writes it, so it is compared under the
+/// store's lock as a capture is taken: never two writers in one store (ticket 06). A Root deregistered —
+/// and perhaps erased — while this waited for the lock is not written into, as a capture re-checks too.
+async fn working(
+    state: DaemonState,
+    id: &str,
+    from: SnapshotId,
+    path: Option<RootPath>,
+    format: Format,
+) -> Result<Answer, ProblemResponse> {
+    let id = roots::parse_id(id)?;
+    let (root, location, loaded) = prepare(&state, id)?;
+    let now = roots::now();
+
+    tokio::task::spawn_blocking(move || {
+        let store = state.store_lock(id);
+        let _held = store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.registry().contains(id) {
+            return Err(roots::not_found(&id.to_string()));
+        }
+        let working = DiffTarget::WorkingTree {
+            root_path: &root.path,
+            policy: &loaded.policy,
+            now,
+        };
+
+        compute(&location, from, &working, path.as_ref(), format).map_err(|error| match error {
+            // The Root's own directory is gone or unreadable: a state the Root is in, as for a capture.
+            StoreError::WorkingTree { ref path, .. } => ProblemResponse::new(
+                StatusCode::CONFLICT,
+                ErrorCode::RootUnavailable,
+                error.to_string(),
+            )
+            .with_detail("path", path.to_string_lossy()),
+            other => store_problem(other),
+        })
+    })
+    .await
+    .map_err(|joined| {
+        ProblemResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::HistoryUnreadable,
+            joined.to_string(),
+        )
+    })?
+}
+
 /// A diff, in the form asked for.
 enum Answer {
-    Files(Vec<FileDiff>),
+    Files(Comparison),
     Unified(Vec<u8>),
 }
 
+/// The comparison from `from` to `to`, written as `format` asks.
 fn compute(
     location: &snapshots::StoreLocation,
     from: SnapshotId,
     to: &DiffTarget<'_>,
     path: Option<&RootPath>,
-    unified: bool,
-) -> Result<Answer, keepster_store::StoreError> {
-    if unified {
-        snapshots::unified(location, from, to, path).map(Answer::Unified)
-    } else {
-        snapshots::diff(location, from, to, path).map(Answer::Files)
+    format: Format,
+) -> Result<Answer, StoreError> {
+    match format {
+        Format::Unified => snapshots::unified(location, from, to, path).map(Answer::Unified),
+        Format::Json => snapshots::diff(location, from, to, path).map(Answer::Files),
     }
 }
 
-fn comparison_invalid(side: &str, given: Option<&str>) -> ProblemResponse {
-    let message = match side {
-        "from" => "`from` must be a Snapshot's identity",
-        _ => "`to` must be a Snapshot's identity or `working`",
-    };
-    let problem = ProblemResponse::new(
+/// A side of the comparison that names no Snapshot, or `to` that names neither one nor the Working Tree.
+fn comparison_invalid(message: &'static str) -> ProblemResponse {
+    ProblemResponse::new(
         StatusCode::BAD_REQUEST,
         ErrorCode::ComparisonInvalid,
         message,
-    );
-
-    match given {
-        Some(given) => problem.with_detail(side, given),
-        None => problem,
-    }
+    )
 }
 
 /// One file's part of a diff as the wire carries it.
@@ -195,6 +249,9 @@ fn wire(file: FileDiff) -> DiffFile {
         }),
         binary: file.binary,
         too_large: file.too_large,
+        withheld: file.withheld.map(|reason| reason.as_str().to_owned()),
+        old_mode: file.old_mode,
+        new_mode: file.new_mode,
         hunks: file
             .hunks
             .into_iter()

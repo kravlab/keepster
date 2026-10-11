@@ -25,3 +25,10 @@ gesture and for handing someone one file, with its size shown before the click, 
 - [ ] The streamed archive endpoint serves the browser download gesture, states its size beforehand, and handles
       large files
 - [ ] `keepster export` mirrors it, and a diff written to a file is unaffected by the shell's own encoding
+
+## Comments
+
+- 2026-10-11: ticket 46 built `keepster diff -o FILE`, which writes the daemon's patch bytes itself (through a
+  `.partial` file renamed into place), so the "a diff written to a file is unaffected by the shell's own encoding"
+  criterion holds for the CLI already. What remains here is the browser's side: `Content-Disposition: attachment`
+  on `GET /v1/roots/{r}/diff?format=unified`, which ticket 46 did not set.
