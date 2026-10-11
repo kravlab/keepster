@@ -11,6 +11,8 @@ use hyper::body::Bytes;
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
 
+use crate::events::EventStream;
+
 /// A client bound to one daemon's control channel.
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
@@ -50,6 +52,9 @@ pub enum ClientError {
     /// The request could not be constructed, which is a programming error in the CLI.
     #[error("malformed request: {0}")]
     Request(#[from] hyper::http::Error),
+    /// The daemon answered a request for its event stream with something other than the stream.
+    #[error("the daemon refused the event stream with {}", .0.status)]
+    Refused(Box<Response>),
     /// The answer arrived but could not be written out, such as to a closed pipe.
     #[error("the answer could not be written: {0}")]
     Output(#[source] std::io::Error),
@@ -113,6 +118,29 @@ impl DaemonClient {
             headers,
             body: Vec::new(),
         })
+    }
+
+    /// Open the daemon's live event stream, resuming after `last_event_id` when a previous stream saw
+    /// one.
+    pub async fn events(&self, last_event_id: Option<&str>) -> Result<EventStream, ClientError> {
+        let headers: Vec<(&str, &str)> = last_event_id
+            .map(|last| ("Last-Event-ID", last))
+            .into_iter()
+            .collect();
+        let response = self.exchange("GET", "/v1/events", None, &headers).await?;
+        let status = response.status();
+
+        if status != StatusCode::OK {
+            let headers = response.headers().clone();
+            let body = response.into_body().collect().await?.to_bytes().to_vec();
+            return Err(ClientError::Refused(Box::new(Response {
+                status,
+                headers,
+                body,
+            })));
+        }
+
+        Ok(EventStream::new(response.into_body()))
     }
 
     /// Perform a `POST` of a JSON body against the daemon.

@@ -7,6 +7,7 @@
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod events;
 pub mod explain;
 pub mod history;
 pub mod reconcile;
@@ -23,6 +24,7 @@ pub use command::{
     StatusArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
+pub use events::{EventStream, SseEvent};
 pub use explain::explain;
 pub use history::{cat, log};
 pub use reconcile::reconcile;

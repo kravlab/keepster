@@ -6,6 +6,41 @@
     "version": "1"
   },
   "paths": {
+    "/v1/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "What happens in the daemon, as it happens.",
+        "operationId": "stream_events",
+        "parameters": [
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "The identity of the last event this client saw. The events that followed it are replayed before live ones; when the daemon no longer holds it, the stream opens with `resync` instead.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A `text/event-stream` that stays open. Each event's `event:` field is its name, its `id:` a ULID, and its `data:` one JSON `Event` whose `event` property repeats the name.\n\nThe daemon keeps the last 1000 events, none older than an hour, for replay. A client that reconnects with `Last-Event-ID` gets every kept event after that one, in order, then live ones. When that identity is no longer kept — it was evicted, the daemon restarted, or it was never one of ours — or when the client reads too slowly to keep up, the daemon sends `resync`: what the client shows may be stale, and it refetches what it displays. A `resync` carries the newest identity still kept, when there is one, so the next reconnect resumes from there. A comment line is sent every 15 seconds while nothing happens, so a dead connection is noticed.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/openapi.json": {
       "get": {
         "tags": [
@@ -1344,6 +1379,202 @@
           "dir",
           "symlink"
         ]
+      },
+      "Event": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A Snapshot was written, by whichever Trigger.",
+            "required": [
+              "root",
+              "snapshot",
+              "incomplete",
+              "event"
+            ],
+            "properties": {
+              "changed_paths": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "How many paths differ from the Snapshot before it; absent when the count failed after the\nSnapshot was written.",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "snapshot.created"
+                ]
+              },
+              "incomplete": {
+                "type": "boolean",
+                "description": "Whether some file meant to be captured could not be read."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root it belongs to."
+              },
+              "snapshot": {
+                "type": "string",
+                "description": "The Snapshot's identity."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A directory became a Watched Root.",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "root.registered"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The new Root."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Root was deregistered.",
+            "required": [
+              "root",
+              "purged",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "root.unregistered"
+                ]
+              },
+              "purged": {
+                "type": "boolean",
+                "description": "Whether its History Store was erased with it."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root that is no longer watched."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Root's directory was recorded at a new path.",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "root.moved"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root that moved."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "What the daemon can promise for a Root changed.",
+            "required": [
+              "root",
+              "state",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "root.state_changed"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root."
+              },
+              "state": {
+                "$ref": "#/components/schemas/RootState",
+                "description": "Its state now."
+              },
+              "state_code": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The reason behind a state that is not `watching`, as `GET /v1/roots/{id}` gives it."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Root's configuration in force changed: a file was edited and every file it depends on is\nvalid.",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "config.reloaded"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root whose configuration changed."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A file a Root's configuration depends on became invalid, so the last known-good version stays\nin force for it — or, without one, the Root is not captured.",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "config.invalid"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root the invalid file affects."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon\nrestarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "resync"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One event on the live stream, `GET /v1/events` (ticket 45).\n\nPayloads are thin on purpose — identities and flags, never content: a client wanting detail fetches it\nthrough the endpoint that already serves that shape, so no second rendering of a Root or a Snapshot\nexists to drift. The set grows inside `/v1` as behaviour is added (retention, maintenance, jobs), so a\nclient must pass over an event whose name it does not know."
       },
       "Explanation": {
         "type": "object",

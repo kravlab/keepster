@@ -107,6 +107,7 @@ fn every_route_the_api_serves_is_described() {
         described,
         [
             "DELETE /v1/roots/{id}",
+            "GET /v1/events",
             "GET /v1/openapi.json",
             "GET /v1/roots",
             "GET /v1/roots/{id}",
@@ -159,6 +160,7 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "ReconcileRequest",
         "ConfigKey",
         "ConfigEntry",
+        "Event",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -181,6 +183,11 @@ fn every_operation_documents_its_failures_as_problems() {
     for (name, operation) in operations(&document()) {
         if name == "GET /v1/openapi.json" || name == "GET /v1/version" {
             // Neither can fail with a problem: both answer from the build alone.
+            continue;
+        }
+        if name == "GET /v1/events" {
+            // Answered from memory alone: an identity it does not know is answered with `resync`, which
+            // is an event, not a failure.
             continue;
         }
         let responses = operation["responses"].as_object().expect("responses");
@@ -290,8 +297,59 @@ fn every_operation_has_its_own_stable_name() {
             "read_content",
             "reconcile_root",
             "register_root",
+            "stream_events",
             "take_snapshot",
             "unwatch_root",
+        ]
+    );
+}
+
+#[test]
+fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
+    let document = document();
+    let stream = &document["paths"]["/v1/events"]["get"];
+
+    assert_eq!(
+        stream["responses"]["200"]["content"]["text/event-stream"]["schema"]["$ref"],
+        "#/components/schemas/Event"
+    );
+    let parameters = stream["parameters"].as_array().expect("parameters");
+    assert!(
+        parameters
+            .iter()
+            .any(|parameter| parameter["name"] == "Last-Event-ID" && parameter["in"] == "header"),
+        "the resume header is declared: {parameters:?}"
+    );
+    let described = stream["responses"]["200"]["description"]
+        .as_str()
+        .expect("a description");
+    assert!(
+        described.contains("1000 events") && described.contains("an hour"),
+        "the replay buffer's bound is documented: {described}"
+    );
+
+    let mut names: Vec<&str> = document["components"]["schemas"]["Event"]["oneOf"]
+        .as_array()
+        .expect("one shape per event")
+        .iter()
+        .map(|shape| {
+            shape["properties"]["event"]["enum"][0]
+                .as_str()
+                .expect("each shape names its event")
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "config.invalid",
+            "config.reloaded",
+            "resync",
+            "root.moved",
+            "root.registered",
+            "root.state_changed",
+            "root.unregistered",
+            "snapshot.created",
         ]
     );
 }

@@ -125,16 +125,22 @@ pub struct LogArgs {
 
     /// Only Snapshots taken at or before this moment: a timestamp, a local date and time, or a
     /// duration ago such as `2h`.
-    #[arg(long, value_name = "WHEN")]
+    #[arg(long, value_name = "WHEN", conflicts_with = "follow")]
     pub before: Option<String>,
 
     /// Only Snapshots taken after this moment, in the same forms as `--before`.
     #[arg(long, value_name = "WHEN")]
     pub after: Option<String>,
 
-    /// Print the Snapshots as one JSON array of the daemon's own items.
+    /// Print the Snapshots as one JSON array of the daemon's own items — or, with `--follow`, one item
+    /// per line.
     #[arg(long)]
     pub json: bool,
+
+    /// Print the last Snapshots oldest first (10 unless `-n` says otherwise), then keep printing each new
+    /// one as it is taken, until interrupted.
+    #[arg(short = 'f', long)]
+    pub follow: bool,
 }
 
 /// Options of `keepster cat`.

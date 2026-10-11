@@ -79,14 +79,17 @@ fn accepted(answer: Result<Response, ClientError>) -> Result<(), u8> {
 pub(crate) fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, u8> {
     let response = match answer {
         Ok(response) => response,
+        // A refused stream is a refusal like any other, with the same Problem in its body.
+        Err(ClientError::Refused(response)) => *response,
         Err(error) => {
             eprintln!("keepster: {error}");
 
             return Err(match error {
                 ClientError::Unreachable { .. } => exit::DAEMON_UNREACHABLE,
-                ClientError::Exchange(_) | ClientError::Request(_) | ClientError::Output(_) => {
-                    exit::OTHER
-                }
+                ClientError::Exchange(_)
+                | ClientError::Request(_)
+                | ClientError::Output(_)
+                | ClientError::Refused(_) => exit::OTHER,
             });
         }
     };

@@ -566,6 +566,7 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
             let event = match &pass.snapshot {
                 Some(captured) => {
                     tracing::info!(root = %id, snapshot = %captured.id, %trigger, hashed = pass.hashed, "captured");
+                    crate::snapshots::announce(state, id, captured);
                     PolicyEvent::CaptureFinished
                 }
                 None => PolicyEvent::CaptureUnchanged,

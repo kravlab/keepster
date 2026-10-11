@@ -34,9 +34,10 @@ pub fn outcome(answer: Result<Response, ClientError>, json: bool) -> Outcome {
             // inheriting the catch-all, or a script loses the ability to tell failures apart.
             let code = match &error {
                 ClientError::Unreachable { .. } => exit::DAEMON_UNREACHABLE,
-                ClientError::Exchange(_) | ClientError::Request(_) | ClientError::Output(_) => {
-                    exit::OTHER
-                }
+                ClientError::Exchange(_)
+                | ClientError::Request(_)
+                | ClientError::Output(_)
+                | ClientError::Refused(_) => exit::OTHER,
             };
 
             return Outcome {

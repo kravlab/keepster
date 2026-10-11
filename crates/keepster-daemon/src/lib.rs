@@ -11,6 +11,7 @@
 
 mod configuration;
 mod content;
+mod events;
 mod explain;
 mod openapi;
 mod problem;
@@ -122,7 +123,13 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     // `Degraded` state — does not wait for a client.
     let ticker = tokio::spawn(configuration::reload_continually(state.clone()));
     let task = tokio::spawn(async move {
-        let served = serve(listener, router(state.clone()), stop).await;
+        let events = Arc::clone(&state.events);
+        let stopping = async move {
+            let _ = stop.await;
+            // An open event stream would otherwise hold the graceful stop forever.
+            events.close();
+        };
+        let served = serve(listener, router(state.clone()), stopping).await;
         // No further Trigger is accepted; the captures in flight finish and every pending debounce
         // window is captured before the daemon is done (ticket 05).
         ticker.abort();
@@ -200,6 +207,10 @@ struct DaemonState {
     config: Arc<Mutex<keepster_app::config::Configuration>>,
     /// Every Root's automatic capture.
     runtimes: Arc<triggers::Runtimes>,
+    /// What happened, for every open event stream and the ones that reconnect.
+    events: Arc<events::EventBus>,
+    /// What the event stream last said about each Root's state and configuration.
+    announced: Arc<Mutex<events::Announced>>,
 }
 
 impl DaemonState {
@@ -219,7 +230,18 @@ impl DaemonState {
                 store_base,
             ))),
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling)),
+            events: Arc::new(events::EventBus::new(events::BOUND)),
+            announced: Arc::new(Mutex::new(events::Announced::default())),
         }
+    }
+
+    /// Tell every open event stream that `event` happened.
+    fn publish(&self, event: keepster_api::Event) {
+        self.events.publish(
+            keepster_core::EventId::generate(roots::now()),
+            Instant::now(),
+            event,
+        );
     }
 
     /// The configuration of the Root `id` at `root_path` as it stands, re-reading whichever of its
@@ -256,7 +278,8 @@ impl DaemonState {
     /// The configuration, held for the length of one resolution.
     ///
     /// Taken after the Registry wherever both are held, never before, so the two locks cannot
-    /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes. A panic while it is held loses nothing that matters: every file is compared with what
+    /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes, then what
+    /// the event stream announced and its buffer. A panic while it is held loses nothing that matters: every file is compared with what
     /// was read last, so the next resolution reads again whatever a panic left half-done.
     fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config
@@ -312,6 +335,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(openapi::serve))
         .routes(routes!(version))
         .routes(routes!(status))
+        .routes(routes!(events::stream))
         .routes(routes!(roots::list, roots::register))
         .routes(routes!(roots::show, roots::deregister, roots::move_root))
         .routes(routes!(snapshots::list, snapshots::create))
@@ -398,15 +422,17 @@ fn bind_control_channel(path: &Path) -> io::Result<pipe::PipeListener> {
 /// Serve until the stop signal arrives, whatever the platform's control channel is.
 ///
 /// One function over both listeners: only the binding differs per platform, and the serving does not.
-async fn serve<L>(listener: L, router: Router, stop: oneshot::Receiver<()>) -> io::Result<()>
+async fn serve<L>(
+    listener: L,
+    router: Router,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()>
 where
     L: axum::serve::Listener,
     L::Addr: std::fmt::Debug,
 {
     axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = stop.await;
-        })
+        .with_graceful_shutdown(stop)
         .await
 }
 

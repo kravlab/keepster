@@ -154,6 +154,8 @@ pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Regist
     for id in state.take_reconcile_queue() {
         state.runtimes.reconcile(id);
     }
+
+    crate::events::announce_changes(state, registry);
 }
 
 /// A value as the wire types it.

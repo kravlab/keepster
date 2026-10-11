@@ -4,7 +4,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{ErrorCode, Problem, RegisterRoot, Root, RootState};
+use keepster_api::{ErrorCode, Event, Problem, RegisterRoot, Root, RootState};
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::RootId;
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
@@ -122,6 +122,10 @@ pub(crate) async fn register(
     let registry = state.registry();
     let record =
         roots::register(&registry, now(), request.path.as_ref()).map_err(register_problem)?;
+    // Announced before the reload, so a state the new Root reaches is announced after it exists.
+    state.publish(Event::RootRegistered {
+        root: record.id.to_string(),
+    });
     configuration::reload_with(&state, &registry);
 
     Ok((StatusCode::CREATED, Json(describe_record(&state, &record))))
@@ -174,6 +178,10 @@ pub(crate) async fn deregister(
     });
     let registry = state.registry();
     roots::deregister(&registry, id, query.purge).map_err(root_problem)?;
+    state.publish(Event::RootUnregistered {
+        root: id.to_string(),
+        purged: query.purge,
+    });
     configuration::reload_with(&state, &registry);
 
     Ok(StatusCode::NO_CONTENT)
@@ -206,6 +214,9 @@ pub(crate) async fn move_root(
     let id = parse_id(&id)?;
     let registry = state.registry();
     let record = roots::move_root(&registry, id, request.path.as_ref()).map_err(root_problem)?;
+    state.publish(Event::RootMoved {
+        root: id.to_string(),
+    });
     configuration::reload_with(&state, &registry);
 
     Ok(Json(describe_record(&state, &record)))

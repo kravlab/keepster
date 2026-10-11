@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use keepster_api::{Change, Root, Snapshot, Timeline, encode_path_query};
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::client::{ClientError, DaemonClient};
 use crate::command::{CatArgs, LogArgs};
 use crate::exit;
-use crate::roots::{answered, body_of};
+use crate::roots::{self, answered, body_of};
 use crate::selector::{self, Selector};
 
 /// The most the API returns in one page (ticket 07); a longer listing follows the cursor.
@@ -44,33 +44,51 @@ pub async fn log(args: &LogArgs, control_path: &Path, now: SystemTime) -> u8 {
         }
     }
 
-    // Items are kept as the daemon sent them, so `--json` passes through every field — including one
-    // this build was never taught — rather than whatever survives a round trip through our types.
+    if args.follow {
+        return follow(&client, &root, &filters, args).await;
+    }
+
+    match timeline(&client, &root.id, &filters, args.limit, None).await {
+        Ok(items) => write_log(&items, args.json, &mut io::stdout().lock()),
+        Err(code) => code,
+    }
+}
+
+/// The Root's timeline under `filters`, newest first: at most `limit` items, and only those newer than
+/// `since` when it is given.
+///
+/// Items are kept as the daemon sent them, so `--json` passes through every field — including one this
+/// build was never taught — rather than whatever survives a round trip through our types.
+async fn timeline(
+    client: &DaemonClient,
+    root: &str,
+    filters: &str,
+    limit: Option<usize>,
+    since: Option<&str>,
+) -> Result<Vec<serde_json::Value>, u8> {
     let mut items: Vec<serde_json::Value> = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let wanted = args
-            .limit
-            .map_or(PAGE, |limit| limit.saturating_sub(items.len()));
+        let wanted = limit.map_or(PAGE, |limit| limit.saturating_sub(items.len()));
         if wanted == 0 {
             break;
         }
         let mut url = format!(
-            "/v1/roots/{}/snapshots?limit={}{filters}",
-            root.id,
+            "/v1/roots/{root}/snapshots?limit={}{filters}",
             wanted.min(PAGE)
         );
         if let Some(cursor) = &cursor {
             url.push_str(&format!("&cursor={cursor}"));
         }
 
-        let page: serde_json::Value = match answered(client.get(&url).await) {
-            Ok(page) => page,
-            Err(code) => return code,
-        };
+        let page: serde_json::Value = answered(client.get(&url).await)?;
         let next = page["next_cursor"].as_str().map(ToOwned::to_owned);
-        if let Some(found) = page["snapshots"].as_array() {
-            items.extend(found.iter().cloned());
+        for item in page["snapshots"].as_array().into_iter().flatten() {
+            // Identities order by time, so the first one not newer than `since` ends what is new.
+            if since.is_some_and(|since| item["id"].as_str().is_none_or(|id| id <= since)) {
+                return Ok(items);
+            }
+            items.push(item.clone());
         }
         match next {
             Some(next) => cursor = Some(next),
@@ -78,7 +96,142 @@ pub async fn log(args: &LogArgs, control_path: &Path, now: SystemTime) -> u8 {
         }
     }
 
-    write_log(&items, args.json, &mut io::stdout().lock())
+    Ok(items)
+}
+
+/// How many Snapshots `--follow` prints before it starts following, unless `-n` says otherwise — what
+/// `tail -f` prints too.
+const TAIL: usize = 10;
+
+/// How long `--follow` waits between attempts to reach a daemon that went away.
+const RECONNECT: Duration = Duration::from_secs(1);
+
+/// Print the timeline's tail oldest first, then every new Snapshot as the event stream announces it.
+///
+/// The event says that something happened, not what: each one is answered by fetching what is newer
+/// than the last line printed, through the same timeline endpoint — which is also all a `resync` or a
+/// reconnect needs, so the three take one path and a path filter is applied by the daemon as ever.
+async fn follow(client: &DaemonClient, root: &Root, filters: &str, args: &LogArgs) -> u8 {
+    // Subscribed before the tail is read, so a Snapshot taken in between is announced rather than lost.
+    let mut stream = match client.events(None).await {
+        Ok(stream) => stream,
+        Err(error) => return roots::body_of(Err(error)).err().unwrap_or(exit::OTHER),
+    };
+    let mut newest: Option<String> = None;
+    let tail = match timeline(
+        client,
+        &root.id,
+        filters,
+        Some(args.limit.unwrap_or(TAIL)),
+        None,
+    )
+    .await
+    {
+        Ok(tail) => tail,
+        Err(code) => return code,
+    };
+    if let Some(code) = print_new(tail, args.json, &mut newest) {
+        return code;
+    }
+
+    let mut last_event: Option<String> = None;
+    loop {
+        let event = match stream.next().await {
+            Ok(Some(event)) => event,
+            Ok(None) | Err(_) => {
+                eprintln!("keepster: the daemon went away; waiting for it to come back");
+                stream = loop {
+                    tokio::time::sleep(RECONNECT).await;
+                    if let Ok(stream) = client.events(last_event.as_deref()).await {
+                        break stream;
+                    }
+                };
+                eprintln!("keepster: reconnected");
+                // What happened meanwhile may be replayed or may not; fetching never misses it.
+                if let Some(code) = catch_up(client, root, filters, args.json, &mut newest).await {
+                    return code;
+                }
+                continue;
+            }
+        };
+        if event.id.is_some() {
+            last_event.clone_from(&event.id);
+        }
+
+        let payload: serde_json::Value = serde_json::from_str(&event.data).unwrap_or_default();
+        let ours = payload["root"].as_str() == Some(root.id.as_str());
+        match event.event.as_str() {
+            "snapshot.created" if ours => {}
+            "resync" => {}
+            "root.unregistered" if ours => {
+                eprintln!("keepster: the Root is no longer watched");
+                return exit::SUCCESS;
+            }
+            _ => continue,
+        }
+        if let Some(code) = catch_up(client, root, filters, args.json, &mut newest).await {
+            return code;
+        }
+    }
+}
+
+/// Print whatever is newer than `newest`, oldest first; `Some` with the exit code once there is no one
+/// left to print for.
+async fn catch_up(
+    client: &DaemonClient,
+    root: &Root,
+    filters: &str,
+    json: bool,
+    newest: &mut Option<String>,
+) -> Option<u8> {
+    // A failed fetch has said why on standard error; the next event or reconnect fetches again, and
+    // nothing newer than the last line printed is skipped by then.
+    let items = timeline(client, &root.id, filters, None, newest.as_deref())
+        .await
+        .ok()?;
+
+    print_new(items, json, newest)
+}
+
+/// Print `items`, given newest first, oldest first, and remember the newest printed.
+fn print_new(
+    mut items: Vec<serde_json::Value>,
+    json: bool,
+    newest: &mut Option<String>,
+) -> Option<u8> {
+    items.reverse();
+    let mut out = io::stdout().lock();
+    for item in &items {
+        let written = if json {
+            serde_json::to_writer(&mut out, item)
+                .map_err(io::Error::from)
+                .and_then(|()| writeln!(out))
+        } else {
+            match Snapshot::deserialize(item) {
+                Ok(snapshot) => write_snapshot(&snapshot, &mut out),
+                Err(error) => {
+                    eprintln!(
+                        "keepster: a Snapshot in the daemon's answer could not be read: {error}"
+                    );
+                    Ok(())
+                }
+            }
+        };
+        match written.and_then(|()| out.flush()) {
+            Ok(()) => {}
+            // The reader has what it wanted, as with `keepster log | head -1`.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Some(exit::SUCCESS),
+            Err(error) => {
+                eprintln!("keepster: could not write the answer: {error}");
+                return Some(exit::OTHER);
+            }
+        }
+        if let Some(id) = item["id"].as_str() {
+            *newest = Some(id.to_owned());
+        }
+    }
+
+    None
 }
 
 /// Write the listing and return the exit code it deserves.

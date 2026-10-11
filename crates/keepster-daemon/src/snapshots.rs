@@ -6,7 +6,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
 use keepster_api::{
-    Change, Entries, Entry, EntryKind, ErrorCode, Problem, Reconciled, Snapshot, Timeline, Withheld,
+    Change, Entries, Entry, EntryKind, ErrorCode, Event, Problem, Reconciled, Snapshot, Timeline,
+    Withheld,
 };
 use keepster_app::config::Effective;
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
@@ -184,6 +185,7 @@ fn run_pass(
         if let Err(reason) = &captured.changed_paths {
             tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
         }
+        announce(state, id, captured);
     }
     if let Some(reason) = &pass.index_lag {
         // The Snapshot is durable — git came first — so this is not the request's failure. The index
@@ -192,6 +194,19 @@ fn run_pass(
     }
 
     Ok(pass)
+}
+
+/// Tell every open event stream that the Root `id` has a new Snapshot.
+///
+/// Called while the store's lock is still held, so the stream announces one Root's Snapshots in the order
+/// its history holds them.
+pub(crate) fn announce(state: &DaemonState, id: RootId, captured: &CapturedSnapshot) {
+    state.publish(Event::SnapshotCreated {
+        root: id.to_string(),
+        snapshot: captured.id.to_string(),
+        incomplete: !captured.unreadable.is_empty(),
+        changed_paths: captured.changed_paths.as_ref().ok().copied(),
+    });
 }
 
 /// What a capture of the Root `id` needs: its record, its store and the configuration in force.

@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use keepster_cli::{DaemonClient, Response};
+use keepster_cli::{DaemonClient, EventStream, Response};
 use keepster_daemon::{DaemonConfig, RunningDaemon};
 use tempfile::TempDir;
 
@@ -187,6 +187,15 @@ impl Harness {
             .unwrap_or_else(|error| panic!("GET {path} failed: {error}"))
     }
 
+    /// Open the daemon's live event stream, resuming after `last_event_id` if given, failing the test if
+    /// the daemon could not be reached or refused it.
+    pub async fn events(&self, last_event_id: Option<&str>) -> EventStream {
+        self.client
+            .events(last_event_id)
+            .await
+            .unwrap_or_else(|error| panic!("GET /v1/events failed: {error}"))
+    }
+
     /// `POST` JSON to the given path, failing the test if the daemon could not be reached.
     pub async fn post(&self, path: &str, body: &serde_json::Value) -> Response {
         self.client
@@ -218,6 +227,20 @@ impl Harness {
     pub async fn run_cli(&self, binary: &str, args: &[&str]) -> CliRun {
         self.run_cli_with_control_path(binary, self.control_path(), args)
             .await
+    }
+
+    /// Start the real CLI binary against this daemon and leave it running, for a command that does not
+    /// end by itself, such as `keepster log --follow`. Its standard output is piped for the test to read;
+    /// it is killed when the handle is dropped.
+    pub fn spawn_cli(&self, binary: &str, args: &[&str]) -> tokio::process::Child {
+        tokio::process::Command::new(binary)
+            .arg("--control-path")
+            .arg(self.control_path())
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap_or_else(|error| panic!("starting {binary}: {error}"))
     }
 
     /// Run the real CLI binary from inside `directory`, which is how the walk-up from a working

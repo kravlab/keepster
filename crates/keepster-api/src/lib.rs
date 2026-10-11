@@ -338,6 +338,97 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
+/// One event on the live stream, `GET /v1/events` (ticket 45).
+///
+/// Payloads are thin on purpose — identities and flags, never content: a client wanting detail fetches it
+/// through the endpoint that already serves that shape, so no second rendering of a Root or a Snapshot
+/// exists to drift. The set grows inside `/v1` as behaviour is added (retention, maintenance, jobs), so a
+/// client must pass over an event whose name it does not know.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "event")]
+pub enum Event {
+    /// A Snapshot was written, by whichever Trigger.
+    #[serde(rename = "snapshot.created")]
+    SnapshotCreated {
+        /// The Root it belongs to.
+        root: String,
+        /// The Snapshot's identity.
+        snapshot: String,
+        /// Whether some file meant to be captured could not be read.
+        incomplete: bool,
+        /// How many paths differ from the Snapshot before it; absent when the count failed after the
+        /// Snapshot was written.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed_paths: Option<u64>,
+    },
+    /// A directory became a Watched Root.
+    #[serde(rename = "root.registered")]
+    RootRegistered {
+        /// The new Root.
+        root: String,
+    },
+    /// A Root was deregistered.
+    #[serde(rename = "root.unregistered")]
+    RootUnregistered {
+        /// The Root that is no longer watched.
+        root: String,
+        /// Whether its History Store was erased with it.
+        purged: bool,
+    },
+    /// A Root's directory was recorded at a new path.
+    #[serde(rename = "root.moved")]
+    RootMoved {
+        /// The Root that moved.
+        root: String,
+    },
+    /// What the daemon can promise for a Root changed.
+    #[serde(rename = "root.state_changed")]
+    RootStateChanged {
+        /// The Root.
+        root: String,
+        /// Its state now.
+        state: RootState,
+        /// The reason behind a state that is not `watching`, as `GET /v1/roots/{id}` gives it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_code: Option<String>,
+    },
+    /// A Root's configuration in force changed: a file was edited and every file it depends on is
+    /// valid.
+    #[serde(rename = "config.reloaded")]
+    ConfigReloaded {
+        /// The Root whose configuration changed.
+        root: String,
+    },
+    /// A file a Root's configuration depends on became invalid, so the last known-good version stays
+    /// in force for it — or, without one, the Root is not captured.
+    #[serde(rename = "config.invalid")]
+    ConfigInvalid {
+        /// The Root the invalid file affects.
+        root: String,
+    },
+    /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
+    /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
+    #[serde(rename = "resync")]
+    Resync,
+}
+
+impl Event {
+    /// The event's name, which is also the SSE `event:` field it is sent under.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::SnapshotCreated { .. } => "snapshot.created",
+            Self::RootRegistered { .. } => "root.registered",
+            Self::RootUnregistered { .. } => "root.unregistered",
+            Self::RootMoved { .. } => "root.moved",
+            Self::RootStateChanged { .. } => "root.state_changed",
+            Self::ConfigReloaded { .. } => "config.reloaded",
+            Self::ConfigInvalid { .. } => "config.invalid",
+            Self::Resync => "resync",
+        }
+    }
+}
+
 /// What a Reconciliation asked for on demand did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

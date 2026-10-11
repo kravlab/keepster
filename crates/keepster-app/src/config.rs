@@ -208,7 +208,7 @@ impl Setting {
     }
 
     /// The setting without its provenance: what a capture acts on.
-    fn values(&self) -> Vec<&Value> {
+    pub fn values(&self) -> Vec<&Value> {
         match self {
             Self::Scalar(entry) => vec![&entry.value],
             Self::List(entries) => entries.iter().map(|entry| &entry.value).collect(),

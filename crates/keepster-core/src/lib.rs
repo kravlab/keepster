@@ -4,6 +4,7 @@
 //! product turns on — when a Snapshot is warranted, which Snapshots survive, which paths are captured
 //! — be tested without a disk and replayed without a daemon.
 
+mod event;
 mod identity;
 mod path;
 mod policy;
@@ -13,6 +14,7 @@ mod segment;
 mod snapshot;
 mod trigger;
 
+pub use event::EventId;
 pub use identity::NotAnIdentity;
 pub use path::{InvalidPath, RootPath};
 pub use policy::{
