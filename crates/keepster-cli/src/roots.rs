@@ -148,10 +148,12 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::DepthInvalid
         | ErrorCode::NotAFile
         | ErrorCode::NotADirectory
-        | ErrorCode::PurgeInvalid => exit::USAGE,
-        // The CLI builds every body from the contract types, so a refused one is this build's fault and
-        // nothing the person typed.
+        | ErrorCode::PurgeInvalid
+        | ErrorCode::ComparisonInvalid => exit::USAGE,
+        // The CLI builds every body and format from the contract types, so a refused one is this build's
+        // fault and nothing the person typed.
         ErrorCode::BodyInvalid
+        | ErrorCode::FormatInvalid
         | ErrorCode::RegistryFailed
         | ErrorCode::CaptureFailed
         | ErrorCode::ClockUnusable

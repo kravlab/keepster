@@ -357,7 +357,7 @@ pub async fn cat(args: &CatArgs, control_path: &Path, now: SystemTime) -> u8 {
 }
 
 /// Reduce a selector to one Snapshot's identity through ordinary timeline queries.
-async fn resolve_snapshot(
+pub(crate) async fn resolve_snapshot(
     client: &DaemonClient,
     root: &Root,
     selected: &Selector,

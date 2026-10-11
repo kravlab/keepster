@@ -482,7 +482,10 @@ pub(crate) async fn content(
 ///
 /// The Registry is held only long enough to find the directory: reads take no lock on the store
 /// (ticket 06), and they must not wait on a capture's walk either.
-fn located(state: &DaemonState, id: &str) -> Result<(RootId, StoreLocation), ProblemResponse> {
+pub(crate) fn located(
+    state: &DaemonState,
+    id: &str,
+) -> Result<(RootId, StoreLocation), ProblemResponse> {
     let id = roots::parse_id(id)?;
     let registry = state.registry();
     roots::record(&registry, id)?;

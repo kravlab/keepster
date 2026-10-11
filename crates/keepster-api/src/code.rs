@@ -60,6 +60,8 @@ error_codes! {
     BodyInvalid = "body_invalid": "The request body is not the JSON this endpoint takes.",
     PurgeInvalid = "purge_invalid": "`purge` is neither `true` nor `false`.",
     ConfigInvalid = "config_invalid": "The Root's configuration cannot be read, so nothing is captured on terms it does not state.",
+    ComparisonInvalid = "comparison_invalid": "`from` is not a Snapshot's identity, or `to` is neither one nor `working`.",
+    FormatInvalid = "format_invalid": "`format` is neither `json` nor `unified`.",
 }
 
 impl ErrorCode {

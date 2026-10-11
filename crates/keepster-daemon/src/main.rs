@@ -46,6 +46,7 @@ async fn main() -> ExitCode {
         Command::Snapshot(args) => keepster_cli::snapshot(args, &control_path).await,
         Command::Log(args) => keepster_cli::log(args, &control_path, now()).await,
         Command::Cat(args) => keepster_cli::cat(args, &control_path, now()).await,
+        Command::Diff(args) => keepster_cli::diff(args, &control_path, now()).await,
         Command::Explain(args) => keepster_cli::explain(args, &control_path).await,
         Command::Config(args) => keepster_cli::config(args, &control_path).await,
         Command::Reconcile(args) => keepster_cli::reconcile(args, &control_path).await,

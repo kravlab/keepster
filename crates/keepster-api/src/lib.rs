@@ -338,6 +338,115 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
+/// What changed between two versions of a Root — the answer of `GET /v1/roots/{id}/diff` (ticket 46).
+///
+/// Computed by the daemon, which holds both versions, so binary detection, rename detection and the size
+/// past which no hunks are computed are decided once and every client shows the same lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Diff {
+    /// The older side: a Snapshot's identity.
+    pub from: String,
+    /// The newer side: a Snapshot's identity, or `working` for the Working Tree as the next Snapshot
+    /// would hold it.
+    pub to: String,
+    /// Without `path`, every changed file in path order and without hunks; with it, that one file with
+    /// its hunks.
+    pub files: Vec<DiffFile>,
+}
+
+/// One file's part of a diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DiffFile {
+    /// Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root.
+    pub path: String,
+    /// Where a renamed file was on the older side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    /// How it changed; absent for a path asked about that did not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<FileChange>,
+    /// Whether either version is binary, by git's rule: no hunks are computed for it.
+    pub binary: bool,
+    /// Whether either version is larger than the daemon diffs, 8 MiB: no hunks are computed for it, and
+    /// it is not probed for being binary.
+    pub too_large: bool,
+    /// The changed lines with their context. Empty in a summary, and for a binary or too large file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// How a file changed between two versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FileChange {
+    /// Only on the newer side.
+    Added,
+    /// On both sides, different.
+    Modified,
+    /// Only on the older side.
+    Deleted,
+    /// Moved, perhaps edited too: one change, with `old_path` saying where from.
+    Renamed,
+}
+
+/// One run of changed lines with the context around it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DiffHunk {
+    /// The run's first line on the older side, counting from 1.
+    pub old_start: u32,
+    /// How many lines of the older side it covers.
+    pub old_lines: u32,
+    /// The run's first line on the newer side, counting from 1.
+    pub new_start: u32,
+    /// How many lines of the newer side it covers.
+    pub new_lines: u32,
+    /// Its lines, in order.
+    pub lines: Vec<DiffLine>,
+}
+
+/// One line of a hunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DiffLine {
+    /// Which side it is on.
+    pub kind: LineKind,
+    /// The line without its ending. Text that is not UTF-8 is shown with replacement characters; the
+    /// unified format carries the exact bytes.
+    pub text: String,
+    /// `false` for a file's last line when the file ends without a newline; absent otherwise.
+    #[serde(default = "always", skip_serializing_if = "is_true")]
+    pub newline: bool,
+}
+
+/// Which side of a diff a line is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum LineKind {
+    /// On both sides.
+    Context,
+    /// Only on the newer side.
+    Added,
+    /// Only on the older side.
+    Deleted,
+}
+
+fn always() -> bool {
+    true
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` hands the field by reference"
+)]
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// One event on the live stream, `GET /v1/events` (ticket 45).
 ///
 /// Payloads are thin on purpose — identities and flags, never content: a client wanting detail fetches it

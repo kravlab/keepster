@@ -7,6 +7,7 @@
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod diff;
 pub mod events;
 pub mod explain;
 pub mod history;
@@ -20,10 +21,11 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, ExplainArgs, LogArgs, MoveArgs, ReconcileArgs, SnapshotArgs,
-    StatusArgs, UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, LogArgs, MoveArgs, ReconcileArgs,
+    SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
+pub use diff::diff;
 pub use events::{EventStream, SseEvent};
 pub use explain::explain;
 pub use history::{cat, log};

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId};
 use keepster_store::{
-    CaptureRequest, Depth, Entry, HistoryStore, Pass, RegistryError, RootRecord, StoreError,
-    TimelinePage, TimelineQuery,
+    CaptureRequest, Depth, DiffTarget, Entry, FileDiff, HistoryStore, Pass, RegistryError,
+    RootRecord, StoreError, TimelinePage, TimelineQuery,
 };
 
 /// The directory inside a Root's own directory that holds its History Store.
@@ -146,5 +146,32 @@ pub fn entries(
     match open_for_reading(location)? {
         Some(store) => store.entries(snapshot, directory, depth),
         None => Err(StoreError::SnapshotNotFound(snapshot)),
+    }
+}
+
+/// What changed from the Snapshot `from` to `to`: every changed file without hunks, or the one `path`
+/// names with them.
+pub fn diff(
+    location: &StoreLocation,
+    from: SnapshotId,
+    to: &DiffTarget<'_>,
+    path: Option<&RootPath>,
+) -> Result<Vec<FileDiff>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.diff(from, to, path),
+        None => Err(StoreError::SnapshotNotFound(from)),
+    }
+}
+
+/// The same comparison as [`diff`], as the unified patch git prints.
+pub fn unified(
+    location: &StoreLocation,
+    from: SnapshotId,
+    to: &DiffTarget<'_>,
+    path: Option<&RootPath>,
+) -> Result<Vec<u8>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.unified(from, to, path),
+        None => Err(StoreError::SnapshotNotFound(from)),
     }
 }

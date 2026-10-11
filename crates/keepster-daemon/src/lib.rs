@@ -11,6 +11,7 @@
 
 mod configuration;
 mod content;
+mod diff;
 mod events;
 mod explain;
 mod openapi;
@@ -342,6 +343,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::reconcile))
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
+        .routes(routes!(diff::diff))
         .routes(routes!(explain::explain))
         .routes(routes!(configuration::show))
 }

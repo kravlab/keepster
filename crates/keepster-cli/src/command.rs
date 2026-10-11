@@ -51,6 +51,9 @@ pub enum Command {
     /// Write one captured version of a file to standard output.
     Cat(CatArgs),
 
+    /// Show what changed between a Snapshot and another Snapshot or the Working Tree.
+    Diff(DiffArgs),
+
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
 
@@ -159,6 +162,42 @@ pub struct CatArgs {
     /// holding the file.
     #[arg(short = 'r', long)]
     pub root: Option<String>,
+}
+
+/// Options of `keepster diff`.
+#[derive(Debug, Args)]
+pub struct DiffArgs {
+    /// Only this file, as unified hunks; without it, a summary of every changed path. It also decides
+    /// the Root, unless `--root` does.
+    pub path: Option<PathBuf>,
+
+    /// The older side, as `cat -s` takes it: `latest` (the default), `~N`, an identity, a moment or a
+    /// duration ago.
+    #[arg(long, value_name = "SELECTOR")]
+    pub from: Option<String>,
+
+    /// The newer side: `working` (the default) for the Working Tree as the next Snapshot would hold it,
+    /// or a Snapshot as `--from` takes one.
+    #[arg(long, value_name = "SELECTOR")]
+    pub to: Option<String>,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the path, or the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print every changed file's unified hunks rather than the summary.
+    #[arg(short = 'p', long, conflicts_with = "json")]
+    pub patch: bool,
+
+    /// Print the daemon's structured answer.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write the output to this file, byte for byte, rather than to standard output — which a shell
+    /// such as Windows PowerShell 5.1 would re-encode.
+    #[arg(short = 'o', long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
 }
 
 /// Options of `keepster snapshot`.

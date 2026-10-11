@@ -32,6 +32,10 @@ pub(crate) const SNAPSHOT_TRAILER: &str = "Keepster-Snapshot";
 
 /// What the trailer carrying the Root's identity is called, so a store found on its own says which
 /// Root it belongs to.
+mod diff;
+
+pub use diff::{DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind};
+
 const ROOT_TRAILER: &str = "Keepster-Root";
 
 /// What the trailer naming the Trigger that caused a Snapshot is called.
@@ -580,29 +584,11 @@ impl HistoryStore {
         } = *request;
         let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
         let reference = format!("{SEGMENT_REFS}/{segment}");
-
-        // Two different questions, and conflating them is what ADR 0004 warns about. The *parent* is
-        // the tip of this Segment, so a new Segment starts parentless (ADR 0001); the *baseline* is the
-        // newest Snapshot anywhere at or before it, because the previous Snapshot's tree must be
-        // readable at every capture, including the first of a new Segment.
-        let parent = self.segment_tip(&reference)?;
-        let baseline = match &parent {
-            Some(parent) => Some(parent.clone()),
-            None => self.newest_snapshot_before(&segment)?,
-        };
-
-        let mut index = git2::Index::new().map_err(self.failed("prepared"))?;
+        let (parent, baseline) = self.parent_and_baseline(&segment, &reference)?;
         let baseline_tree = match &baseline {
             Some(commit) => Some(commit.tree().map_err(self.failed("read"))?),
             None => None,
         };
-        if let Some(tree) = &baseline_tree {
-            // Seeding from this store's own objects matters: cached subtree ids are copied without an
-            // existence check, so a seed from elsewhere could yield a tree referencing objects this
-            // store lacks (ADR 0004). Reading the tree also fills the TREE cache, which is what lets
-            // `write_tree` rewrite only the changed paths' ancestry.
-            index.read_tree(tree).map_err(self.failed("read"))?;
-        }
 
         // Evidence that cannot be read is no evidence: everything is read instead, which is the cost of
         // a lost index and never a wrong Snapshot. Verifying by hash reads everything regardless, but the
@@ -615,19 +601,8 @@ impl HistoryStore {
             Verify::Stat => &observations,
             Verify::Hash => &HashMap::new(),
         };
-        let walked = self.add_working_tree(
-            &mut index,
-            baseline_tree.as_ref(),
-            root_path,
-            policy,
-            vouching,
-            now,
-        )?;
-        remove_vanished(&mut index, &walked)?;
-
-        let tree_id = index
-            .write_tree_to(&self.repository)
-            .map_err(self.failed("written"))?;
+        let (tree_id, walked) =
+            self.write_working_tree(baseline_tree.as_ref(), root_path, policy, vouching, now)?;
         if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
             let index_lag = self.keep_observations(&walked, &observations);
             return Ok(walked.pass(None, index_lag));
@@ -689,6 +664,59 @@ impl HistoryStore {
         };
 
         Ok(walked.pass(Some(snapshot), index_lag))
+    }
+
+    /// The Snapshot a capture at `segment` would follow — its *parent*, the tip of that Segment — and the
+    /// one whose tree it starts from — its *baseline*.
+    ///
+    /// Two different questions, and conflating them is what ADR 0004 warns about. The parent is the tip
+    /// of this Segment, so a new Segment starts parentless (ADR 0001); the baseline is the newest Snapshot
+    /// anywhere at or before it, because the previous Snapshot's tree must be readable at every capture,
+    /// including the first of a new Segment.
+    fn parent_and_baseline(
+        &self,
+        segment: &SegmentName,
+        reference: &str,
+    ) -> Result<(Option<git2::Commit<'_>>, Option<git2::Commit<'_>>), StoreError> {
+        let parent = self.segment_tip(reference)?;
+        let baseline = match &parent {
+            Some(parent) => Some(parent.clone()),
+            None => self.newest_snapshot_before(segment)?,
+        };
+
+        Ok((parent, baseline))
+    }
+
+    /// The Working Tree as a tree in this store's object database, under `policy` — what a Snapshot
+    /// taken now would hold — starting from the baseline's tree.
+    ///
+    /// Writing the tree writes the blobs it needs; when no Snapshot follows, they stay unreferenced until
+    /// maintenance prunes them, and the next capture that needs them finds them already written.
+    fn write_working_tree(
+        &self,
+        baseline_tree: Option<&git2::Tree<'_>>,
+        root_path: &Path,
+        policy: &CapturePolicy,
+        vouching: &HashMap<String, Observation>,
+        now: SystemTime,
+    ) -> Result<(git2::Oid, Walked), StoreError> {
+        let mut index = git2::Index::new().map_err(self.failed("prepared"))?;
+        if let Some(tree) = baseline_tree {
+            // Seeding from this store's own objects matters: cached subtree ids are copied without an
+            // existence check, so a seed from elsewhere could yield a tree referencing objects this
+            // store lacks (ADR 0004). Reading the tree also fills the TREE cache, which is what lets
+            // `write_tree` rewrite only the changed paths' ancestry.
+            index.read_tree(tree).map_err(self.failed("read"))?;
+        }
+
+        let walked =
+            self.add_working_tree(&mut index, baseline_tree, root_path, policy, vouching, now)?;
+        remove_vanished(&mut index, &walked)?;
+        let tree_id = index
+            .write_tree_to(&self.repository)
+            .map_err(self.failed("written"))?;
+
+        Ok((tree_id, walked))
     }
 
     /// One page of the Root's chronology, newest first.

@@ -112,6 +112,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/roots",
             "GET /v1/roots/{id}",
             "GET /v1/roots/{id}/config",
+            "GET /v1/roots/{id}/diff",
             "GET /v1/roots/{id}/explain",
             "GET /v1/roots/{id}/snapshots",
             "GET /v1/roots/{id}/snapshots/{snapshot}/content",
@@ -161,6 +162,12 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "ConfigKey",
         "ConfigEntry",
         "Event",
+        "Diff",
+        "DiffFile",
+        "DiffHunk",
+        "DiffLine",
+        "FileChange",
+        "LineKind",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -284,6 +291,7 @@ fn every_operation_has_its_own_stable_name() {
     assert_eq!(
         names,
         [
+            "diff_root",
             "explain_path",
             "get_openapi_document",
             "get_root",
@@ -354,5 +362,20 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
             "root.unregistered",
             "snapshot.created",
         ]
+    );
+}
+
+#[test]
+fn a_diff_is_described_in_both_of_its_formats() {
+    let document = document();
+    let content = &document["paths"]["/v1/roots/{id}/diff"]["get"]["responses"]["200"]["content"];
+
+    assert_eq!(
+        content["application/json"]["schema"]["$ref"],
+        "#/components/schemas/Diff"
+    );
+    assert!(
+        content["text/x-diff"].is_object(),
+        "the patch text: {content}"
     );
 }
