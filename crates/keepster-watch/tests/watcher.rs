@@ -6,13 +6,17 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use keepster_core::{CapturePolicy, Level, RootPath, Rule, RuleOrigin, RuleSet};
+use keepster_core::CapturePolicy;
 use keepster_watch::{WatchEvent, Watcher};
 
 /// Long enough for a loaded CI runner; the tests finish as soon as the event arrives.
 const PATIENCE: Duration = Duration::from_secs(20);
 
+/// Only Linux arms a watch per directory, so only there is the watched list worth asserting on.
+#[cfg(target_os = "linux")]
 fn excluding(patterns: &[&str]) -> CapturePolicy {
+    use keepster_core::{Level, RootPath, Rule, RuleOrigin, RuleSet};
+
     let rules = patterns
         .iter()
         .map(|pattern| {
