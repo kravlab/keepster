@@ -9,6 +9,7 @@
 // routed nor documented, and this is what turns that silent omission into a build failure (ticket 40).
 #![deny(dead_code)]
 
+mod configuration;
 mod content;
 mod explain;
 mod openapi;
@@ -101,11 +102,16 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     .map_err(io::Error::other)?;
     let listener = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
-    let task = tokio::spawn(serve(
-        listener,
-        router(DaemonState::new(registry, config.config_path)),
-        stop,
-    ));
+    let state = DaemonState::new(registry, config.config_path, config.store_base);
+    // Every file is read again whenever a request needs it; the tick is what makes a reload happen
+    // when nothing asks, so that what follows from one — a Root queued for a full comparison, a
+    // `Degraded` state — does not wait for a client.
+    let ticker = tokio::spawn(configuration::reload_continually(state.clone()));
+    let task = tokio::spawn(async move {
+        let served = serve(listener, router(state), stop).await;
+        ticker.abort();
+        served
+    });
 
     Ok(RunningDaemon {
         control_path: config.control_path,
@@ -173,30 +179,53 @@ struct DaemonState {
     /// One lock per History Store, so that a capture and — from ticket 52 — a maintenance pass are
     /// never in the same store at once.
     store_locks: Arc<Mutex<HashMap<RootId, Arc<Mutex<()>>>>>,
-    /// The global configuration file, read at every capture and every `explain` (ticket 42 adds the
-    /// reload that replaces this).
-    config_path: Option<Arc<PathBuf>>,
+    /// The configuration in force for every Root, re-read whenever its files change.
+    config: Arc<Mutex<keepster_app::config::Configuration>>,
 }
 
 impl DaemonState {
-    fn new(registry: Registry, config_path: Option<PathBuf>) -> Self {
+    fn new(registry: Registry, config_path: Option<PathBuf>, store_base: PathBuf) -> Self {
         Self {
             started: Instant::now(),
             registry: Arc::new(Mutex::new(registry)),
             store_locks: Arc::new(Mutex::new(HashMap::new())),
-            config_path: config_path.map(Arc::new),
+            config: Arc::new(Mutex::new(keepster_app::config::Configuration::new(
+                config_path,
+                std::env::home_dir(),
+                store_base,
+            ))),
         }
     }
 
-    /// The capture policy of the Root at `root_path`, read from both configuration levels now.
-    fn policy(
+    /// The configuration of the Root `id` at `root_path` as it stands, re-reading whichever of its
+    /// files changed since it was last asked for.
+    fn configuration(&self, id: RootId, root_path: &Path) -> keepster_app::config::Resolved {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resolve(id, root_path)
+    }
+
+    /// The configuration in force for the Root `id` at `root_path`, or the problem that keeps it from
+    /// being captured at all: a file that never had a valid version (ticket 04).
+    fn effective(
         &self,
+        id: RootId,
         root_path: &Path,
-    ) -> Result<keepster_app::config::LoadedPolicy, keepster_app::config::ConfigError> {
-        keepster_app::config::load_policy(
-            self.config_path.as_deref().map(PathBuf::as_path),
-            root_path,
-        )
+    ) -> Result<keepster_app::config::Effective, problem::ProblemResponse> {
+        let resolved = self.configuration(id, root_path);
+
+        resolved
+            .effective
+            .ok_or_else(|| problem::config_problem(&resolved.errors))
+    }
+
+    /// Let go of the configuration of every Root not among `registered`, once it is deregistered.
+    fn forget_configuration_except(&self, registered: &[keepster_store::RootRecord]) {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|id| registered.iter().any(|record| record.id == id));
     }
 
     /// The exclusive lock on one Root's History Store.
@@ -253,6 +282,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
         .routes(routes!(explain::explain))
+        .routes(routes!(configuration::show))
 }
 
 /// Which build and which API this daemon is.
@@ -281,7 +311,7 @@ async fn version() -> Json<VersionInfo> {
 async fn status(
     State(state): State<DaemonState>,
 ) -> Result<Json<Status>, problem::ProblemResponse> {
-    let registered = roots::reported(&state.registry())?;
+    let registered = roots::reported(&state, &state.registry())?;
 
     Ok(Json(Status {
         daemon: DaemonStatus {

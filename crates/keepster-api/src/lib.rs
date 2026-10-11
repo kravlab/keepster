@@ -330,6 +330,60 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
+/// One Root's effective configuration: every key of the schema, the value in force, and the level
+/// that set it.
+///
+/// Read-only: the configuration is the TOML files a person edits, which the daemon reloads by itself
+/// (ticket 07). While a file is invalid, the values here are the last known-good ones and `errors` says
+/// which file is at fault and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RootConfiguration {
+    /// The Root's identity.
+    pub root: String,
+    /// Every key of the schema, in the order the schema lists them.
+    pub keys: Vec<ConfigKey>,
+    /// What the configuration defines but almost certainly does not mean. None of them makes the Root
+    /// `Degraded`.
+    pub warnings: Vec<ConfigWarning>,
+    /// The files whose current version is invalid and therefore not applied, each in the standard
+    /// error shape with the code `config_invalid` and the file as the `path` detail. Any makes the
+    /// Root `Degraded`.
+    pub errors: Vec<Problem>,
+}
+
+/// One key of a Root's effective configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ConfigKey {
+    /// The key as a person writes it, `table.key`.
+    pub key: String,
+    /// The value in force, typed as the key is: a switch, a number of bytes, or a list. A pattern list
+    /// holds its patterns as written; `files.max_size_by_pattern` holds `{ pattern, max }` objects.
+    pub value: serde_json::Value,
+    /// Where the value was set: the most specific level that set a scalar — the built-in default when
+    /// none did — and, for a list, its last entry's.
+    pub origin: Origin,
+    /// For a pattern list, every entry and where it was written, from the least specific level to the
+    /// most — which is the order the last matching pattern is found in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<ConfigEntry>>,
+    /// Whether a file sets this key to something else that only a restart applies. The value above is
+    /// the one in force.
+    pub restart_required: bool,
+}
+
+/// One entry of a layered list, and where it was written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ConfigEntry {
+    /// The entry, as `ConfigKey::value` types it.
+    pub value: serde_json::Value,
+    /// Where it was written.
+    #[serde(flatten)]
+    pub origin: Origin,
+}
+
 /// How one path differs between a Snapshot and the Snapshot before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -433,10 +487,11 @@ pub struct Problem {
 pub enum RootState {
     /// Captured as promised.
     Watching,
-    /// Still watched, but not as promised — its configuration failed to load and an older one is in
-    /// force, or its coverage guarantee is switched off.
+    /// Still watched, but not as promised — its configuration failed to load and the last known-good
+    /// one is in force, or its coverage guarantee is switched off.
     Degraded,
-    /// Nothing can be captured: the directory is missing, unmounted or unreadable, or its History
-    /// Store was written by a version this build cannot open.
+    /// Nothing can be captured: the directory is missing, unmounted or unreadable, its History Store
+    /// was written by a version this build cannot open, or its configuration has never had a valid
+    /// version to fall back on.
     Unavailable,
 }

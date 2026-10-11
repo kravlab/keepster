@@ -150,7 +150,7 @@ fn describe(rule: &RuleReference) -> String {
 }
 
 /// Where a rule or a value was set: its level, its file and its line.
-fn where_set(origin: &Origin) -> String {
+pub(crate) fn where_set(origin: &Origin) -> String {
     let level = match origin.level {
         ConfigLevel::Default => "default",
         ConfigLevel::IgnoreFile => "ignore-file",

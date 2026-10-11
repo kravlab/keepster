@@ -10,7 +10,6 @@ use keepster_core::{Kind, Level, Rule, RuleOrigin, Verdict};
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
-use crate::problem::config_problem;
 use crate::roots::{self, RootAddress};
 use crate::snapshots::parse_path;
 
@@ -53,7 +52,7 @@ pub(crate) async fn explain(
         roots::record(&registry, id)?
     };
 
-    let loaded = state.policy(&root.path).map_err(config_problem)?;
+    let loaded = state.effective(id, &root.path)?;
     let policy = config::policy_for_path(&loaded.policy, &root.path, &path);
     let on_disk = config::observe(&root.path, &path);
     let kind = match on_disk.kind {
@@ -107,14 +106,7 @@ pub(crate) async fn explain(
         size: on_disk.size,
         max_size: explained.max_size,
         max_size_origin: origin(explained.max_size_origin),
-        warnings: loaded
-            .warnings
-            .into_iter()
-            .map(|warning| ConfigWarning {
-                code: warning.code.as_str().to_owned(),
-                message: warning.message,
-            })
-            .collect(),
+        warnings: loaded.warnings.into_iter().map(warning).collect(),
     }))
 }
 
@@ -131,8 +123,16 @@ fn reference(rule: &Rule) -> RuleReference {
     }
 }
 
+/// A configuration warning as the wire spells it.
+pub(crate) fn warning(warning: keepster_app::config::ConfigWarning) -> ConfigWarning {
+    ConfigWarning {
+        code: warning.code.as_str().to_owned(),
+        message: warning.message,
+    }
+}
+
 /// Where a rule or a value was set, as the wire spells it.
-fn origin(origin: &RuleOrigin) -> Origin {
+pub(crate) fn origin(origin: &RuleOrigin) -> Origin {
     Origin {
         level: match origin.level {
             Level::Default => ConfigLevel::Default,

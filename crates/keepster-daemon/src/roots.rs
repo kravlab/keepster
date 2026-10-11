@@ -10,6 +10,7 @@ use keepster_core::RootId;
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
 
 use crate::DaemonState;
+use crate::configuration;
 use crate::problem::ProblemResponse;
 
 /// The `{id}` segment every Root endpoint is addressed by: the extractor and its description at once.
@@ -58,9 +59,14 @@ pub(crate) async fn list(
             let path = absolute_query_path(path)?;
             let found = roots::resolve(&registry, &path).map_err(registry_problem)?;
 
-            Ok(Json(found.iter().map(describe_record).collect()))
+            Ok(Json(
+                found
+                    .iter()
+                    .map(|record| describe_record(&state, record))
+                    .collect(),
+            ))
         }
-        None => Ok(Json(reported(&registry)?)),
+        None => Ok(Json(reported(&state, &registry)?)),
     }
 }
 
@@ -84,7 +90,7 @@ pub(crate) async fn show(
     let id = parse_id(&id)?;
     let registry = state.registry();
 
-    reported(&registry)?
+    reported(&state, &registry)?
         .into_iter()
         .find(|root| root.id == id.to_string())
         .map(Json)
@@ -116,7 +122,7 @@ pub(crate) async fn register(
     let record =
         roots::register(&registry, now(), request.path.as_ref()).map_err(register_problem)?;
 
-    Ok((StatusCode::CREATED, Json(describe_record(&record))))
+    Ok((StatusCode::CREATED, Json(describe_record(&state, &record))))
 }
 
 /// Whether a deregistration also erases the History Store.
@@ -189,17 +195,20 @@ pub(crate) async fn move_root(
     let registry = state.registry();
     let record = roots::move_root(&registry, id, request.path.as_ref()).map_err(root_problem)?;
 
-    Ok(Json(describe_record(&record)))
+    Ok(Json(describe_record(&state, &record)))
 }
 
 /// Every Root as `status` and the registry listing report it.
 ///
 /// The same rendering both use, because ticket 07 keeps a Root's state on the Root itself rather than in
 /// a second health shape.
-pub(crate) fn reported(registry: &keepster_store::Registry) -> Result<Vec<Root>, ProblemResponse> {
+pub(crate) fn reported(
+    state: &DaemonState,
+    registry: &keepster_store::Registry,
+) -> Result<Vec<Root>, ProblemResponse> {
     let entries = roots::list(registry).map_err(registry_problem)?;
 
-    Ok(entries.iter().map(describe).collect())
+    Ok(entries.iter().map(|entry| describe(state, entry)).collect())
 }
 
 /// The Registry's record for one Root, or the problem that explains why there is none.
@@ -292,9 +301,9 @@ pub(crate) fn now() -> std::time::SystemTime {
 /// A Root whose record cannot be read is still reported, as `Unavailable` with the reason: ticket 08
 /// makes such a Root a value rather than an error, and ticket 26 refuses a newer store format as
 /// narrowly as its level allows — this Root, not the whole listing.
-fn describe(entry: &RegistryEntry) -> Root {
+fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
     match &entry.record {
-        Ok(record) => describe_record(record),
+        Ok(record) => describe_record(state, record),
         Err(error) => Root {
             id: entry.id.to_string(),
             // A record too new to trust still parsed, so its path is known; a corrupt one gives nothing,
@@ -314,14 +323,17 @@ fn describe(entry: &RegistryEntry) -> Root {
 
 /// How a readable Root appears on the wire.
 ///
-/// The state is the honest one this build can determine: a directory that is gone means nothing can be
-/// captured at all, which `CONTEXT.md` calls `Unavailable`; otherwise capture simply does not exist yet
-/// (tickets 43 and 44), which is a promise not kept rather than a Root that cannot be served.
-fn describe_record(record: &keepster_store::RootRecord) -> Root {
-    let (state, state_code) = if record.path.is_dir() {
-        (RootState::Degraded, "capture_unavailable")
-    } else {
+/// The state is the honest one this build can determine, the most serious reason first: a directory
+/// that is gone means nothing can be captured at all, which `CONTEXT.md` calls `Unavailable`, and so
+/// does a configuration with no version to apply; one whose current version is invalid leaves the last
+/// known-good in force, `Degraded`; otherwise automatic capture simply does not exist yet (tickets 43
+/// and 44), which is a promise not kept rather than a Root that cannot be served.
+fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
+    let (state, state_code) = if !record.path.is_dir() {
         (RootState::Unavailable, "root_missing")
+    } else {
+        configuration::state_of(&daemon.configuration(record.id, &record.path))
+            .unwrap_or((RootState::Degraded, "capture_unavailable"))
     };
 
     Root {

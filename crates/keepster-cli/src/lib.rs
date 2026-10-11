@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod command;
+pub mod config;
 pub mod explain;
 pub mod history;
 pub mod render;
@@ -17,9 +18,10 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ExplainArgs, LogArgs, MoveArgs, SnapshotArgs, StatusArgs, UnwatchArgs,
-    WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, ExplainArgs, LogArgs, MoveArgs, SnapshotArgs, StatusArgs,
+    UnwatchArgs, WatchArgs,
 };
+pub use config::config;
 pub use explain::explain;
 pub use history::{cat, log};
 pub use render::{write_human, write_json, write_roots};

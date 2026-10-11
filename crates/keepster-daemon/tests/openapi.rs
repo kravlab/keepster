@@ -110,6 +110,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/openapi.json",
             "GET /v1/roots",
             "GET /v1/roots/{id}",
+            "GET /v1/roots/{id}/config",
             "GET /v1/roots/{id}/explain",
             "GET /v1/roots/{id}/snapshots",
             "GET /v1/roots/{id}/snapshots/{snapshot}/content",
@@ -152,6 +153,9 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "Origin",
         "ConfigLevel",
         "ConfigWarning",
+        "RootConfiguration",
+        "ConfigKey",
+        "ConfigEntry",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -273,6 +277,7 @@ fn every_operation_has_its_own_stable_name() {
             "explain_path",
             "get_openapi_document",
             "get_root",
+            "get_root_config",
             "get_status",
             "get_version",
             "list_entries",

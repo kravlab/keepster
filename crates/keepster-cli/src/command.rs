@@ -53,6 +53,22 @@ pub enum Command {
 
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
+
+    /// Show a Root's effective configuration, and the level that set each key.
+    Config(ConfigArgs),
+}
+
+/// Options of `keepster config`.
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print the daemon's answer as JSON, verbatim.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster explain`.

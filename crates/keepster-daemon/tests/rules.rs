@@ -293,14 +293,16 @@ async fn ignore_files_are_honoured_only_on_request_and_beneath_the_users_rules()
 #[tokio::test]
 async fn an_unreadable_configuration_refuses_the_capture_rather_than_dropping_the_rules() {
     // Falling back to defaults would drop the user's exclusions and pull into history exactly what they
-    // existed to keep out (ticket 04).
+    // existed to keep out (ticket 04). The file is broken before the daemon ever reads it, so there is
+    // no known-good version to stand in for it either.
     let daemon = Harness::start().await;
-    let (root, project) = registered(&daemon).await;
+    let project = daemon.scratch("project");
     write(
         &project,
         ".keepster.toml",
         b"[files]\nexclude = [\"[unclosed\"]\n",
     );
+    let (root, _) = registered(&daemon).await;
 
     let refused = daemon
         .post(

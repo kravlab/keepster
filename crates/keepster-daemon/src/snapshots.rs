@@ -12,7 +12,7 @@ use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
 use keepster_store::{CapturedSnapshot, Depth, SnapshotSummary, StoreError, TimelineQuery};
 
 use crate::DaemonState;
-use crate::problem::{ProblemResponse, config_problem};
+use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
 
 /// The `{id}` and `{snapshot}` segments a Snapshot is addressed by.
@@ -77,7 +77,7 @@ pub(crate) async fn create(
     // Read before the store is locked, and never applied in part: a configuration that cannot be read
     // refuses the capture rather than falling back to defaults, which would drop the user's exclude rules
     // and pull into history exactly what they existed to keep out (ticket 04).
-    let loaded = state.policy(&root.path).map_err(config_problem)?;
+    let loaded = state.effective(id, &root.path)?;
     for warning in &loaded.warnings {
         tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
     }

@@ -1,17 +1,21 @@
-//! The capture policy of one Root, read from the `[files]` table of the two configuration levels.
+//! The configuration: two TOML levels, merged per key with the level that set each value, reloaded
+//! whenever a file changes, and never applied while invalid.
 //!
-//! This is the part of the configuration that decides what a Snapshot holds. Ticket 42 widens it into
-//! the whole schema — the per-Root and pattern blocks of the global file, provenance per key, automatic
-//! reload and the last known-good — and this reader is where that grows from. Until then both files are
-//! read at every capture and every `explain`, so an edit takes effect at the next one.
+//! The global file is the user's own; besides its `[files]` table it holds `[root.<RootId>]` and
+//! `[[roots]]` blocks that accept the whole schema, so a Root's own `.keepster.toml` is optional — the
+//! way to share rules through a repository, not the way to configure a Root (ticket 04). Levels, from
+//! the least specific: `default`, `global`, `global-pattern`, `global-root`, `root`.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Write;
+
 use keepster_core::{
-    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, Level, RootPath, Rule, RuleOrigin, RuleSet,
-    SizeRule, ignore_file_rules, parse_size,
+    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, PathGlob, RootId,
+    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, ignore_file_rules, parse_size,
 };
 use serde::Deserialize;
 use toml::Spanned;
@@ -21,7 +25,7 @@ pub const ROOT_CONFIG: &str = ".keepster.toml";
 
 /// Why the configuration could not be read. It is never applied in part: falling back to defaults would
 /// drop the user's exclude rules and pull into history exactly what they existed to keep out (ticket 04).
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{path}: {message}")]
 pub struct ConfigError {
     /// The file at fault.
@@ -62,19 +66,500 @@ impl WarningCode {
     }
 }
 
-/// A Root's capture policy, and what was worth warning about while reading it.
+/// One key of the schema, and the class it belongs to.
+///
+/// The class decides what may set the key and what changing it does, which is why it is data rather than
+/// a rule written into each place that needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeySpec {
+    /// The key as a person writes it, `table.key`.
+    pub name: &'static str,
+    /// Whether a Root's own `.keepster.toml` may set it. Three classes may not, whatever they describe:
+    /// keys describing the daemon, keys making it execute something, and keys deciding where the user's
+    /// data goes or what may enter it — a file arriving in someone else's repository must not choose
+    /// any of them (ticket 04).
+    pub root_settable: bool,
+    /// Whether an edit takes effect without a restart. One that cannot is reported as restart-required
+    /// rather than silently ignored; the first such key is ticket 60's loopback listener.
+    pub live: bool,
+    /// Whether it decides what a capture holds, so that changing it queues the Root for a full
+    /// comparison against its Working Tree.
+    pub classifies: bool,
+}
+
+/// Every key this build understands, in the order the configuration resource lists them.
+///
+/// The schema is closed: a key that is not here is refused rather than ignored, because a misspelt
+/// `exlude` would otherwise capture what it meant to keep out.
+pub const SCHEMA: &[KeySpec] = &[
+    capture_key("files.exclude"),
+    capture_key("files.include"),
+    capture_key("files.respect_gitignore"),
+    capture_key("files.max_size"),
+    capture_key("files.max_size_by_pattern"),
+    // What may enter the user's history past the secret denylist is theirs to decide alone.
+    KeySpec {
+        name: "files.secret_opt_in",
+        root_settable: false,
+        live: true,
+        classifies: true,
+    },
+];
+
+const fn capture_key(name: &'static str) -> KeySpec {
+    KeySpec {
+        name,
+        root_settable: true,
+        live: true,
+        classifies: true,
+    }
+}
+
+/// The schema's entry for `name`, which must be in it.
+fn spec(name: &str) -> &'static KeySpec {
+    SCHEMA
+        .iter()
+        .find(|spec| spec.name == name)
+        .expect("every key the merge reports is in the schema")
+}
+
+/// One value, as the schema types it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    /// A switch.
+    Bool(bool),
+    /// A size, in bytes.
+    Bytes(u64),
+    /// A pattern, exactly as written.
+    Pattern(String),
+    /// A pattern with the size cap it sets; a negated pattern sets none, returning its paths to the
+    /// scalar cap.
+    SizePattern {
+        /// The pattern, exactly as written.
+        pattern: String,
+        /// The cap in bytes, absent for a negated pattern.
+        max: Option<u64>,
+    },
+}
+
+/// A value, and where it was set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    /// The value.
+    pub value: Value,
+    /// The level, file and line that set it.
+    pub origin: RuleOrigin,
+}
+
+/// What a key is set to once every level has been merged.
+///
+/// The two shapes are the two merge classes: a pattern list layers, every level contributing its
+/// entries after the less specific ones; a scalar is replaced wholesale by the most specific level
+/// that sets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Setting {
+    /// The value in force, and the level that set it — the built-in default when none did.
+    Scalar(Entry),
+    /// Every entry of a layered list, from the least specific level to the most.
+    List(Vec<Entry>),
+}
+
+impl Setting {
+    /// The level that decided this setting: a scalar's own, or the most specific level a list has an
+    /// entry from — the built-in default for an empty list.
+    pub fn level(&self) -> Level {
+        match self {
+            Self::Scalar(entry) => entry.origin.level,
+            Self::List(entries) => entries
+                .iter()
+                .map(|entry| entry.origin.level)
+                .max()
+                .unwrap_or(Level::Default),
+        }
+    }
+
+    /// The setting without its provenance: what a capture acts on.
+    fn values(&self) -> Vec<&Value> {
+        match self {
+            Self::Scalar(entry) => vec![&entry.value],
+            Self::List(entries) => entries.iter().map(|entry| &entry.value).collect(),
+        }
+    }
+}
+
+/// One key of a Root's effective configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveKey {
+    /// Which key, and its class.
+    pub spec: &'static KeySpec,
+    /// What it is set to, and by which level.
+    pub setting: Setting,
+    /// Whether a file sets it to something other than the value in force, which only a restart applies.
+    pub restart_required: bool,
+}
+
+/// One Root's configuration with every level merged.
 #[derive(Debug, Clone)]
-pub struct LoadedPolicy {
+pub struct Effective {
     /// What decides what a Snapshot holds.
     pub policy: CapturePolicy,
-    /// What was defined but suspicious.
+    /// Every key of the schema, in schema order, with its provenance.
+    pub keys: Vec<EffectiveKey>,
+    /// What was defined but almost certainly not meant.
     pub warnings: Vec<ConfigWarning>,
 }
 
+impl Effective {
+    /// The values a capture classifies paths by, without where they were written: a rule moved to
+    /// another line changes nothing a capture does.
+    fn classification_inputs(&self) -> Vec<(&'static str, Vec<&Value>)> {
+        self.keys
+            .iter()
+            .filter(|key| key.spec.classifies)
+            .map(|key| (key.spec.name, key.setting.values()))
+            .collect()
+    }
+}
+
+/// The settings one level contributes, parsed and checked, so that merging can never fail.
+#[derive(Debug, Clone, Default)]
+struct Layer {
+    exclude: Vec<Rule>,
+    include: Vec<Rule>,
+    respect_gitignore: Option<Entry>,
+    max_size: Option<Entry>,
+    max_size_by_pattern: Vec<SizeRule>,
+    secret_opt_in: Vec<Rule>,
+}
+
+/// The global configuration: the user's own file, read by the daemon alone.
+///
+/// Besides its own `[files]` table it carries per-Root blocks, `[root.<RootId>]`, and pattern blocks,
+/// `[[roots]]` with a `path` glob, both accepting the whole schema — which is what makes a Root's own
+/// file optional (ticket 04).
+#[derive(Debug, Clone, Default)]
+pub struct GlobalConfig {
+    base: Layer,
+    by_id: BTreeMap<RootId, Layer>,
+    patterns: Vec<(PathGlob, Layer)>,
+}
+
+impl GlobalConfig {
+    /// Parse the global configuration `text`, read from `path`. A pattern block's leading `~/` is the
+    /// user's `home`.
+    pub fn parse(path: &Path, text: &str, home: Option<&Path>) -> Result<Self, ConfigError> {
+        let invalid = |message: String| ConfigError {
+            path: path.to_path_buf(),
+            message,
+        };
+        let document: GlobalDocument =
+            toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
+
+        let base = layer(&document.files, Level::Global, path, text, "files")?;
+
+        let mut by_id = BTreeMap::new();
+        for (key, block) in &document.root {
+            let id = key
+                .parse::<RootId>()
+                .map_err(|_| invalid(format!("[root.{key}]: `{key}` is not a Root identity")))?;
+            let table = format!("root.{key}.files");
+            by_id.insert(
+                id,
+                layer(&block.files, Level::GlobalRoot, path, text, &table)?,
+            );
+        }
+
+        let mut patterns = Vec::new();
+        for block in &document.roots {
+            let written = block.path.get_ref();
+            let expanded = expand_home(written, home).ok_or_else(|| {
+                invalid(format!(
+                    "[[roots]] path `{written}`: `~` names a home directory this daemon does not know"
+                ))
+            })?;
+            if !is_absolute_glob(&expanded) {
+                return Err(invalid(format!(
+                    "[[roots]] path `{written}` must be absolute, or start with `~/`"
+                )));
+            }
+            let glob = PathGlob::parse(&expanded)
+                .map_err(|error| invalid(format!("[[roots]] path: {error}")))?;
+            patterns.push((
+                glob,
+                layer(
+                    &block.files,
+                    Level::GlobalPattern,
+                    path,
+                    text,
+                    "roots.files",
+                )?,
+            ));
+        }
+
+        Ok(Self {
+            base,
+            by_id,
+            patterns,
+        })
+    }
+}
+
+/// A Root's own `.keepster.toml`: the way to share rules through a repository.
+#[derive(Debug, Clone, Default)]
+pub struct RootConfig {
+    layer: Layer,
+    /// The keys it set that a Root's own file may not, which were ignored.
+    warnings: Vec<ConfigWarning>,
+}
+
+impl RootConfig {
+    /// Parse a Root's own configuration `text`, read from `path`.
+    ///
+    /// A key this file may not set is not an error: it is ignored, and said to be, so that a file
+    /// arriving in a clone neither changes what it may not nor makes the Root `Degraded` (ticket 04).
+    pub fn parse(path: &Path, text: &str) -> Result<Self, ConfigError> {
+        let document: Settings = toml::from_str(text).map_err(|error| ConfigError {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+
+        let mut layer = layer(&document.files, Level::Root, path, text, "files")?;
+        let mut warnings = Vec::new();
+        let opt_in = spec("files.secret_opt_in");
+        if !opt_in.root_settable && !layer.secret_opt_in.is_empty() {
+            warnings.push(ConfigWarning {
+                code: WarningCode::KeyIgnored,
+                message: format!(
+                    "{}: {} is ignored in a Root's own file; set it in the global configuration \
+                     instead",
+                    path.display(),
+                    opt_in.name,
+                ),
+            });
+            layer.secret_opt_in.clear();
+        }
+
+        Ok(Self { layer, warnings })
+    }
+}
+
+/// The effective configuration of the Root `id` at `root_path`: the defaults, then the global file,
+/// its matching pattern blocks in the order written, its block for this Root, and the Root's own file.
+///
+/// An id block outranks every pattern block, because the id is the Root's identity and a glob only
+/// describes where it happens to be; among pattern blocks the last match wins, by the same rule the
+/// pattern lists use.
+pub fn effective(
+    global: &GlobalConfig,
+    id: RootId,
+    root_path: &Path,
+    own: Option<&RootConfig>,
+) -> Effective {
+    let path = glob_path(root_path);
+    let layers: Vec<&Layer> = std::iter::once(&global.base)
+        .chain(
+            global
+                .patterns
+                .iter()
+                .filter(|(glob, _)| glob.matches(&path))
+                .map(|(_, layer)| layer),
+        )
+        .chain(global.by_id.get(&id))
+        .chain(own.map(|own| &own.layer))
+        .collect();
+
+    let scalar = |pick: fn(&Layer) -> Option<&Entry>, default: Value| {
+        layers
+            .iter()
+            .rev()
+            .find_map(|layer| pick(layer))
+            .cloned()
+            .unwrap_or(Entry {
+                value: default,
+                origin: default_origin(),
+            })
+    };
+    let max_size = scalar(
+        |layer| layer.max_size.as_ref(),
+        Value::Bytes(DEFAULT_MAX_SIZE),
+    );
+    let respect_gitignore = scalar(|layer| layer.respect_gitignore.as_ref(), Value::Bool(false));
+
+    // Within a level `include` comes after `exclude`, so a level's own exceptions win over its own
+    // exclude rules; across levels the more specific level wins either way.
+    let rules: Vec<Rule> = layers
+        .iter()
+        .flat_map(|layer| layer.exclude.iter().chain(&layer.include))
+        .cloned()
+        .collect();
+    let opt_in: Vec<Rule> = layers
+        .iter()
+        .flat_map(|layer| &layer.secret_opt_in)
+        .cloned()
+        .collect();
+    let size_rules: Vec<SizeRule> = layers
+        .iter()
+        .flat_map(|layer| &layer.max_size_by_pattern)
+        .cloned()
+        .collect();
+
+    let Value::Bytes(max) = max_size.value else {
+        unreachable!("max_size is only ever set in bytes")
+    };
+    let Value::Bool(honour) = respect_gitignore.value else {
+        unreachable!("respect_gitignore is only ever set as a switch")
+    };
+    let mut policy = CapturePolicy::new(
+        RuleSet::new(rules),
+        RuleSet::new(opt_in),
+        max,
+        size_rules.clone(),
+    )
+    .honouring_ignore_files(honour);
+    if max_size.origin.level != Level::Default {
+        policy = policy.with_max_size_origin(max_size.origin.clone());
+    }
+
+    let patterns = |pick: fn(&Layer) -> &Vec<Rule>| {
+        Setting::List(
+            layers
+                .iter()
+                .flat_map(|layer| pick(layer))
+                .map(|rule| Entry {
+                    value: Value::Pattern(rule.text.clone()),
+                    origin: rule.origin.clone(),
+                })
+                .collect(),
+        )
+    };
+    let size_patterns = Setting::List(
+        size_rules
+            .iter()
+            .map(|size| Entry {
+                value: Value::SizePattern {
+                    pattern: size.rule.text.clone(),
+                    max: (!size.rule.negated).then_some(size.max),
+                },
+                origin: size.rule.origin.clone(),
+            })
+            .collect(),
+    );
+    let settings = [
+        ("files.exclude", patterns(|layer| &layer.exclude)),
+        ("files.include", patterns(|layer| &layer.include)),
+        (
+            "files.respect_gitignore",
+            Setting::Scalar(respect_gitignore),
+        ),
+        ("files.max_size", Setting::Scalar(max_size)),
+        ("files.max_size_by_pattern", size_patterns),
+        (
+            "files.secret_opt_in",
+            patterns(|layer| &layer.secret_opt_in),
+        ),
+    ];
+    let keys = settings
+        .into_iter()
+        .map(|(name, setting)| EffectiveKey {
+            spec: spec(name),
+            setting,
+            restart_required: false,
+        })
+        .collect();
+
+    let mut warnings: Vec<ConfigWarning> = own.map(|own| own.warnings.clone()).unwrap_or_default();
+    warnings.extend(unreachable_warnings(&policy));
+
+    Effective {
+        policy,
+        keys,
+        warnings,
+    }
+}
+
+fn default_origin() -> RuleOrigin {
+    RuleOrigin {
+        level: Level::Default,
+        source: "the built-in default".to_owned(),
+        line: None,
+    }
+}
+
+/// A warning for every negation an excluded ancestor makes unreachable (ADR 0007).
+fn unreachable_warnings(policy: &CapturePolicy) -> Vec<ConfigWarning> {
+    policy
+        .rules()
+        .unreachable_negations()
+        .into_iter()
+        .map(|unreachable| ConfigWarning {
+            code: WarningCode::NegationUnreachable,
+            message: format!(
+                "`{}` ({}) can never take effect: `{}` ({}) excludes `{}`, and an excluded directory \
+                 is never entered",
+                unreachable.negation.text,
+                describe(&unreachable.negation.origin),
+                unreachable.excluded_by.text,
+                describe(&unreachable.excluded_by.origin),
+                unreachable.ancestor,
+            ),
+        })
+        .collect()
+}
+
+/// `written` with a leading `~/` replaced by `home`, or `None` when it needs a home and there is none.
+fn expand_home(written: &str, home: Option<&Path>) -> Option<String> {
+    match written.strip_prefix("~/") {
+        Some(rest) => Some(format!("{}/{rest}", glob_path(home?).trim_end_matches('/'))),
+        None if written == "~" => home.map(glob_path),
+        None => Some(written.to_owned()),
+    }
+}
+
+/// Whether a pattern block's glob names an absolute path: `/…`, or a drive such as `C:/…`.
+fn is_absolute_glob(glob: &str) -> bool {
+    let bytes = glob.as_bytes();
+    let drive =
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/';
+
+    glob.starts_with('/') || drive
+}
+
+/// A directory path as a pattern block's glob is matched against: `/`-separated on every platform.
+fn glob_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
-struct Document {
-    // Other tables belong to tickets that have not read them yet; `[files]` itself is strict, so a
-    // misspelt key there is refused rather than silently ignored.
+#[serde(deny_unknown_fields)]
+struct GlobalDocument {
+    // The whole schema at the top level, then the two kinds of per-Root block, each of which accepts the
+    // whole schema too. A table added to the schema is added to `Settings` and to both blocks.
+    #[serde(default)]
+    files: Files,
+    #[serde(default)]
+    root: BTreeMap<String, Settings>,
+    #[serde(default)]
+    roots: Vec<PatternBlock>,
+}
+
+/// The whole schema: what a Root's own file holds, and what a `[root.<RootId>]` block holds.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    #[serde(default)]
+    files: Files,
+}
+
+/// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatternBlock {
+    path: Spanned<String>,
     #[serde(default)]
     files: Files,
 }
@@ -86,7 +571,7 @@ struct Files {
     exclude: Vec<Spanned<String>>,
     #[serde(default)]
     include: Vec<Spanned<String>>,
-    respect_gitignore: Option<bool>,
+    respect_gitignore: Option<Spanned<bool>>,
     max_size: Option<Spanned<String>>,
     #[serde(default)]
     max_size_by_pattern: Vec<Spanned<SizeEntry>>,
@@ -102,134 +587,368 @@ struct SizeEntry {
     max: Option<String>,
 }
 
-/// One configuration file, read and parsed, with its text kept for line numbers.
-struct ConfigFile {
+/// Check one `[files]` table of the file at `path` and compile what it says, as the settings of
+/// `level`. `table` is how a message names the table: `files`, or the block it sits in.
+fn layer(
+    files: &Files,
     level: Level,
-    path: PathBuf,
-    text: String,
-    files: Files,
+    path: &Path,
+    text: &str,
+    table: &str,
+) -> Result<Layer, ConfigError> {
+    type Compile = fn(&str, RootPath, RuleOrigin) -> Result<Rule, InvalidPattern>;
+
+    let origin = |span: std::ops::Range<usize>| RuleOrigin {
+        level,
+        source: path.to_string_lossy().into_owned(),
+        line: Some(line_of(text, span.start)),
+    };
+    let invalid = |key: &str, message: String| ConfigError {
+        path: path.to_path_buf(),
+        message: format!("{table}.{key}: {message}"),
+    };
+    let rules = |key: &str, patterns: &[Spanned<String>], compile: Compile| {
+        patterns
+            .iter()
+            .map(|pattern| {
+                compile(pattern.get_ref(), RootPath::root(), origin(pattern.span()))
+                    .map_err(|error| invalid(key, error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+
+    let mut max_size_by_pattern = Vec::new();
+    for entry in &files.max_size_by_pattern {
+        let rule = Rule::parse(
+            &entry.get_ref().pattern,
+            RootPath::root(),
+            origin(entry.span()),
+        )
+        .map_err(|error| invalid("max_size_by_pattern", error.to_string()))?;
+        let max = match (&entry.get_ref().max, rule.negated) {
+            (Some(max), _) => parse_size(max)
+                .map_err(|error| invalid("max_size_by_pattern", error.to_string()))?,
+            (None, true) => 0,
+            (None, false) => {
+                return Err(invalid(
+                    "max_size_by_pattern",
+                    format!("`{}` needs a `max`", entry.get_ref().pattern),
+                ));
+            }
+        };
+        max_size_by_pattern.push(SizeRule { rule, max });
+    }
+
+    let max_size = files
+        .max_size
+        .as_ref()
+        .map(|size| {
+            parse_size(size.get_ref())
+                .map(|bytes| Entry {
+                    value: Value::Bytes(bytes),
+                    origin: origin(size.span()),
+                })
+                .map_err(|error| invalid("max_size", error.to_string()))
+        })
+        .transpose()?;
+
+    Ok(Layer {
+        exclude: rules("exclude", &files.exclude, Rule::parse)?,
+        include: rules("include", &files.include, Rule::include)?,
+        respect_gitignore: files.respect_gitignore.as_ref().map(|respect| Entry {
+            value: Value::Bool(*respect.get_ref()),
+            origin: origin(respect.span()),
+        }),
+        max_size,
+        max_size_by_pattern,
+        secret_opt_in: rules("secret_opt_in", &files.secret_opt_in, Rule::parse)?,
+    })
 }
 
-/// Read the capture policy of the Root at `root_path`, from the global file at `global` (if any) and the
-/// Root's own `.keepster.toml` (if it exists).
-pub fn load_policy(global: Option<&Path>, root_path: &Path) -> Result<LoadedPolicy, ConfigError> {
-    let mut levels = Vec::new();
-    if let Some(global) = global {
-        levels.extend(read(global, Level::Global)?);
+/// Where the global file's last known-good version is kept, under the daemon's state directory.
+const GLOBAL_KNOWN_GOOD: &str = "config.known-good.toml";
+
+/// Where a Root's own file's last known-good version is kept, in that Root's store directory.
+const ROOT_KNOWN_GOOD: &str = "keepster.known-good.toml";
+
+/// The configuration the daemon holds: every file's last known-good version, and what is wrong with
+/// any whose current version is not applied.
+///
+/// Files are re-read whenever a Root's configuration is resolved, and compared with what was read last,
+/// so an edit to either level takes effect at the next request or the next tick — nothing has to be
+/// restarted or told. An invalid version is never applied: the last known-good stays in force, and is
+/// kept on disk too, so a typo followed by a reboot leaves the Root `Degraded` rather than unwatched
+/// (ticket 04).
+#[derive(Debug)]
+pub struct Configuration {
+    global_path: Option<PathBuf>,
+    home: Option<PathBuf>,
+    state_dir: PathBuf,
+    global: Tracked<GlobalConfig>,
+    roots: HashMap<RootId, TrackedRoot>,
+    /// Roots whose classification inputs changed, for ticket 44's Reconciliation to take.
+    reconcile: BTreeSet<RootId>,
+    /// The values the keys that cannot change live had when the daemon started, which stay in force
+    /// until it restarts.
+    at_start: BTreeMap<&'static str, Setting>,
+}
+
+/// One file as last read, and the version of it in force.
+#[derive(Debug)]
+struct Tracked<T> {
+    /// The text last read — `Some(None)` for a file that was absent — or `None` before the first
+    /// read and after one that failed, so the next resolution reads it again.
+    seen: Option<Option<String>>,
+    /// The last known-good version, or `None` when no version ever was.
+    in_force: Option<T>,
+    /// Why the current version is not the one in force.
+    error: Option<ConfigError>,
+}
+
+impl<T> Default for Tracked<T> {
+    fn default() -> Self {
+        Self {
+            seen: None,
+            in_force: None,
+            error: None,
+        }
     }
-    levels.extend(read(&root_path.join(ROOT_CONFIG), Level::Root)?);
+}
 
-    let mut warnings = Vec::new();
-    let mut rules = Vec::new();
-    let mut size_rules = Vec::new();
-    let mut opt_in = Vec::new();
-    let mut max_size = (DEFAULT_MAX_SIZE, None);
-    let mut honour_ignore_files = false;
+#[derive(Debug, Default)]
+struct TrackedRoot {
+    path: PathBuf,
+    /// The Root's own file; a known-good of `None` is a Root without one.
+    file: Tracked<Option<RootConfig>>,
+    /// What classified paths at the last resolution, to tell whether a reload changed it.
+    inputs: Option<Vec<(&'static str, Vec<Value>)>>,
+}
 
-    for file in &levels {
-        let origin = |span: std::ops::Range<usize>| RuleOrigin {
-            level: file.level,
-            source: file.path.to_string_lossy().into_owned(),
-            line: Some(line_of(&file.text, span.start)),
-        };
-        let invalid = |message: String| ConfigError {
-            path: file.path.clone(),
-            message,
-        };
+/// One Root's configuration as it stands.
+#[derive(Debug, Clone)]
+pub struct Resolved {
+    /// The configuration in force, or `None` when some file it depends on never had a valid version —
+    /// in which case the Root is not captured at all, since falling back to the defaults would drop the
+    /// user's exclude rules (ticket 04).
+    pub effective: Option<Effective>,
+    /// The files whose current version is invalid and therefore not applied. Any makes the Root
+    /// `Degraded`.
+    pub errors: Vec<ConfigError>,
+}
 
-        // Within a level, `include` comes after `exclude`, so a level's own exceptions win over its own
-        // exclude rules; across levels the more specific level wins either way.
-        for pattern in &file.files.exclude {
-            rules.push(
-                Rule::parse(pattern.get_ref(), RootPath::root(), origin(pattern.span()))
-                    .map_err(|error| invalid(format!("files.exclude: {error}")))?,
-            );
+impl Configuration {
+    /// The configuration of a daemon whose global file is `global_path` (if any), whose user's home is
+    /// `home`, and whose state — the Registry and the known-good copies — lives under `state_dir`.
+    pub fn new(global_path: Option<PathBuf>, home: Option<PathBuf>, state_dir: PathBuf) -> Self {
+        Self {
+            global_path,
+            home,
+            state_dir,
+            global: Tracked::default(),
+            roots: HashMap::new(),
+            reconcile: BTreeSet::new(),
+            at_start: BTreeMap::new(),
         }
-        for pattern in &file.files.include {
-            rules.push(
-                Rule::include(pattern.get_ref(), RootPath::root(), origin(pattern.span()))
-                    .map_err(|error| invalid(format!("files.include: {error}")))?,
-            );
+    }
+
+    /// The configuration of the Root `id` at `root_path`, re-reading whichever of its files changed.
+    pub fn resolve(&mut self, id: RootId, root_path: &Path) -> Resolved {
+        self.refresh_global();
+        self.refresh_root(id, root_path);
+
+        let Some(global) = self.global.in_force.as_ref() else {
+            return self.unresolved(id);
+        };
+        let Some(Some(own)) = self.roots.get(&id).map(|root| root.file.in_force.as_ref()) else {
+            return self.unresolved(id);
+        };
+        let mut effective = effective(global, id, root_path, own.as_ref());
+
+        for key in effective.keys.iter_mut().filter(|key| !key.spec.live) {
+            let started = self
+                .at_start
+                .entry(key.spec.name)
+                .or_insert_with(|| key.setting.clone());
+            if key.setting.values() != started.values() {
+                key.setting = started.clone();
+                key.restart_required = true;
+            }
         }
-        for entry in &file.files.max_size_by_pattern {
-            let rule = Rule::parse(
-                &entry.get_ref().pattern,
-                RootPath::root(),
-                origin(entry.span()),
+
+        let inputs: Vec<(&'static str, Vec<Value>)> = effective
+            .classification_inputs()
+            .into_iter()
+            .map(|(name, values)| (name, values.into_iter().cloned().collect()))
+            .collect();
+        let root = self.roots.get_mut(&id).expect("refreshed above");
+        if root
+            .inputs
+            .as_ref()
+            .is_some_and(|previous| *previous != inputs)
+        {
+            self.reconcile.insert(id);
+        }
+        root.inputs = Some(inputs);
+
+        Resolved {
+            effective: Some(effective),
+            errors: self.errors(id),
+        }
+    }
+
+    /// Forget every Root `keep` does not name, once they are deregistered.
+    pub fn retain(&mut self, keep: impl Fn(RootId) -> bool) {
+        self.roots.retain(|id, _| keep(*id));
+        self.reconcile.retain(|id| keep(*id));
+    }
+
+    /// The Roots whose classification inputs changed since the last time this was asked, each owed a
+    /// full comparison against its Working Tree — ticket 44's Reconciliation takes them from here.
+    pub fn take_reconcile_queue(&mut self) -> BTreeSet<RootId> {
+        std::mem::take(&mut self.reconcile)
+    }
+
+    fn unresolved(&self, id: RootId) -> Resolved {
+        Resolved {
+            effective: None,
+            errors: self.errors(id),
+        }
+    }
+
+    fn errors(&self, id: RootId) -> Vec<ConfigError> {
+        self.global
+            .error
+            .iter()
+            .chain(
+                self.roots
+                    .get(&id)
+                    .and_then(|root| root.file.error.as_ref()),
             )
-            .map_err(|error| invalid(format!("files.max_size_by_pattern: {error}")))?;
-            let max = match (&entry.get_ref().max, rule.negated) {
-                (Some(max), _) => parse_size(max)
-                    .map_err(|error| invalid(format!("files.max_size_by_pattern: {error}")))?,
-                (None, true) => 0,
-                (None, false) => {
-                    return Err(invalid(format!(
-                        "files.max_size_by_pattern: `{}` needs a `max`",
-                        entry.get_ref().pattern
-                    )));
-                }
-            };
-            size_rules.push(SizeRule { rule, max });
-        }
-        if let Some(size) = &file.files.max_size {
-            let bytes = parse_size(size.get_ref())
-                .map_err(|error| invalid(format!("files.max_size: {error}")))?;
-            max_size = (bytes, Some(origin(size.span())));
-        }
-        if let Some(respect) = file.files.respect_gitignore {
-            honour_ignore_files = respect;
-        }
-
-        if file.level == Level::Root {
-            // A file arriving in someone else's repository must not decide what may enter your history
-            // (ticket 04). The key is ignored, and said to be, rather than making the file invalid.
-            if !file.files.secret_opt_in.is_empty() {
-                warnings.push(ConfigWarning {
-                    code: WarningCode::KeyIgnored,
-                    message: format!(
-                        "{}: files.secret_opt_in is ignored in a Root's own file; set it in the global \
-                         configuration instead",
-                        file.path.display()
-                    ),
-                });
-            }
-        } else {
-            for pattern in &file.files.secret_opt_in {
-                opt_in.push(
-                    Rule::parse(pattern.get_ref(), RootPath::root(), origin(pattern.span()))
-                        .map_err(|error| invalid(format!("files.secret_opt_in: {error}")))?,
-                );
-            }
-        }
+            .cloned()
+            .collect()
     }
 
-    let mut policy = CapturePolicy::new(
-        RuleSet::new(rules),
-        RuleSet::new(opt_in),
-        max_size.0,
-        size_rules,
-    )
-    .honouring_ignore_files(honour_ignore_files);
-    if let Some(origin) = max_size.1 {
-        policy = policy.with_max_size_origin(origin);
-    }
+    fn refresh_global(&mut self) {
+        let Some(path) = self.global_path.clone() else {
+            self.global
+                .in_force
+                .get_or_insert_with(GlobalConfig::default);
+            return;
+        };
+        let home = self.home.clone();
+        let known_good = self.state_dir.join(GLOBAL_KNOWN_GOOD);
 
-    for unreachable in policy.rules().unreachable_negations() {
-        warnings.push(ConfigWarning {
-            code: WarningCode::NegationUnreachable,
-            message: format!(
-                "`{}` ({}) can never take effect: `{}` ({}) excludes `{}`, and an excluded directory \
-                 is never entered",
-                unreachable.negation.text,
-                describe(&unreachable.negation.origin),
-                unreachable.excluded_by.text,
-                describe(&unreachable.excluded_by.origin),
-                unreachable.ancestor,
-            ),
+        refresh(&mut self.global, &path, &known_good, |text| match text {
+            Some(text) => GlobalConfig::parse(&path, text, home.as_deref()),
+            None => Ok(GlobalConfig::default()),
         });
     }
 
-    Ok(LoadedPolicy { policy, warnings })
+    fn refresh_root(&mut self, id: RootId, root_path: &Path) {
+        let root = self.roots.entry(id).or_default();
+        if root.path != root_path {
+            // A moved Root has a different file; its known-good stays the fallback until the new one
+            // is read.
+            root.path = root_path.to_path_buf();
+            root.file.seen = None;
+        }
+        // A Root whose directory is gone has a file that is absent for that reason alone, which says
+        // nothing about its configuration: reading it as absent would replace the known-good with the
+        // defaults. What was in force stays in force until the directory is back.
+        if !root_path.is_dir() {
+            return;
+        }
+
+        let path = root_path.join(ROOT_CONFIG);
+        let known_good = self.state_dir.join(id.to_string()).join(ROOT_KNOWN_GOOD);
+        refresh(&mut root.file, &path, &known_good, |text| {
+            text.map(|text| RootConfig::parse(&path, text)).transpose()
+        });
+    }
+}
+
+/// Re-read the file at `path` into `tracked` if it changed, keeping the last known-good version in
+/// force — and on disk at `known_good` — when the new one cannot be parsed.
+fn refresh<T>(
+    tracked: &mut Tracked<T>,
+    path: &Path,
+    known_good: &Path,
+    parse: impl Fn(Option<&str>) -> Result<T, ConfigError>,
+) {
+    let text = match read_text(path) {
+        Ok(text) => text,
+        Err(error) => {
+            tracked.seen = None;
+            tracked.error = Some(error);
+            if tracked.in_force.is_none() {
+                tracked.in_force = recovered(known_good, &parse);
+            }
+            return;
+        }
+    };
+    if tracked.seen.as_ref() == Some(&text) {
+        return;
+    }
+
+    match parse(text.as_deref()) {
+        Ok(parsed) => {
+            tracked.in_force = Some(parsed);
+            tracked.error = None;
+            // A lost copy costs only the fallback after a restart, never the configuration in force,
+            // so failing to keep one is not a reason to refuse a valid file.
+            let _ = match &text {
+                Some(text) => write_atomically(known_good, text),
+                None => remove_if_present(known_good),
+            };
+        }
+        Err(error) => {
+            tracked.error = Some(error);
+            if tracked.in_force.is_none() {
+                tracked.in_force = recovered(known_good, &parse);
+            }
+        }
+    }
+    tracked.seen = Some(text);
+}
+
+/// The known-good copy at `known_good`, parsed as the file it is a copy of, if there is one and it
+/// still parses.
+fn recovered<T>(
+    known_good: &Path,
+    parse: &impl Fn(Option<&str>) -> Result<T, ConfigError>,
+) -> Option<T> {
+    let text = fs::read_to_string(known_good).ok()?;
+    parse(Some(&text)).ok()
+}
+
+/// Replace the file at `path` with `text`, never leaving it half-written.
+fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
+    let temporary = path.with_extension("toml.new");
+    let mut file = fs::File::create(&temporary)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+
+    fs::rename(&temporary, path)
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// The text of the file at `path`, `None` when there is none.
+fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ConfigError {
+            path: path.to_path_buf(),
+            message: format!("it could not be read: {error}"),
+        }),
+    }
 }
 
 /// `policy` with the ignore files that govern `path` added, when ignore files are honoured.
@@ -318,31 +1037,6 @@ fn describe(origin: &RuleOrigin) -> String {
         Some(line) => format!("{}, line {line}", origin.level),
         None => origin.level.to_string(),
     }
-}
-
-fn read(path: &Path, level: Level) -> Result<Option<ConfigFile>, ConfigError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(ConfigError {
-                path: path.to_path_buf(),
-                message: format!("it could not be read: {error}"),
-            });
-        }
-    };
-
-    let document: Document = toml::from_str(&text).map_err(|error| ConfigError {
-        path: path.to_path_buf(),
-        message: error.to_string(),
-    })?;
-
-    Ok(Some(ConfigFile {
-        level,
-        path: path.to_path_buf(),
-        text,
-        files: document.files,
-    }))
 }
 
 /// The 1-based line holding byte `offset` of `text`.

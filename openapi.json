@@ -372,6 +372,58 @@
         }
       }
     },
+    "/v1/roots/{id}/config": {
+      "get": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "One Root's effective configuration, with the level that set each key.",
+        "operationId": "get_root_config",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every key with its value and provenance. While a file is invalid, the last known-good values are in force and `errors` names the file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RootConfiguration"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or its configuration has never had a valid version, so it is not captured at all.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/explain": {
       "get": {
         "tags": [
@@ -979,6 +1031,63 @@
           "deleted"
         ]
       },
+      "ConfigEntry": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Origin",
+            "description": "Where it was written."
+          },
+          {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "description": "The entry, as `ConfigKey::value` types it."
+              }
+            }
+          }
+        ],
+        "description": "One entry of a layered list, and where it was written."
+      },
+      "ConfigKey": {
+        "type": "object",
+        "description": "One key of a Root's effective configuration.",
+        "required": [
+          "key",
+          "value",
+          "origin",
+          "restart_required"
+        ],
+        "properties": {
+          "entries": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ConfigEntry"
+            },
+            "description": "For a pattern list, every entry and where it was written, from the least specific level to the\nmost — which is the order the last matching pattern is found in."
+          },
+          "key": {
+            "type": "string",
+            "description": "The key as a person writes it, `table.key`."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/Origin",
+            "description": "Where the value was set: the most specific level that set a scalar — the built-in default when\nnone did — and, for a list, its last entry's."
+          },
+          "restart_required": {
+            "type": "boolean",
+            "description": "Whether a file sets this key to something else that only a restart applies. The value above is\nthe one in force."
+          },
+          "value": {
+            "description": "The value in force, typed as the key is: a switch, a number of bytes, or a list. A pattern list\nholds its patterns as written; `files.max_size_by_pattern` holds `{ pattern, max }` objects."
+          }
+        }
+      },
       "ConfigLevel": {
         "type": "string",
         "description": "The levels configuration is layered in, from the least specific to the most — the provenance enum\nof ticket 04, plus the watched directory's own ignore files, which sit beneath everything the user\nwrites.",
@@ -1356,6 +1465,43 @@
               "null"
             ],
             "description": "The machine-readable reason behind a state that is not `Watching`, so a client can branch on it\nrather than on prose. Absent while the Root is `Watching`."
+          }
+        }
+      },
+      "RootConfiguration": {
+        "type": "object",
+        "description": "One Root's effective configuration: every key of the schema, the value in force, and the level\nthat set it.\n\nRead-only: the configuration is the TOML files a person edits, which the daemon reloads by itself\n(ticket 07). While a file is invalid, the values here are the last known-good ones and `errors` says\nwhich file is at fault and why.",
+        "required": [
+          "root",
+          "keys",
+          "warnings",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "description": "The files whose current version is invalid and therefore not applied, each in the standard\nerror shape with the code `config_invalid` and the file as the `path` detail. Any makes the\nRoot `Degraded`."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigKey"
+            },
+            "description": "Every key of the schema, in the order the schema lists them."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigWarning"
+            },
+            "description": "What the configuration defines but almost certainly does not mean. None of them makes the Root\n`Degraded`."
           }
         }
       },

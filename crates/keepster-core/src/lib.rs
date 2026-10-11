@@ -20,7 +20,7 @@ pub use policy::{
 };
 pub use root::{RootId, containing, overlapping};
 pub use rules::{
-    Classification, IGNORE_FILE, InvalidPattern, Kind, Level, Rule, RuleOrigin, RuleSet,
+    Classification, IGNORE_FILE, InvalidPattern, Kind, Level, PathGlob, Rule, RuleOrigin, RuleSet,
     UnreachableNegation, ignore_file_rules,
 };
 pub use segment::{SegmentName, UnnameableMoment};

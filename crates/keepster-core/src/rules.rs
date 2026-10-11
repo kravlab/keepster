@@ -258,6 +258,52 @@ fn trim_unescaped_trailing_space(line: &str) -> String {
     }
 }
 
+/// A glob over whole directory paths, which is how a pattern block of the global configuration names
+/// the Roots it applies to (ticket 04).
+///
+/// The syntax is the rules' own — `*`, `?` and `[…]` stop at `/`, `**/` and a trailing `/**` cross
+/// directories, `\` escapes — so a person learns one glob language. The pattern is matched against the
+/// whole path, `/`-separated, from its first character: it describes a directory, not a name at any
+/// depth.
+#[derive(Debug, Clone)]
+pub struct PathGlob {
+    text: String,
+    matcher: regex::Regex,
+}
+
+impl PathGlob {
+    /// Compile `text`, which must name an absolute path once a home directory has been expanded.
+    pub fn parse(text: &str) -> Result<Self, InvalidPattern> {
+        let invalid = |reason| InvalidPattern {
+            pattern: text.to_owned(),
+            reason,
+        };
+
+        let body = text.strip_suffix('/').unwrap_or(text);
+        if body.is_empty() {
+            return Err(invalid("it matches nothing"));
+        }
+        let expression = format!("^{}$", translate(body).map_err(invalid)?);
+        let matcher =
+            regex::Regex::new(&expression).map_err(|_| invalid("it cannot be compiled"))?;
+
+        Ok(Self {
+            text: text.to_owned(),
+            matcher,
+        })
+    }
+
+    /// Whether the glob matches `path`, written with `/` separators.
+    pub fn matches(&self, path: &str) -> bool {
+        self.matcher.is_match(path)
+    }
+
+    /// The glob as written.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+}
+
 /// `path` relative to `base`, or `None` when it is not beneath it.
 fn relative_to<'a>(path: &'a RootPath, base: &RootPath) -> Option<&'a str> {
     if base.is_root() {

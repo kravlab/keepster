@@ -34,6 +34,11 @@ impl ProblemResponse {
         }
     }
 
+    /// The problem document itself, for an answer that reports a problem without failing with it.
+    pub(crate) fn into_problem(self) -> Problem {
+        self.problem
+    }
+
     /// Add one machine-readable particular, so a client composes its own message instead of parsing
     /// ours.
     pub fn with_detail(mut self, key: &str, value: impl Into<String>) -> Self {
@@ -56,12 +61,26 @@ impl IntoResponse for ProblemResponse {
     }
 }
 
-/// A configuration that cannot be read, as the one response shape every endpoint uses.
-pub(crate) fn config_problem(error: keepster_app::config::ConfigError) -> ProblemResponse {
+/// A configuration file that is invalid, as the one response shape every endpoint uses.
+pub(crate) fn invalid_file(error: &keepster_app::config::ConfigError) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::CONFLICT,
         ErrorCode::ConfigInvalid,
         error.to_string(),
     )
     .with_detail("path", error.path.to_string_lossy())
+}
+
+/// A Root whose configuration has no version to apply: some file it depends on never was valid, so it
+/// is not captured at all rather than captured by the defaults (ticket 04). The first invalid file is
+/// the one named; fixing it either resolves the Root or names the next.
+pub(crate) fn config_problem(errors: &[keepster_app::config::ConfigError]) -> ProblemResponse {
+    match errors.first() {
+        Some(error) => invalid_file(error),
+        None => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::ConfigInvalid,
+            "the configuration has no valid version to apply",
+        ),
+    }
 }
