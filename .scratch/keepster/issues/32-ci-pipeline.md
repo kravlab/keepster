@@ -159,3 +159,19 @@ The rule is quotable and load-bearing, but reversible by a one-file commit — t
 for its thresholds. It lives here and in the workflow files.
 
 Refines tickets 14, 27, 28, 30 and 31.
+
+## Comments
+
+- **Amended for a private copy's minutes** (user decision). The copy stayed private, and a run of the gate cost
+  ≈ 42 billed minutes against Free's 2,000 a month — half of it the two-minute macOS leg at ×10 — with every push
+  running it, ticket edits included. The rule above is unchanged; what moved is when the legs run:
+  - **macOS runs on pull requests only**, plus `nightly.yml` once a night on `main`, and only when `main` has moved
+    since the last scheduled night that finished. That night gates nothing: it is how a commit that reached `main`
+    without a pull request still gets its macOS verdict, a day late. Windows and Linux still run on every push.
+  - **A change touching only `.scratch/**`, `docs/**` or `*.md` runs no gate at all**, since no check's verdict
+    depends on them.
+  - **Dependencies are cached** (`Swatinem/rust-cache`), saved from `main` only so branches share one cache.
+
+  This is not the shape the answer anticipated for a private copy, which moved the expensive legs to merges into
+  `main`: here most changes reach `main` by a direct push rather than a pull request, so that shape would have
+  saved nothing.

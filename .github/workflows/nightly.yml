@@ -1,0 +1,72 @@
+# The macOS leg of the merge gate, for what reaches `main` without a pull request.
+#
+# macOS bills ten times Linux against a private copy's minutes, so `merge-gate.yml` runs it on pull
+# requests only, and this runs it once a night on `main` instead — and only when `main` has moved since
+# the last night that ran it, so a quiet day costs one Linux minute rather than a macOS run. It gates
+# nothing: a red run is read the next morning, and the commits since the last green one are the suspects.
+
+name: nightly macOS
+
+on:
+  schedule:
+    # Off the hour, when scheduled runs queue the longest.
+    - cron: "41 2 * * *"
+  # Runs regardless of what ran before: for a night that failed on the runner rather than the code.
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-macos
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+# The same as the merge gate's, which also keeps the build cache shared with its macOS leg: the cache
+# key includes these variables and the job id, `tests` in both.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fresh:
+    name: whether main has moved since the last night
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.compare.outputs.run }}
+    steps:
+      - id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != schedule ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The newest scheduled night that finished, a cancelled one aside: a night that was stopped
+          # verified nothing. One that failed is not repeated on the same commit, where it would fail again.
+          # When the list cannot be read, the night runs: a wasted run is cheaper than an untested commit.
+          last=$(gh run list --workflow nightly.yml --event schedule --status completed --limit 20 \
+            --json headSha,conclusion \
+            --jq 'map(select(.conclusion != "cancelled")) | .[0].headSha // ""') || last=""
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "main is still at $GITHUB_SHA, which the last night tested"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "main moved from ${last:-nothing yet} to $GITHUB_SHA"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tests:
+    name: tests on macos-latest
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
+      - run: cargo test --doc --workspace --locked
