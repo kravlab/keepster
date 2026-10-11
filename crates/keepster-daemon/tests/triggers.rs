@@ -104,18 +104,34 @@ async fn an_atomic_save_is_captured_as_an_edit() {
     let daemon = Harness::start_with_global_config(QUICK).await;
     let (root, project) = registered(&daemon).await;
     write(&project, "notes.txt", b"first");
-    daemon
+    let first = daemon
         .post_json(
             &format!("/v1/roots/{root}/snapshots"),
             &serde_json::json!({}),
         )
         .await;
+    let first = first["id"].as_str().expect("an id").to_owned();
 
     // What an editor does: write the new contents beside the file, then rename over it.
     write(&project, ".notes.txt.tmp", b"second");
     std::fs::rename(project.join(".notes.txt.tmp"), project.join("notes.txt")).expect("the save");
 
-    let taken = snapshot_changing(&daemon, &root, "notes.txt", "watcher").await;
+    // The watcher may have captured the first write on its own before the Snapshot above was taken —
+    // as an addition — so only a Snapshot after that one is the save's.
+    let taken = eventually("a `watcher` Snapshot of the save", || async {
+        let timeline = daemon
+            .get_json(&format!("/v1/roots/{root}/snapshots?path=notes.txt"))
+            .await;
+        timeline["snapshots"]
+            .as_array()
+            .and_then(|items| items.first())
+            .filter(|newest| {
+                newest["trigger"] == "watcher"
+                    && newest["id"].as_str().is_some_and(|id| id > first.as_str())
+            })
+            .cloned()
+    })
+    .await;
     assert_eq!(taken["change"], "modified");
 }
 
