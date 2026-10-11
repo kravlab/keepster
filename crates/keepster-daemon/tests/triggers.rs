@@ -13,10 +13,8 @@ use serde_json::Value;
 /// Long enough for a loaded CI runner; each test finishes as soon as what it waits for happens.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// A quick debounce and rate limit, so a test waits for a Snapshot in moments rather than a minute — and
-/// no pass at the start, whose Snapshot would otherwise be the one that holds what a test writes.
-const QUICK: &[u8] =
-    b"[triggers]\ndebounce = \"200ms\"\nrate_limit = \"1s\"\n\n[reconcile]\nat_start = false\n";
+/// A quick debounce and rate limit, so a test waits for a Snapshot in moments rather than a minute.
+const QUICK: &[u8] = b"[triggers]\ndebounce = \"200ms\"\nrate_limit = \"1s\"\n";
 
 fn write(root: &Path, path: &str, content: &[u8]) {
     let file = root.join(path);
@@ -24,13 +22,30 @@ fn write(root: &Path, path: &str, content: &[u8]) {
     std::fs::write(file, content).expect("a file");
 }
 
+/// A registered Root, once the Reconciliation its registration owes has written its first Snapshot —
+/// so that what a test writes next is the watcher's to capture, not that pass's.
 async fn registered(daemon: &Harness) -> (String, PathBuf) {
     let project = daemon.scratch("project");
     let root = daemon
         .post_json("/v1/roots", &serde_json::json!({ "path": project }))
         .await;
+    let root = root["id"].as_str().expect("an id").to_owned();
+    eventually("the registration's Reconciliation", || async {
+        let timeline = daemon
+            .get_json(&format!("/v1/roots/{root}/snapshots"))
+            .await;
+        timeline["snapshots"]
+            .as_array()
+            .filter(|snapshots| {
+                snapshots
+                    .iter()
+                    .any(|taken| taken["trigger"] == "reconcile")
+            })
+            .map(|_| ())
+    })
+    .await;
 
-    (root["id"].as_str().expect("an id").to_owned(), project)
+    (root, project)
 }
 
 /// Poll `probe` until it yields something, failing the test after [`PATIENCE`].
@@ -107,21 +122,15 @@ async fn an_atomic_save_is_captured_as_an_edit() {
 #[tokio::test]
 async fn the_periodic_floor_captures_when_it_is_switched_on() {
     let daemon = Harness::start_with_global_config(
-        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1s\"\nrate_limit = \"1s\"\n[reconcile]\nat_start = false\n",
+        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1s\"\nrate_limit = \"1s\"\n",
     )
     .await;
-    let project = daemon.scratch("project");
-    write(
-        &project,
-        "existing.txt",
-        b"there before the Root was registered",
-    );
-    let root = daemon
-        .post_json("/v1/roots", &serde_json::json!({ "path": project }))
-        .await;
-    let root = root["id"].as_str().expect("an id");
+    let (root, project) = registered(&daemon).await;
 
-    snapshot_changing(&daemon, root, "existing.txt", "periodic").await;
+    // No watcher: only the floor can find this.
+    write(&project, "unwatched.txt", b"written with nothing watching");
+
+    snapshot_changing(&daemon, &root, "unwatched.txt", "periodic").await;
 }
 
 #[tokio::test]

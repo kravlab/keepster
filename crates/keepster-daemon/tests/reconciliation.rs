@@ -13,8 +13,10 @@ const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");
 /// Long enough for a loaded CI runner; each test finishes as soon as what it waits for happens.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// No watcher at all: whatever is captured, a pass captured.
-const UNWATCHED: &[u8] = b"[triggers]\nactive = []\nrate_limit = \"1s\"\n";
+/// No watcher at all, only a periodic floor too slow to fire within a test: whatever is captured, a
+/// Reconciliation captured.
+const UNWATCHED: &[u8] =
+    b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1h\"\nrate_limit = \"1s\"\n";
 
 fn write(root: &Path, path: &str, content: &[u8]) {
     let file = root.join(path);
@@ -112,7 +114,8 @@ async fn what_changed_while_the_daemon_was_stopped_is_captured_when_it_starts() 
 #[tokio::test]
 async fn a_reload_that_changes_the_rules_reconciles_the_root() {
     let daemon = Harness::start_with_global_config(
-        b"[triggers]\nactive = []\nrate_limit = \"1s\"\n[files]\nexclude = [\"*.log\"]\n",
+        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1h\"\nrate_limit = \"1s\"\n\
+          [files]\nexclude = [\"*.log\"]\n",
     )
     .await;
     let project = project(&daemon);
@@ -126,6 +129,23 @@ async fn a_reload_that_changes_the_rules_reconciles_the_root() {
 
     let taken = snapshot_changing(&daemon, &root, "build.log", "reconcile").await;
     assert_eq!(taken["change"], "added");
+}
+
+#[tokio::test]
+async fn a_root_captured_only_by_hand_is_reconciled_once_something_captures_it() {
+    let daemon = Harness::start_with_global_config(b"[triggers]\nactive = []\n").await;
+    let project = project(&daemon);
+    write(
+        &project,
+        "notes.txt",
+        b"registered while nothing captured automatically",
+    );
+    let root = register(&daemon, &project).await;
+    state_becomes(&daemon, &root, "degraded", Some("capture_unavailable")).await;
+
+    daemon.write_global_config(UNWATCHED);
+
+    snapshot_changing(&daemon, &root, "notes.txt", "reconcile").await;
 }
 
 #[tokio::test]
@@ -149,13 +169,18 @@ async fn a_root_whose_startup_walk_is_off_is_reported_as_not_guaranteed() {
 async fn a_root_past_the_watch_ceiling_is_reconciled_periodically_and_says_why() {
     // One watch for the whole daemon: the first Root's top directory takes it.
     let daemon = Harness::start_with_watch_ceiling(1).await;
+    // The periodic floor's interval is what a Root that cannot be watched is reconciled at.
+    daemon.write_global_config(b"[triggers]\nperiodic = \"1s\"\nrate_limit = \"1s\"\n");
     let first = register(&daemon, &daemon.scratch("first")).await;
     state_becomes(&daemon, &first, "watching", None).await;
 
-    let second = register(&daemon, &daemon.scratch("second")).await;
+    let second_path = daemon.scratch("second");
+    let second = register(&daemon, &second_path).await;
 
     state_becomes(&daemon, &second, "degraded", Some("watch_ceiling")).await;
     state_becomes(&daemon, &first, "watching", None).await;
+    write(&second_path, "unwatched.txt", b"no event will name this");
+    snapshot_changing(&daemon, &second, "unwatched.txt", "periodic").await;
 }
 
 #[tokio::test]

@@ -256,12 +256,19 @@ async fn explain_names_the_rule_its_level_and_line_and_the_pruning_ancestor() {
         .await;
     assert_eq!(invalid.status, 400);
 
-    // The warning does not make the Root Degraded for a new reason: its state is what it was.
-    let listed = daemon.get_json(&format!("/v1/roots/{root}")).await;
-    assert!(
-        listed.get("state_code").is_none_or(|code| code.is_null()),
-        "no reason to give: {listed}"
-    );
+    // The warning does not make the Root Degraded: once its first Reconciliation has run, it is watching.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let listed = daemon.get_json(&format!("/v1/roots/{root}")).await;
+        if listed["state"] == "watching" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the warning must not keep the Root degraded: {listed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]

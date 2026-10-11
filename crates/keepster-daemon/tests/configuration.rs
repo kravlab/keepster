@@ -50,6 +50,20 @@ async fn state(daemon: &Harness, root: &str) -> (String, String) {
     )
 }
 
+/// Wait until the Root is `Watching`, which it is once its first Reconciliation has run — the state this
+/// file's tests compare a configuration's effect against.
+async fn watching(daemon: &Harness, root: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while state(daemon, root).await.0 != "watching" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Root never became watching: {:?}",
+            state(daemon, root).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 async fn snapshot(daemon: &Harness, root: &str) -> keepster_cli::Response {
     daemon
         .post(
@@ -159,7 +173,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.0, "watching");
+    watching(&daemon, &root).await;
 
     write(
         &project,
@@ -213,7 +227,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.0, "watching");
+    watching(&daemon, &root).await;
 }
 
 #[tokio::test]
@@ -271,7 +285,7 @@ async fn a_root_file_setting_a_global_only_key_is_ignored_and_the_root_not_degra
         serde_json::json!([])
     );
     assert_eq!(configuration["warnings"][0]["code"], "key_ignored");
-    assert_eq!(state(&daemon, &root).await.0, "watching");
+    watching(&daemon, &root).await;
 }
 
 #[tokio::test]

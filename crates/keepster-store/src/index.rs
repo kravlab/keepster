@@ -245,29 +245,52 @@ impl Index {
         Ok(observations)
     }
 
-    /// Replace everything observed with what one pass saw, so a path that vanished loses its row in the
-    /// same pass that noticed.
-    pub(crate) fn replace_observations(
+    /// Make what is observed be what one pass saw, writing only the difference from `previous` — what
+    /// the pass started from — so a pass over an unchanged tree writes nothing, and a path that vanished
+    /// loses its row in the same pass that noticed.
+    pub(crate) fn update_observations(
         &mut self,
+        previous: &std::collections::HashMap<String, Observation>,
         observed: &[(String, Observation)],
     ) -> Result<(), StoreError> {
+        let seen: std::collections::HashSet<&str> =
+            observed.iter().map(|(path, _)| path.as_str()).collect();
+        let vanished: Vec<&String> = previous
+            .keys()
+            .filter(|path| !seen.contains(path.as_str()))
+            .collect();
+        let changed: Vec<&(String, Observation)> = observed
+            .iter()
+            .filter(|(path, observation)| previous.get(path) != Some(observation))
+            .collect();
+        if vanished.is_empty() && changed.is_empty() {
+            return Ok(());
+        }
+
         let path = self.path.clone();
         let failed = index_failed(&path, "written");
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(&failed)?;
-        transaction
-            .execute("DELETE FROM observed", [])
-            .map_err(&failed)?;
         {
-            let mut insert = transaction
-                .prepare("INSERT INTO observed (path, size, mtime, oid) VALUES (?1, ?2, ?3, ?4)")
+            let mut delete = transaction
+                .prepare("DELETE FROM observed WHERE path = ?1")
                 .map_err(&failed)?;
-            for (path, observation) in observed {
+            for path in vanished {
+                delete.execute(params![path]).map_err(&failed)?;
+            }
+            let mut upsert = transaction
+                .prepare(
+                    "INSERT INTO observed (path, size, mtime, oid) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT (path) DO UPDATE SET
+                         size = excluded.size, mtime = excluded.mtime, oid = excluded.oid",
+                )
+                .map_err(&failed)?;
+            for (path, observation) in changed {
                 // An mtime is kept as text: SQLite's integers stop at 64 bits, and nanoseconds since the
                 // epoch need more on a filesystem that dates files far from now.
-                insert
+                upsert
                     .execute(params![
                         path,
                         i64::try_from(observation.size).unwrap_or(i64::MAX),

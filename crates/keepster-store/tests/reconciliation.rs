@@ -308,3 +308,21 @@ fn whole_second_mtimes_are_reported_as_a_coarse_filter() {
         "one sub-second mtime proves the filesystem keeps them"
     );
 }
+
+#[test]
+fn on_a_filesystem_with_a_coarse_tick_a_file_written_within_it_is_read_again() {
+    let mut fixture = fixture();
+    // A second before the pass starts, on a whole second: on FAT the next edit within the same two-second
+    // tick would carry this very mtime, so this observation cannot vouch for anything.
+    let pass_starts = fixture.next_moment();
+    date(
+        &fixture.root.join("a.txt"),
+        pass_starts - Duration::from_secs(1),
+    );
+    let first = fixture.pass();
+    assert!(first.coarse_mtime);
+
+    let next = fixture.pass();
+
+    assert_eq!(next.hashed, 1);
+}

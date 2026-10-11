@@ -1532,7 +1532,7 @@
               },
               {
                 "$ref": "#/components/schemas/VerifyMode",
-                "description": "`hash` reads every file, whatever the last pass observed — the one-off answer to a filesystem\nwhose mtimes cannot be trusted. `stat`, or nothing, uses the Root's configured mode."
+                "description": "`hash` reads every file, whatever the last pass observed — the one-off answer to a filesystem\nwhose mtimes cannot be trusted; `stat` trusts the size-and-mtime filter even where `hash` is\nconfigured. Absent, the Root's configured mode applies."
               }
             ]
           }

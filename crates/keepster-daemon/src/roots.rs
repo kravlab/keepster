@@ -377,10 +377,11 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
 /// Why a Root that is captured automatically is not covered as promised, if it is not.
 fn coverage(activity: &triggers::Activity) -> Option<&'static str> {
     if !activity.automatic {
-        // Every Trigger is off: only a capture someone asks for, or a Reconciliation, ever happens.
+        // Every Trigger is off: only a capture or a Reconciliation someone asks for ever happens.
         Some("capture_unavailable")
-    } else if !activity.at_start {
-        // Whatever changed while the daemon was down stays uncaptured until something else changes.
+    } else if !activity.at_start || !activity.reconciled {
+        // Whatever changed while nobody watched stays uncaptured until a Reconciliation has run — or, with
+        // the start's walk switched off, until something else changes.
         Some("coverage_not_guaranteed")
     } else if activity.watch == triggers::Watch::Ceiling {
         Some("watch_ceiling")

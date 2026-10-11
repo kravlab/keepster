@@ -42,6 +42,13 @@ pub(crate) struct Runtimes {
     closed: AtomicBool,
     /// How many directory watches all Roots together may hold, where the platform has such a budget.
     ceiling: Option<usize>,
+    /// Held while a Root arms its watcher and checks it against the ceiling, so that Roots arming at
+    /// the same moment — every Root, at the daemon's start — count each other's watches.
+    arming: tokio::sync::Mutex<()>,
+    /// Whether the daemon's first look at the Registry is done. A runtime started by that look owes the
+    /// start's Reconciliation only if the Root asks for one; any runtime started later owes one always,
+    /// because a Root registered, moved or come back is exactly the change ADR 0009 queues it for.
+    settled: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -65,6 +72,9 @@ pub(crate) struct Activity {
     pub(crate) watch: Watch,
     /// Whether the last pass found every mtime on a whole second — a filter weaker than it looks.
     pub(crate) coarse_mtime: bool,
+    /// Whether a Reconciliation has completed since the runtime started: until one has, nothing proves
+    /// that what changed while nobody watched is in history.
+    pub(crate) reconciled: bool,
     /// How many paths wait to be captured.
     pub(crate) pending_paths: u64,
     /// When the oldest of them changed.
@@ -104,6 +114,8 @@ impl Runtimes {
             runtimes: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             ceiling,
+            arming: tokio::sync::Mutex::new(()),
+            settled: AtomicBool::new(false),
         }
     }
 
@@ -119,6 +131,7 @@ impl Runtimes {
             return;
         }
 
+        let settled = self.settled.swap(true, Ordering::SeqCst);
         let keep: Vec<RootId> = roots.iter().map(|(record, _)| record.id).collect();
         runtimes.retain(|id, runtime| {
             let kept = keep.contains(id);
@@ -140,7 +153,8 @@ impl Runtimes {
                     if let Some(old) = runtimes.remove(&record.id) {
                         let _ = old.inbox.send(Message::Stop);
                     }
-                    runtimes.insert(record.id, start(state, record, effective));
+                    let reconcile = settled || effective.reconcile.at_start;
+                    runtimes.insert(record.id, start(state, record, effective, reconcile));
                 }
                 _ => {
                     // A Root that cannot be captured — its directory is gone, or its configuration never
@@ -157,6 +171,14 @@ impl Runtimes {
     pub(crate) fn reconcile(&self, id: RootId) {
         if let Some(runtime) = self.runtimes().get(&id) {
             let _ = runtime.inbox.send(Message::Event(PolicyEvent::Reconcile));
+        }
+    }
+
+    /// Record what a pass over the Root `id` saw, when the pass ran outside its runtime — one someone asked
+    /// for.
+    pub(crate) fn passed(&self, id: RootId, trigger: Trigger, coarse_mtime: bool) {
+        if let Some(runtime) = self.runtimes().get(&id) {
+            record_pass(&mut lock(&runtime.activity), trigger, coarse_mtime);
         }
     }
 
@@ -220,7 +242,13 @@ impl Runtimes {
     }
 }
 
-fn start(state: &DaemonState, record: RootRecord, effective: Effective) -> Runtime {
+/// Start the Root's runtime; with `reconcile`, its first act is a Reconciliation.
+fn start(
+    state: &DaemonState,
+    record: RootRecord,
+    effective: Effective,
+    reconcile: bool,
+) -> Runtime {
     let (inbox, messages) = mpsc::unbounded_channel();
     let activity = Arc::new(Mutex::new(Activity::default()));
     describe(&mut lock(&activity), &effective);
@@ -229,6 +257,7 @@ fn start(state: &DaemonState, record: RootRecord, effective: Effective) -> Runti
         state.clone(),
         record,
         effective,
+        reconcile,
         inbox.clone(),
         messages,
         Arc::clone(&activity),
@@ -239,6 +268,15 @@ fn start(state: &DaemonState, record: RootRecord, effective: Effective) -> Runti
         inbox,
         task,
         activity,
+    }
+}
+
+/// Record in `activity` what a pass saw: the mtimes' granularity, and — for a Reconciliation — that
+/// coverage is now proven.
+fn record_pass(activity: &mut Activity, trigger: Trigger, coarse_mtime: bool) {
+    activity.coarse_mtime = coarse_mtime;
+    if trigger == Trigger::Reconcile {
+        activity.reconciled = true;
     }
 }
 
@@ -272,6 +310,7 @@ async fn run(
     state: DaemonState,
     record: RootRecord,
     effective: Effective,
+    reconcile: bool,
     outbox: mpsc::UnboundedSender<Message>,
     mut inbox: mpsc::UnboundedReceiver<Message>,
     activity: Arc<Mutex<Activity>>,
@@ -283,10 +322,12 @@ async fn run(
     let mut settings = settings_for(&effective, lock(&activity).watch);
     let mut policy = PolicyState::new(settings, origin.elapsed());
     let mut deadline: Option<Instant> = None;
-    // A daemon that was down saw nothing of what happened meanwhile, so the first act is a pass over the
-    // whole Root (ticket 02) — unless the user switched that walk off, which the Root's state then says.
-    // Either way the policy is asked what is due, which is how a periodic floor arms its first timer.
-    let mut next = Some(if effective.reconcile.at_start {
+    // A daemon that was down saw nothing of what happened meanwhile, and neither did one that just
+    // learned of this Root, so the first act is a pass over the whole Root (ticket 02) — unless the user
+    // switched the start's walk off, which the Root's state then says, or nothing captures the Root
+    // automatically yet. Either way the policy is asked what is due, which is how a periodic floor arms
+    // its first timer.
+    let mut next = Some(if reconcile {
         PolicyEvent::Reconcile
     } else {
         PolicyEvent::Timer
@@ -314,7 +355,17 @@ async fn run(
                                 watching = effective.triggers.watcher;
                                 watcher = watch(&state, &record, &rules, watching, &outbox, &activity).await;
                             }
-                            describe(&mut lock(&activity), &effective);
+                            let owed = {
+                                let mut activity = lock(&activity);
+                                let was_automatic = activity.automatic;
+                                describe(&mut activity, &effective);
+                                reconcile && !was_automatic && activity.automatic && !activity.reconciled
+                            };
+                            // The pass the runtime's start owed was held back while nothing captured the
+                            // Root automatically; it is due once something does.
+                            if owed {
+                                next = Some(PolicyEvent::Reconcile);
+                            }
                             let refreshed = settings_for(&effective, lock(&activity).watch);
                             if refreshed == settings {
                                 continue;
@@ -331,6 +382,11 @@ async fn run(
             }
         };
 
+        // A Root nothing captures automatically is passed over only when someone asks
+        // (`keepster reconcile`): an automatic Snapshot would contradict its `capture_unavailable`.
+        if matches!(event, PolicyEvent::Reconcile) && !lock(&activity).automatic {
+            continue;
+        }
         let (actions, decided) = decide(policy, event, origin.elapsed());
         policy = decided;
         for action in actions {
@@ -351,6 +407,11 @@ async fn run(
 
         {
             let mut activity = lock(&activity);
+            // A watcher arms the directories that appear as they appear, so its share of the ceiling
+            // grows with the tree.
+            if let (Some(watcher), Watch::Armed(_)) = (&watcher, activity.watch) {
+                activity.watch = Watch::Armed(watcher.watched().len());
+            }
             activity.pending_paths = u64::try_from(policy.pending_paths()).unwrap_or(u64::MAX);
             activity.pending_since = policy.pending_since().map(|since| origin + since);
         }
@@ -387,6 +448,7 @@ async fn watch(
     if !on {
         return None;
     }
+    let _arming = state.runtimes.arming.lock().await;
     let (path, rules, outbox) = (record.path.clone(), rules.clone(), outbox.clone());
 
     // Arming walks the tree, which blocks.
@@ -445,7 +507,7 @@ fn capture(
     tokio::spawn(async move {
         let (outcome, coarse_mtime) = captured.await.unwrap_or((PolicyEvent::CaptureFailed, None));
         if let Some(coarse_mtime) = coarse_mtime {
-            lock(&activity).coarse_mtime = coarse_mtime;
+            record_pass(&mut lock(&activity), trigger, coarse_mtime);
         }
         let busy = outcome == PolicyEvent::LockBusy;
         let _ = outbox.send(Message::Event(outcome));

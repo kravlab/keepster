@@ -122,7 +122,8 @@ pub enum Trigger {
 /// user's to choose, never automatic: on a network Root it means reading the whole Root over the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Verify {
-    /// Read a file only when its size, mtime or mode differs from what the last pass observed.
+    /// Read a file only when its size or mtime differs from what the last pass observed — a mode alone
+    /// changing is seen from the same `stat`, with nothing read.
     #[default]
     Stat,
     /// Read every file.

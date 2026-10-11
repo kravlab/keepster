@@ -69,7 +69,8 @@ pub(crate) async fn create(
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub(crate) struct ReconcileRequest {
     /// `hash` reads every file, whatever the last pass observed — the one-off answer to a filesystem
-    /// whose mtimes cannot be trusted. `stat`, or nothing, uses the Root's configured mode.
+    /// whose mtimes cannot be trusted; `stat` trusts the size-and-mtime filter even where `hash` is
+    /// configured. Absent, the Root's configured mode applies.
     #[serde(default)]
     verify: Option<VerifyMode>,
 }
@@ -124,6 +125,9 @@ pub(crate) async fn reconcile(
     });
 
     let pass = run_pass(&state, id, Trigger::Reconcile, verify, false)?;
+    state
+        .runtimes
+        .passed(id, Trigger::Reconcile, pass.coarse_mtime);
 
     Ok(Json(Reconciled {
         snapshot: pass.snapshot.as_ref().map(describe_captured),

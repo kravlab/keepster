@@ -605,20 +605,22 @@ impl HistoryStore {
         }
 
         // Evidence that cannot be read is no evidence: everything is read instead, which is the cost of
-        // a lost index and never a wrong Snapshot.
-        let observations = match verify {
-            Verify::Stat => self
-                .index()
-                .and_then(|index| index.observations())
-                .unwrap_or_default(),
-            Verify::Hash => HashMap::new(),
+        // a lost index and never a wrong Snapshot. Verifying by hash reads everything regardless, but the
+        // evidence is still loaded, so the rows this pass makes obsolete are still removed.
+        let observations = self
+            .index()
+            .and_then(|index| index.observations())
+            .unwrap_or_default();
+        let vouching = match verify {
+            Verify::Stat => &observations,
+            Verify::Hash => &HashMap::new(),
         };
         let walked = self.add_working_tree(
             &mut index,
             baseline_tree.as_ref(),
             root_path,
             policy,
-            &observations,
+            vouching,
             now,
         )?;
         remove_vanished(&mut index, &walked)?;
@@ -627,7 +629,7 @@ impl HistoryStore {
             .write_tree_to(&self.repository)
             .map_err(self.failed("written"))?;
         if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
-            let index_lag = self.keep_observations(&walked);
+            let index_lag = self.keep_observations(&walked, &observations);
             return Ok(walked.pass(None, index_lag));
         }
         let tree = self
@@ -672,11 +674,10 @@ impl HistoryStore {
         .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
         .map_err(|source| self.failed("read")(source).to_string());
 
-        let index_lag = self
-            .catch_up()
-            .err()
-            .map(|error| error.to_string())
-            .or_else(|| self.keep_observations(&walked));
+        // Both, whatever the first does: a lagging timeline must not leave the evidence of a pass that
+        // saw a file vanish describing it still.
+        let lagging = self.catch_up().err().map(|error| error.to_string());
+        let index_lag = self.keep_observations(&walked, &observations).or(lagging);
         let snapshot = CapturedSnapshot {
             id,
             segment,
@@ -980,9 +981,7 @@ impl HistoryStore {
                 },
             };
 
-            // Git's racy rule: a file whose mtime is not strictly older than the pass's start may change
-            // again within the same tick and look identical, so it is not vouched for next time.
-            if let Some(mtime) = mtime.filter(|mtime| *mtime < started) {
+            if let Some(mtime) = mtime {
                 walked
                     .observed
                     .push((path.0.clone(), Observation { size, mtime, oid }));
@@ -1001,16 +1000,31 @@ impl HistoryStore {
         walked.paths = paths;
         walked.coarse_mtime = walked.seen > 0 && !sub_second;
 
+        // Git's racy rule: a file whose mtime is not older than the pass's start may change again within
+        // the same tick and look identical, so it is not vouched for next time. The comparison is against
+        // the daemon's clock, not the filesystem's — writing a probe into the user's tree to read the
+        // filesystem's own time is not ours to do — so the start is moved back by the coarsest tick there
+        // is: FAT's two seconds, which also covers a whole-second filesystem, a kernel stamping mtimes
+        // from a coarse clock and a modest skew. What it costs is re-reading the files written in the
+        // two seconds before a pass, once.
+        walked
+            .observed
+            .retain(|(_, observation)| observation.mtime + COARSE_TICK_NANOS < started);
+
         Ok(walked)
     }
 
     /// Replace the evidence the next pass compares against with what this one saw. A failure costs the
     /// next pass some reading, never this one's Snapshot, so it is reported rather than raised.
-    fn keep_observations(&self, walked: &Walked) -> Option<String> {
+    fn keep_observations(
+        &self,
+        walked: &Walked,
+        previous: &HashMap<String, Observation>,
+    ) -> Option<String> {
         self.index()
-            .and_then(|mut index| index.replace_observations(&walked.observed))
+            .and_then(|mut index| index.update_observations(previous, &walked.observed))
             .err()
-            .map(|error| error.to_string())
+            .map(|error| format!("the evidence for the next pass could not be kept: {error}"))
     }
 
     /// The newest Snapshot in any Segment at or before `segment`.
@@ -1226,17 +1240,20 @@ fn remove_vanished(index: &mut git2::Index, walked: &Walked) -> Result<(), Store
     Ok(())
 }
 
-/// Whether the baseline already holds this path with this content and mode.
+/// The content and mode the baseline holds for this path, if it holds it.
 ///
-/// Inserting into the index invalidates that path's ancestry in the TREE cache, so leaving an unchanged
-/// entry alone is what lets `write_tree` reuse every still-valid subtree (ADR 0004). Until ticket 44
-/// brings the stat cache, the file is still hashed to find this out; what is saved is the tree rewrite,
-/// which is the part measured in seconds.
+/// What a pass compares against twice: the last pass's evidence vouches for a file only when it read
+/// this very content, and an entry left exactly as the baseline has it is not inserted again — inserting
+/// invalidates the path's ancestry in the TREE cache, and leaving it alone is what lets `write_tree`
+/// reuse every still-valid subtree (ADR 0004).
 fn baseline_entry(baseline: Option<&git2::Tree<'_>>, path: &WirePath) -> Option<(git2::Oid, u32)> {
     let entry = baseline?.get_path(&path.as_filesystem_path()).ok()?;
 
     Some((entry.id(), u32::try_from(entry.filemode()).ok()?))
 }
+
+/// The coarsest mtime tick a filesystem this product meets keeps: FAT and exFAT record two seconds.
+const COARSE_TICK_NANOS: i128 = 2_000_000_000;
 
 /// A moment as nanoseconds since the epoch, before it as a negative count.
 fn nanos_since_epoch(moment: SystemTime) -> i128 {

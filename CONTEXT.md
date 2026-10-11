@@ -52,7 +52,8 @@ control inside the watched directory.
 _Avoid_: backup, cache, repo
 
 **Trigger**:
-A rule that decides when a Snapshot is taken. Which Triggers are active is the user's choice.
+A rule that decides when a Snapshot is taken. Which Triggers are active is the user's choice — except
+Reconciliation, which runs whenever the guarantee needs it and is recorded as a Trigger of its own.
 _Avoid_: schedule, hook, watcher event
 
 **Debounce window**:

@@ -123,7 +123,7 @@ pub(crate) async fn reload_continually(state: DaemonState) {
 /// The Registry is held for the whole pass, as every handler holds it while it reports a Root: a
 /// known-good copy is written into the Root's store directory, which an erasing deregistration must
 /// not be removing at the same moment. The order is always the Registry, then the configuration.
-fn reload(state: &DaemonState) {
+pub(crate) fn reload(state: &DaemonState) {
     let registry = state.registry();
     reload_with(state, &registry);
 }

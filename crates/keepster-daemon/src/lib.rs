@@ -110,6 +110,13 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         .watch_ceiling
         .or_else(keepster_watch::default_ceiling);
     let state = DaemonState::new(registry, config.config_path, config.store_base, ceiling);
+    // The daemon's first look at the Registry happens before any request is served, so that the start's
+    // Reconciliation is told apart from the one a registration owes: a Root registered a moment later is
+    // a Registry change, never the start.
+    let starting = state.clone();
+    tokio::task::spawn_blocking(move || configuration::reload(&starting))
+        .await
+        .map_err(io::Error::other)?;
     // Every file is read again whenever a request needs it; the tick is what makes a reload happen
     // when nothing asks, so that what follows from one — a Root queued for a full comparison, a
     // `Degraded` state — does not wait for a client.
