@@ -260,6 +260,12 @@ pub struct RestoreArgs {
     #[arg(long, value_name = "PATH=keep|snapshot")]
     pub name_case: Vec<String>,
 
+    /// Where a file's permission bits on disk are not the Snapshot's: take the `snapshot`'s, or `keep`
+    /// those on disk — for every such file, or, as PATH=snapshot|keep, for one. Defaults to the
+    /// Root's `restore.modes` setting, which asks.
+    #[arg(long, value_name = "snapshot|keep|PATH=snapshot|keep")]
+    pub modes: Vec<String>,
+
     /// Skip each file still in the way, with its reason, and restore the rest.
     #[arg(long)]
     pub skip_unresolvable: bool,

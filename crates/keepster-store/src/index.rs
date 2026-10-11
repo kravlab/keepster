@@ -19,7 +19,7 @@ use std::time::Duration;
 use keepster_core::{ChangeKind, Record, RootPath, SIDECAR, Sidecar, SnapshotId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use crate::history::StoreError;
+use crate::history::{StoreError, mode_changes};
 
 /// The index schema's version, kept in SQLite's own `user_version`.
 ///
@@ -515,7 +515,8 @@ pub(crate) fn trailers(message: &str) -> Option<Trailers> {
 /// How every path differs between two trees, in path order.
 ///
 /// `None` as the earlier tree is the first Snapshot a Root ever had, against which everything was
-/// added. The diff recurses, so a directory appears only through the files beneath it.
+/// added. The diff recurses, so a directory appears only through the files beneath it — or by its own
+/// mode, when that is all that changed there (ticket 50).
 ///
 /// The sidecar is not a path of the Root, so it never appears itself; what it says does. A path that
 /// became Withheld with nothing else changing — a new pipe, a file grown past its cap — or whose record
@@ -574,49 +575,73 @@ pub(crate) fn changes_between(
 
 /// The paths whose sidecar records differ between two trees, and how: a path that became Withheld was
 /// added to what the Snapshot names, one that stopped being Withheld went from it, and one whose
-/// incomplete record came, went or changed was modified.
+/// incomplete record came, went or changed was modified — as was one whose mode changed, with nothing
+/// else (ticket 50).
 fn record_changes(
     repository: &git2::Repository,
     before: Option<&git2::Tree<'_>>,
     after: &git2::Tree<'_>,
 ) -> Vec<(String, ChangeKind)> {
-    let records = |tree: Option<&git2::Tree<'_>>| -> BTreeMap<String, Record> {
+    let sidecar = |tree: Option<&git2::Tree<'_>>| -> Sidecar {
         tree.and_then(|tree| tree.get_name(SIDECAR))
             .and_then(|entry| repository.find_blob(entry.id()).ok())
             .and_then(|blob| Sidecar::parse(blob.content()).ok())
-            .map(|parsed| {
-                parsed
-                    .sidecar
-                    .records
-                    .into_iter()
-                    .map(|record| (record.path().as_str().to_owned(), record))
-                    .collect()
-            })
+            .map(|parsed| parsed.sidecar)
             .unwrap_or_default()
     };
-    let (was, is) = (records(before), records(Some(after)));
-    let withheld = |record: &Record| matches!(record, Record::Withheld { .. });
+    // What each path is recorded as, a mode aside: a mode is compared as the mode it makes, which a
+    // changed header can change with no record changing at all.
+    let facts = |sidecar: &Sidecar| -> BTreeMap<String, Vec<Record>> {
+        let mut facts: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+        for record in &sidecar.records {
+            if !matches!(record, Record::Mode { .. }) {
+                facts
+                    .entry(record.path().as_str().to_owned())
+                    .or_default()
+                    .push(record.clone());
+            }
+        }
+        facts
+    };
+    let (was_sidecar, is_sidecar) = (sidecar(before), sidecar(Some(after)));
+    let (was, is) = (facts(&was_sidecar), facts(&is_sidecar));
+    let withheld = |records: &[Record]| {
+        records
+            .iter()
+            .any(|record| matches!(record, Record::Withheld { .. }))
+    };
 
-    let mut changes = Vec::new();
-    for (path, record) in &is {
+    let mut changes = BTreeMap::new();
+    for (path, records) in &is {
         match was.get(path) {
-            None if withheld(record) => changes.push((path.clone(), ChangeKind::Added)),
-            Some(previous) if previous == record => {}
-            _ => changes.push((path.clone(), ChangeKind::Modified)),
+            None if withheld(records) => {
+                changes.insert(path.clone(), ChangeKind::Added);
+            }
+            Some(previous) if previous == records => {}
+            _ => {
+                changes.insert(path.clone(), ChangeKind::Modified);
+            }
         }
     }
-    for (path, record) in &was {
+    for (path, records) in &was {
         if !is.contains_key(path) {
-            let kind = if withheld(record) {
+            let kind = if withheld(records) {
                 ChangeKind::Deleted
             } else {
                 ChangeKind::Modified
             };
-            changes.push((path.clone(), kind));
+            changes.insert(path.clone(), kind);
+        }
+    }
+    if let Some(before) = before {
+        for change in mode_changes(before, &was_sidecar.modes(), after, &is_sidecar.modes()) {
+            changes
+                .entry(change.path.as_str().to_owned())
+                .or_insert(ChangeKind::Modified);
         }
     }
 
-    changes
+    changes.into_iter().collect()
 }
 
 /// Every Segment ref and the commit at its tip.

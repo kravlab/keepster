@@ -11,16 +11,16 @@
 //! here rather than of whichever caller sequences two calls.
 
 use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
-    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Kind, Parsed, Record, RootId,
-    RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger, Verdict, Verify,
-    WithheldReason, ignore_file_rules,
+    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Kind, ModeKind, ModeTable, Parsed,
+    Record, RootId, RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger,
+    Verdict, Verify, WithheldReason, ignore_file_rules,
 };
 
 use crate::index::{self, Index, Observation};
@@ -346,11 +346,13 @@ pub struct Entry {
     pub kind: EntryKind,
     /// Its size in bytes; absent for a directory.
     pub size: Option<u64>,
-    /// Its permission bits, as far as this build records them; absent where nothing is recorded.
-    ///
-    /// The executable bit is all a tree mode carries, so a file reads as `0o644` or `0o755` until the
-    /// sidecar of ticket 50 holds all twelve bits.
+    /// A file's tree mode as permission bits, `0o644` or `0o755`: whether it is executable, on every
+    /// platform.
     pub mode: Option<u32>,
+    /// All twelve permission bits of a file or directory as the Snapshot holds them (ticket 50); absent
+    /// where the capture observed none — on Windows, or before modes were captured — and for anything
+    /// else.
+    pub permissions: Option<u32>,
     /// Whether its content is binary by git's rule; absent for anything but a file.
     pub binary: Option<bool>,
     /// Why the Snapshot does not hold it, for a Withheld path.
@@ -368,6 +370,7 @@ impl Entry {
             kind,
             size: None,
             mode: None,
+            permissions: None,
             binary: None,
             withheld: None,
             incomplete: None,
@@ -654,22 +657,40 @@ impl HistoryStore {
             Verify::Stat => &observations,
             Verify::Hash => &HashMap::new(),
         };
-        let (tree_id, walked) =
-            self.write_working_tree(baseline_tree.as_ref(), root_path, policy, vouching, now)?;
+        let (tree_id, walked) = self.write_working_tree(
+            baseline_tree.as_ref(),
+            root_path,
+            policy,
+            vouching,
+            now,
+            trigger == Trigger::Reconcile,
+        )?;
         let previous = baseline
             .as_ref()
             .and_then(|commit| commit.message().ok().and_then(index::trailers))
             .map(|trailers| trailers.id);
-        if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
+        // Counted by the very function the index uses, so the answer to this request and the timeline
+        // can never disagree about what this Snapshot changed.
+        let baseline_id = baseline_tree.as_ref().map(git2::Tree::id);
+        let changes = index::changes_between(&self.repository, baseline_id, tree_id);
+        // A tree written differently that changed no path — a header counted again by a
+        // Reconciliation — is nothing to record: the next Snapshot that changes something carries it.
+        // Modes observed for the first time are something: from then on a `chmod` can be told.
+        let nothing_changed = match &baseline_tree {
+            Some(baseline) => {
+                changes.as_ref().is_ok_and(|changes| changes.is_empty())
+                    && self.observes_modes(baseline)?
+                        == self.observes_modes(&self.find(tree_id)?)?
+            }
+            None => false,
+        };
+        if !record_unchanged && nothing_changed {
             let index_lag = self.keep_observations(&walked, &observations);
             let mut pass = walked.pass(None, index_lag);
             pass.unchanged_since = previous;
             return Ok(pass);
         }
-        let tree = self
-            .repository
-            .find_tree(tree_id)
-            .map_err(self.failed("read"))?;
+        let tree = self.find(tree_id)?;
 
         let id = SnapshotId::following(previous, now);
         let signature = self.signature(now)?;
@@ -694,15 +715,9 @@ impl HistoryStore {
             )
             .map_err(self.failed("written"))?;
 
-        // Counted by the very function the index uses, so the answer to this request and the timeline
-        // can never disagree about what this Snapshot changed.
-        let changed_paths = index::changes_between(
-            &self.repository,
-            baseline_tree.as_ref().map(git2::Tree::id),
-            tree_id,
-        )
-        .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
-        .map_err(|source| self.failed("read")(source).to_string());
+        let changed_paths = changes
+            .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
+            .map_err(|source| self.failed("read")(source).to_string());
 
         // Both, whatever the first does: a lagging timeline must not leave the evidence of a pass that
         // saw a file vanish describing it still.
@@ -754,6 +769,7 @@ impl HistoryStore {
         policy: &CapturePolicy,
         vouching: &HashMap<String, Observation>,
         now: SystemTime,
+        reconciling: bool,
     ) -> Result<(git2::Oid, Walked), StoreError> {
         let mut index = git2::Index::new().map_err(self.failed("prepared"))?;
         if let Some(tree) = baseline_tree {
@@ -767,7 +783,8 @@ impl HistoryStore {
         let mut walked =
             self.add_working_tree(&mut index, baseline_tree, root_path, policy, vouching, now)?;
         remove_vanished(&mut index, &walked)?;
-        walked.unrecognized = self.write_sidecar(&mut index, baseline_tree, &walked)?;
+        walked.unrecognized =
+            self.write_sidecar(&mut index, baseline_tree, &walked, reconciling)?;
         let tree_id = index
             .write_tree_to(&self.repository)
             .map_err(self.failed("written"))?;
@@ -778,11 +795,14 @@ impl HistoryStore {
     /// Put the walk's records in the sidecar at the tree root, or take the sidecar out when it would
     /// say nothing (ADR 0006), returning the baseline sidecar's records this build could not carry.
     ///
-    /// Only when there is something to say: most Snapshots hold no Withheld or incomplete path and keep
-    /// the default header, and a Snapshot whose tree is just the Root's files is the one a person reading
-    /// the store with git expects. The header is carried forward from the baseline's sidecar, since the
-    /// modal defaults it names are ticket 50's to compute; and the entry is left alone when the bytes
-    /// did not change, for the TREE cache's sake (ADR 0004).
+    /// The entry is left alone when the bytes did not change, for the TREE cache's sake (ADR 0004).
+    ///
+    /// The header names the Root's modal modes, which take the whole tree to count: a Reconciliation,
+    /// which walks it anyway, counts them again, and so does a capture with no observed header to
+    /// carry; every other capture carries the baseline's forward (ADR 0006). Each path then costs a
+    /// record only where its mode is not its kind's default. On Unix the header also says the modes
+    /// were observed, so every Snapshot taken there has a sidecar; elsewhere none are, and a Snapshot
+    /// with no Withheld or incomplete path has none.
     ///
     /// The records come from this walk alone, so whatever the baseline's sidecar held that this build
     /// does not know — a later build's facts — is not written again, and is handed back to be reported
@@ -792,6 +812,7 @@ impl HistoryStore {
         index: &mut git2::Index,
         baseline: Option<&git2::Tree<'_>>,
         walked: &Walked,
+        reconciling: bool,
     ) -> Result<Vec<String>, StoreError> {
         let recorded = baseline.and_then(|tree| tree.get_name(SIDECAR).map(|entry| entry.id()));
         let Parsed { sidecar, unknown } = match baseline {
@@ -802,8 +823,28 @@ impl HistoryStore {
             },
         };
 
-        let records = walked.records();
-        if records.is_empty() && sidecar.header == Header::default() {
+        let (header, modes) = if cfg!(unix) {
+            let modes = tree_modes(index, walked, &sidecar.modes());
+            // Counted again by a Reconciliation, and wherever there is no header worth carrying: the
+            // first Snapshot, and the first after one that observed no modes.
+            let header = if reconciling || !sidecar.header.observed {
+                Header::modal(modes.iter().map(|(_, kind, mode)| (*kind, *mode)))
+            } else {
+                sidecar.header
+            };
+            (header, modes)
+        } else {
+            // Windows observes no modes, so the Snapshot holds none and says so (ticket 17).
+            (Header::default(), Vec::new())
+        };
+        let mut records = walked.records();
+        records.extend(
+            modes
+                .into_iter()
+                .filter(|(_, kind, mode)| *mode != header.default_mode(*kind))
+                .map(|(path, _, mode)| Record::Mode { path, mode }),
+        );
+        if records.is_empty() && header == Header::default() {
             if recorded.is_some() {
                 index
                     .remove_path(Path::new(SIDECAR))
@@ -813,7 +854,7 @@ impl HistoryStore {
         }
 
         let mut written = Sidecar::with_records(records);
-        written.header = sidecar.header;
+        written.header = header;
         let blob = self
             .repository
             .blob(&written.to_bytes())
@@ -875,9 +916,11 @@ impl HistoryStore {
     ) -> Result<Listing, StoreError> {
         let root = self.snapshot_tree(snapshot)?;
         let Parsed { sidecar, unknown } = self.sidecar(&root)?;
+        // A mode is a fact about a path the tree holds, read with it below, and never a path of its own.
         let records: Vec<&Record> = sidecar
             .records
             .iter()
+            .filter(|record| !matches!(record, Record::Mode { .. }))
             .filter(|record| is_beneath(record.path(), directory))
             .collect();
 
@@ -900,6 +943,18 @@ impl HistoryStore {
         let mut entries = Vec::new();
         if let Some(tree) = tree {
             self.list(&tree, directory, depth, &mut entries)?;
+        }
+        // Only what the tree holds has a mode: a directory joined in below for the Withheld paths
+        // beneath it was never held.
+        let modes = sidecar.modes();
+        for entry in &mut entries {
+            let kind = match (entry.kind, entry.mode) {
+                (EntryKind::File, Some(0o755)) => ModeKind::Executable,
+                (EntryKind::File, _) => ModeKind::File,
+                (EntryKind::Directory, _) => ModeKind::Directory,
+                _ => continue,
+            };
+            entry.permissions = modes.mode_of(&entry.path, kind);
         }
         join_records(&mut entries, &records, directory, depth);
 
@@ -969,6 +1024,16 @@ impl HistoryStore {
         }
 
         Ok(())
+    }
+
+    /// The tree `id` in this store.
+    fn find(&self, id: git2::Oid) -> Result<git2::Tree<'_>, StoreError> {
+        self.repository.find_tree(id).map_err(self.failed("read"))
+    }
+
+    /// Whether the Snapshot whose tree is `root` observed its paths' modes.
+    fn observes_modes(&self, root: &git2::Tree<'_>) -> Result<bool, StoreError> {
+        Ok(self.sidecar(root)?.sidecar.header.observed)
     }
 
     /// What a Snapshot's sidecar says, or nothing when it has none.
@@ -1228,6 +1293,11 @@ impl HistoryStore {
                 },
             };
             let mode = mode_for(&metadata);
+            // Taken from the `stat` the filter already made, so a permission-only change costs nothing
+            // to see: the sidecar's records differ, and with them the tree.
+            if let Some(bits) = permissions(&metadata) {
+                walked.modes.insert(path.0.clone(), bits);
+            }
             let size = metadata.len();
             let mtime = metadata.modified().ok().map(nanos_since_epoch);
             sub_second |= mtime.is_some_and(|mtime| mtime % 1_000_000_000 != 0);
@@ -1534,6 +1604,9 @@ struct Walked {
     links: Vec<(WirePath, Vec<u8>)>,
     /// Where a file reached through a followed link to it is read from, since the link is never opened.
     real: HashMap<WirePath, PathBuf>,
+    /// The permission bits of every file read or vouched for and every directory entered, by the path
+    /// the index names it by; empty where the platform keeps none (ticket 50).
+    modes: HashMap<String, u32>,
     /// What the baseline's sidecar said that this build does not know, and so did not carry.
     unrecognized: Vec<String>,
     /// How many links the walk followed.
@@ -1601,6 +1674,14 @@ impl Walked {
         let path = WirePath(rooted.as_str().to_owned());
         self.incomplete(&path, Incomplete::Error("eloop".to_owned()));
         self.carried.push(path);
+    }
+
+    /// Note the mode of a directory the walk enters at `rooted` — a followed link's target's, at the
+    /// link's own path.
+    fn entered(&mut self, rooted: &RootPath, metadata: &fs::Metadata) {
+        if let Some(bits) = permissions(metadata) {
+            self.modes.insert(rooted.as_str().to_owned(), bits);
+        }
     }
 
     /// Hold back a path, with its reason.
@@ -1853,6 +1934,8 @@ fn join_records(entries: &mut Vec<Entry>, records: &[&Record], directory: &RootP
             // A tree entry where the sidecar says there is none was not written by this build's
             // rule (ADR 0009); the entry is what can be read, so it stands.
             (Record::Withheld { .. }, Some(_)) => {}
+            // Never passed in: a mode is read with the tree entry it belongs to.
+            (Record::Mode { .. }, _) => {}
         }
     }
 }
@@ -1979,13 +2062,16 @@ fn collect_files(
                     // A directory already on the way here — a bind mount of an ancestor — would never
                     // end: what the baseline holds there is kept, and the loop named.
                     None if place.revisits(&metadata) => walked.loops(&rooted),
-                    None => collect_files(
-                        root,
-                        &rooted,
-                        policy,
-                        &place.within(real, &metadata),
-                        walked,
-                    )?,
+                    None => {
+                        walked.entered(&rooted, &metadata);
+                        collect_files(
+                            root,
+                            &rooted,
+                            policy,
+                            &place.within(real, &metadata),
+                            walked,
+                        )?;
+                    }
                 },
                 Judged::Withheld(reason) => walked.withhold(rooted, reason),
                 Judged::Left => {}
@@ -2132,6 +2218,7 @@ fn walk_link(
             if metadata.is_dir() {
                 walked.judge(Judged::from(policy.directory(rooted)), rooted, |walked| {
                     walked.followed += 1;
+                    walked.entered(rooted, &metadata);
                     let inside = place.following(real, &metadata);
                     collect_files(root, rooted, policy, &inside, walked)
                 })?;
@@ -2280,6 +2367,138 @@ fn mode_for(metadata: &fs::Metadata) -> u32 {
         let _ = metadata;
         REGULAR_MODE
     }
+}
+
+/// All twelve permission bits, where the platform keeps them: on Unix, and nowhere else (ticket 50).
+fn permissions(metadata: &fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        Some(metadata.permissions().mode() & 0o7777)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// What a tree entry's mode makes it, for the mode it has by default — `None` for a link, whose
+/// permission bits mean nothing, and for anything else a Snapshot keeps no mode for.
+fn mode_kind(filemode: i32) -> Option<ModeKind> {
+    match filemode {
+        0o040_000 => Some(ModeKind::Directory),
+        0o100_755 => Some(ModeKind::Executable),
+        0o100_644 => Some(ModeKind::File),
+        _ => None,
+    }
+}
+
+/// Every file and directory the tree being written holds, with its kind and mode: as this walk found
+/// it, or — for a path it carried forward — as the baseline held it, if the baseline observed one.
+fn tree_modes(
+    index: &git2::Index,
+    walked: &Walked,
+    baseline: &ModeTable,
+) -> Vec<(RootPath, ModeKind, u32)> {
+    let mut held: BTreeMap<String, ModeKind> = BTreeMap::new();
+    for entry in index.iter() {
+        let Ok(path) = String::from_utf8(entry.path) else {
+            continue;
+        };
+        if path == SIDECAR {
+            continue;
+        }
+        // Every directory above a held path is a tree of its own.
+        for (end, _) in path.match_indices('/') {
+            held.insert(path[..end].to_owned(), ModeKind::Directory);
+        }
+        if let Some(kind) = i32::try_from(entry.mode).ok().and_then(mode_kind) {
+            held.insert(path, kind);
+        }
+    }
+
+    held.into_iter()
+        .filter_map(|(path, kind)| {
+            let rooted = WirePath(path).to_root_path();
+            let mode = walked
+                .modes
+                .get(rooted.as_str())
+                .copied()
+                .or_else(|| baseline.mode_of(&rooted, kind))?;
+            Some((rooted, kind, mode))
+        })
+        .collect()
+}
+
+/// A path both of two trees hold whose mode differs between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModeChange {
+    /// Where.
+    pub path: RootPath,
+    /// What it is in the newer tree.
+    pub kind: ModeKind,
+    /// The mode in the older tree.
+    pub old: u32,
+    /// The mode in the newer tree.
+    pub new: u32,
+}
+
+/// Every path held by both `before` and `after`, directories included, whose mode — as each tree's
+/// sidecar says — differs between them, in path order.
+///
+/// Only the paths with a record on either side can differ while the headers agree; a header that
+/// changed can change any path's mode, and then every path of `after` is compared.
+pub(crate) fn mode_changes(
+    before: &git2::Tree<'_>,
+    was: &ModeTable,
+    after: &git2::Tree<'_>,
+    is: &ModeTable,
+) -> Vec<ModeChange> {
+    let kind_in = |tree: &git2::Tree<'_>, path: &RootPath| {
+        tree.get_path(Path::new(path.as_str()))
+            .ok()
+            .and_then(|entry| mode_kind(entry.filemode()))
+    };
+    // A side that observed no modes has none to compare.
+    if !was.header().observed || !is.header().observed {
+        return Vec::new();
+    }
+    let compare = |path: RootPath| -> Option<ModeChange> {
+        let (kind_before, kind) = (kind_in(before, &path)?, kind_in(after, &path)?);
+        let (old, new) = (was.mode_of(&path, kind_before)?, is.mode_of(&path, kind)?);
+        (old != new).then_some(ModeChange {
+            path,
+            kind,
+            old,
+            new,
+        })
+    };
+
+    let mut changes: Vec<ModeChange> = if was.header() == is.header() {
+        let candidates: BTreeSet<RootPath> = was
+            .records()
+            .chain(is.records())
+            .map(|(path, _)| path.clone())
+            .collect();
+        candidates.into_iter().filter_map(compare).collect()
+    } else {
+        let mut paths = Vec::new();
+        let _ = after.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+            let name = String::from_utf8_lossy(entry.name_bytes());
+            if prefix.is_empty() && name == SIDECAR {
+                return git2::TreeWalkResult::Skip;
+            }
+            paths.push(WirePath(format!("{prefix}{name}")).to_root_path());
+            git2::TreeWalkResult::Ok
+        });
+        paths.into_iter().filter_map(compare).collect()
+    };
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+
+    changes
 }
 
 /// One index entry, with a mode this code sets rather than one git probed.

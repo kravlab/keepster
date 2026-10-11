@@ -459,6 +459,7 @@ pub(crate) async fn entries(
                 },
                 size: entry.size,
                 mode: entry.mode,
+                permissions: entry.permissions,
                 binary: entry.binary,
                 withheld: entry.withheld.map(withheld_reason),
                 incomplete: entry.incomplete.map(|why| why.as_str().to_owned()),

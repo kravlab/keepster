@@ -165,7 +165,7 @@ fn write_summary(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
             write!(out, "  (still there, withheld: {reason})")?;
         }
         if let (Some(old), Some(new)) = (file.old_mode, file.new_mode) {
-            write!(out, "  (mode {old:o} -> {new:o})")?;
+            write!(out, "  (mode {old:04o} -> {new:04o})")?;
         }
         writeln!(out)?;
     }

@@ -138,14 +138,26 @@ impl Fixture {
     }
 }
 
+/// The sidecar's first line under the umask the tests run with: on Unix it says the modes were observed,
+/// so every Snapshot taken there has one (ticket 50).
+#[cfg(unix)]
+const HEADER: &str = "keepster-meta 1 file=0644 dir=0755 modes\n";
+#[cfg(not(unix))]
+const HEADER: &str = "keepster-meta 1 file=0644 dir=0755\n";
+
 #[test]
-fn a_snapshot_with_nothing_to_say_has_no_sidecar() {
+fn a_snapshot_with_nothing_to_say_says_only_its_header() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"one");
 
     let captured = fixture.capture(&CapturePolicy::default(), MOMENT);
 
-    assert_eq!(fixture.sidecar(), None);
+    let expected = cfg!(unix).then_some(HEADER);
+    assert_eq!(
+        fixture.sidecar().as_deref(),
+        expected,
+        "where no mode is observed, nothing to say is no sidecar"
+    );
     assert!(captured.withheld.is_empty() && captured.incomplete.is_empty());
 }
 
@@ -161,12 +173,11 @@ fn a_reserved_name_is_withheld_once_and_never_entered() {
     let captured = fixture.capture(&CapturePolicy::default(), MOMENT);
 
     assert_eq!(
-        fixture.sidecar().as_deref(),
-        Some(
-            "keepster-meta 1 file=0644 dir=0755\n\
-             w reserved_name .git\n\
+        fixture.sidecar(),
+        Some(format!(
+            "{HEADER}w reserved_name .git\n\
              w reserved_name .keepster-meta\n"
-        ),
+        )),
         "one record for the directory, none for what is inside it"
     );
     let mut withheld: Vec<_> = captured
@@ -283,7 +294,7 @@ fn a_fifo_is_withheld_as_a_special_file_and_never_opened() {
     );
     assert_eq!(
         fixture.sidecar().as_deref(),
-        Some("keepster-meta 1 file=0644 dir=0755\nw special_file:fifo run/control\n")
+        Some(format!("{HEADER}w special_file:fifo run/control\n").as_str())
     );
     assert_eq!(
         captured.withheld[0].reason,
@@ -320,7 +331,7 @@ fn a_read_error_names_its_errno_and_keeps_the_previous_version() {
     assert_eq!(fixture.held("b.txt").as_deref(), Some(&b"before"[..]));
     assert_eq!(
         fixture.sidecar().as_deref(),
-        Some("keepster-meta 1 file=0644 dir=0755\ni eacces b.txt\n")
+        Some(format!("{HEADER}i eacces b.txt\n").as_str())
     );
     assert!(fixture.message().contains("Keepster-Omitted: 1\n"));
 }
@@ -419,7 +430,11 @@ fn a_file_that_never_settles_is_unstable_and_carries_its_previous_version_forwar
     fixture.write("busy.log", b"settled\n");
     let settled = fixture.capture(&policy, MOMENT + 60);
     assert!(settled.incomplete.is_empty());
-    assert_eq!(fixture.sidecar(), None, "the record goes once it is read");
+    assert_eq!(
+        fixture.sidecar().as_deref(),
+        Some(HEADER),
+        "the record goes once it is read"
+    );
 
     make_busy(&fixture);
     let third = fixture.capture(&policy, MOMENT + 120);

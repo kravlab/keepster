@@ -8,13 +8,13 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use keepster_api::{
-    Confirm, ErrorCode, Event, NameCaseChoice, PathResolution, Problem, RestoreIssue,
+    Confirm, ErrorCode, Event, ModesChoice, NameCaseChoice, PathResolution, Problem, RestoreIssue,
     RestoreOutcome, RestoreRequest, Restored, RestoredPath,
 };
 use keepster_app::restore::{self, RestoreError};
 use keepster_core::{
-    Confirmation, Confirmed, Issue, NameCase, PathPlan, Plan, Resolution, RootPath, SnapshotId,
-    Step,
+    Confirmation, Confirmed, Issue, ModeChoice, NameCase, PathPlan, Plan, Resolution, RootPath,
+    SnapshotId, Step,
 };
 use keepster_store::Written;
 
@@ -32,8 +32,8 @@ use crate::snapshots::{announce, capture_problem, parse_path, prepare, store_pro
     params(RootAddress),
     request_body = RestoreRequest,
     responses(
-        (status = 200, description = "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place; a replaced file keeps its permission bits with the Snapshot's executable bit applied, and a new one starts from the umask. A file that changed between the plan and its write fails without being touched.", body = Restored),
-        (status = 400, description = "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, which the blanket force never gives), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.", body = Problem, content_type = "application/problem+json"),
+        (status = 200, description = "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place, with the Snapshot's permission bits — or, where those on disk differ, the ones `modes` chose; a file whose content already matches has only its bits set. Windows keeps no permission bits, and sets none. A file that changed between the plan and its write fails without being touched.", body = Restored),
+        (status = 400, description = "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, `modes`, which the blanket force never gives — `modes` defaults to the Root's `restore.modes` setting, which by default asks), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such Root, Snapshot or path in the Snapshot — or a path asked for by name is Withheld there (`withheld`), so there is nothing to restore.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The Root is unavailable, or its configuration has never been valid.", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
@@ -54,8 +54,13 @@ pub(crate) async fn restore(
         )
     })?;
     let id = roots::parse_id(&id)?;
-    let request = parsed(request)?;
+    let modes = request.modes;
+    let mut request = parsed(request)?;
     let (root, location, loaded) = prepare(&state, id)?;
+    // The request's own answer about modes, or the Root's standing one; neither leaves it a question.
+    if let Some(choice) = modes.map(mode_choice).or(loaded.restore_modes) {
+        request.confirmed = std::mem::take(&mut request.confirmed).with_modes(choice);
+    }
     let now = roots::now();
     let dry_run = request.dry_run;
 
@@ -182,24 +187,40 @@ fn resolution(path: &RootPath, answer: PathResolution) -> Result<Resolution, Pro
             write: Some(true),
             rename_to: None,
             name_case: None,
+            modes: None,
         } => Ok(Resolution::Write),
         PathResolution {
             write: None,
             rename_to: Some(name),
             name_case: None,
+            modes: None,
         } => Ok(Resolution::RenameTo(name)),
         PathResolution {
             write: None,
             rename_to: None,
             name_case: Some(choice),
+            modes: None,
         } => Ok(Resolution::NameCase(match choice {
             NameCaseChoice::KeepExisting => NameCase::KeepExisting,
             NameCaseChoice::UseSnapshot => NameCase::UseSnapshot,
         })),
+        PathResolution {
+            write: None,
+            rename_to: None,
+            name_case: None,
+            modes: Some(choice),
+        } => Ok(Resolution::Modes(mode_choice(choice))),
         _ => Err(resolution_invalid(
             path,
-            "a resolution answers exactly one question: `write`, `rename_to` or `name_case`",
+            "a resolution answers exactly one question: `write`, `rename_to`, `name_case` or `modes`",
         )),
+    }
+}
+
+fn mode_choice(choice: ModesChoice) -> ModeChoice {
+    match choice {
+        ModesChoice::Snapshot => ModeChoice::Snapshot,
+        ModesChoice::Keep => ModeChoice::Keep,
     }
 }
 
@@ -278,6 +299,8 @@ fn issue(issue: &Issue) -> RestoreIssue {
         links_outside: None,
         existing: None,
         why: None,
+        snapshot_mode: None,
+        current_mode: None,
     };
     let names = |paths: &[RootPath]| paths.iter().map(|path| path.as_str().to_owned()).collect();
     match issue {
@@ -292,6 +315,10 @@ fn issue(issue: &Issue) -> RestoreIssue {
         Issue::Withheld { reason } => wire.why = Some(reason.as_str().to_owned()),
         Issue::NameCollision { with } => wire.paths = names(with),
         Issue::NameCase { existing } => wire.existing = Some(existing.clone()),
+        Issue::ModesDiffer { snapshot, current } => {
+            wire.snapshot_mode = Some(*snapshot);
+            wire.current_mode = Some(*current);
+        }
         Issue::ParentMissing | Issue::NameInvalid | Issue::TypeConflict => {}
     }
 

@@ -16,9 +16,9 @@ use std::io::Write;
 use std::time::Duration;
 
 use keepster_core::{
-    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, PathGlob, RootId,
-    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify, WithheldReason,
-    ignore_file_rules, parse_duration, parse_size,
+    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, ModeChoice, PathGlob,
+    RootId, RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify,
+    WithheldReason, ignore_file_rules, parse_duration, parse_size,
 };
 use serde::Deserialize;
 use toml::Spanned;
@@ -122,6 +122,14 @@ pub const SCHEMA: &[KeySpec] = &[
     trigger_key("triggers.periodic"),
     trigger_key("reconcile.at_start"),
     trigger_key("reconcile.verify"),
+    // Which permission bits a Restore leaves where they diverge, when the request does not say: a
+    // default for a question, which the Root's own file may answer like any other preference.
+    KeySpec {
+        name: "restore.modes",
+        root_settable: true,
+        live: true,
+        classifies: false,
+    },
 ];
 
 /// A key deciding when and how a Root is captured rather than what a capture holds: settable per Root,
@@ -261,6 +269,9 @@ pub struct Effective {
     pub triggers: Triggers,
     /// How the Root is reconciled.
     pub reconcile: Reconciliation,
+    /// Which permission bits a Restore leaves where the Snapshot's and the disk's differ and the
+    /// request does not say; `None` asks (ticket 50).
+    pub restore_modes: Option<ModeChoice>,
     /// Every key of the schema, in schema order, with its provenance.
     pub keys: Vec<EffectiveKey>,
     /// What was defined but almost certainly not meant.
@@ -296,6 +307,7 @@ struct Layer {
     periodic: Option<Entry>,
     reconcile_at_start: Option<Entry>,
     verify: Option<Entry>,
+    restore_modes: Option<Entry>,
 }
 
 impl Layer {
@@ -320,6 +332,7 @@ impl Layer {
             "triggers.periodic" => self.periodic.take().is_some(),
             "reconcile.at_start" => self.reconcile_at_start.take().is_some(),
             "reconcile.verify" => self.verify.take().is_some(),
+            "restore.modes" => self.restore_modes.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -348,15 +361,7 @@ impl GlobalConfig {
         let document: GlobalDocument =
             toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
 
-        let base = settings_layer(
-            &document.files,
-            &document.triggers,
-            &document.reconcile,
-            Level::Global,
-            path,
-            text,
-            "",
-        )?;
+        let base = settings_layer(document.tables(), Level::Global, path, text, "")?;
 
         let mut by_id = BTreeMap::new();
         for (key, block) in &document.root {
@@ -366,15 +371,7 @@ impl GlobalConfig {
             let block_name = format!("root.{key}.");
             by_id.insert(
                 id,
-                settings_layer(
-                    &block.files,
-                    &block.triggers,
-                    &block.reconcile,
-                    Level::GlobalRoot,
-                    path,
-                    text,
-                    &block_name,
-                )?,
+                settings_layer(block.tables(), Level::GlobalRoot, path, text, &block_name)?,
             );
         }
 
@@ -395,15 +392,7 @@ impl GlobalConfig {
                 .map_err(|error| invalid(format!("[[roots]] path: {error}")))?;
             patterns.push((
                 glob,
-                settings_layer(
-                    &block.files,
-                    &block.triggers,
-                    &block.reconcile,
-                    Level::GlobalPattern,
-                    path,
-                    text,
-                    "roots.",
-                )?,
+                settings_layer(block.tables(), Level::GlobalPattern, path, text, "roots.")?,
             ));
         }
 
@@ -434,15 +423,7 @@ impl RootConfig {
             message: error.to_string(),
         })?;
 
-        let mut layer = settings_layer(
-            &document.files,
-            &document.triggers,
-            &document.reconcile,
-            Level::Root,
-            path,
-            text,
-            "",
-        )?;
+        let mut layer = settings_layer(document.tables(), Level::Root, path, text, "")?;
         let mut warnings = Vec::new();
         for spec in SCHEMA.iter().filter(|spec| !spec.root_settable) {
             if layer.unset(spec.name) {
@@ -636,6 +617,14 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         },
         fallback_every: duration(&periodic),
     };
+    let restore_modes = scalar(
+        |layer| layer.restore_modes.as_ref(),
+        Value::Name(ASK.to_owned()),
+    );
+    let modes_default = match &restore_modes.value {
+        Value::Name(name) => mode_choice(name).flatten(),
+        _ => unreachable!("the Restore modes answer is only ever set as a name"),
+    };
 
     let settings = [
         ("files.exclude", patterns(|layer| &layer.exclude)),
@@ -664,6 +653,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         ("triggers.periodic", Setting::Scalar(periodic)),
         ("reconcile.at_start", Setting::Scalar(at_start)),
         ("reconcile.verify", Setting::Scalar(verify)),
+        ("restore.modes", Setting::Scalar(restore_modes)),
     ];
     let keys = settings
         .into_iter()
@@ -680,8 +670,23 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         policy,
         triggers,
         reconcile,
+        restore_modes: modes_default,
         keys,
         warnings,
+    }
+}
+
+/// `restore.modes`' value for asking, its default.
+const ASK: &str = "ask";
+
+/// What `restore.modes` set to `name` answers: `Some(None)` for asking, and `None` for a name it does
+/// not know.
+fn mode_choice(name: &str) -> Option<Option<ModeChoice>> {
+    match name {
+        ASK => Some(None),
+        "snapshot" => Some(Some(ModeChoice::Snapshot)),
+        "keep" => Some(Some(ModeChoice::Keep)),
+        _ => None,
     }
 }
 
@@ -754,6 +759,8 @@ struct GlobalDocument {
     #[serde(default)]
     reconcile: ReconcileTable,
     #[serde(default)]
+    restore: RestoreTable,
+    #[serde(default)]
     root: BTreeMap<String, Settings>,
     #[serde(default)]
     roots: Vec<PatternBlock>,
@@ -769,6 +776,8 @@ struct Settings {
     triggers: TriggerTable,
     #[serde(default)]
     reconcile: ReconcileTable,
+    #[serde(default)]
+    restore: RestoreTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -782,6 +791,41 @@ struct PatternBlock {
     triggers: TriggerTable,
     #[serde(default)]
     reconcile: ReconcileTable,
+    #[serde(default)]
+    restore: RestoreTable,
+}
+
+/// The tables of the schema, wherever a block holds them.
+struct Tables<'a> {
+    files: &'a Files,
+    triggers: &'a TriggerTable,
+    reconcile: &'a ReconcileTable,
+    restore: &'a RestoreTable,
+}
+
+/// Each block holding the whole schema hands its tables over as one.
+macro_rules! holds_tables {
+    ($($block:ty),*) => {$(
+        impl $block {
+            fn tables(&self) -> Tables<'_> {
+                Tables {
+                    files: &self.files,
+                    triggers: &self.triggers,
+                    reconcile: &self.reconcile,
+                    restore: &self.restore,
+                }
+            }
+        }
+    )*};
+}
+
+holds_tables!(GlobalDocument, Settings, PatternBlock);
+
+/// The `[restore]` table: what a Restore does where the request does not say (ticket 50).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreTable {
+    modes: Option<Spanned<String>>,
 }
 
 /// The `[reconcile]` table: whether a pass runs at the start, and how it judges a file (ticket 44).
@@ -831,9 +875,12 @@ struct SizeEntry {
 /// Check the tables of one block of the file at `path` — the top level, or a per-Root block named by
 /// `block` — and compile what they say, as the settings of `level`.
 fn settings_layer(
-    files: &Files,
-    triggers: &TriggerTable,
-    reconcile: &ReconcileTable,
+    Tables {
+        files,
+        triggers,
+        reconcile,
+        restore,
+    }: Tables<'_>,
     level: Level,
     path: &Path,
     text: &str,
@@ -888,6 +935,23 @@ fn settings_layer(
                 message: format!(
                     "{block}reconcile.verify: `{}` is not a mode; write `stat` or `hash`",
                     verify.get_ref()
+                ),
+            }),
+        })
+        .transpose()?;
+    layer.restore_modes = restore
+        .modes
+        .as_ref()
+        .map(|modes| match mode_choice(modes.get_ref()) {
+            Some(_) => Ok(Entry {
+                value: Value::Name(modes.get_ref().clone()),
+                origin: origin(modes.span()),
+            }),
+            None => Err(ConfigError {
+                path: path.to_path_buf(),
+                message: format!(
+                    "{block}restore.modes: `{}` is not an answer; write `ask`, `snapshot` or `keep`",
+                    modes.get_ref()
                 ),
             }),
         })

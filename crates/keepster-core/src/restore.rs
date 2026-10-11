@@ -57,6 +57,8 @@ impl Confirmation {
 pub struct Confirmed {
     all: bool,
     these: BTreeSet<Confirmation>,
+    /// The request's answer about diverging modes, for every path that has no answer of its own.
+    modes: Option<ModeChoice>,
 }
 
 impl Confirmed {
@@ -69,16 +71,23 @@ impl Confirmed {
     pub fn all() -> Self {
         Self {
             all: true,
-            these: BTreeSet::new(),
+            ..Self::default()
         }
     }
 
     /// These confirmations.
     pub fn these(confirmations: impl IntoIterator<Item = Confirmation>) -> Self {
         Self {
-            all: false,
             these: confirmations.into_iter().collect(),
+            ..Self::default()
         }
+    }
+
+    /// These confirmations, and `choice` as the answer about diverging modes — a resolution given for
+    /// the whole request, which the blanket force never gives (ticket 17).
+    pub fn with_modes(mut self, choice: ModeChoice) -> Self {
+        self.modes = Some(choice);
+        self
     }
 
     /// Whether `confirmation` was given.
@@ -96,6 +105,25 @@ pub enum NameCase {
     UseSnapshot,
 }
 
+/// Which permission bits a file a Restore writes ends up with, where the Snapshot's and the disk's
+/// differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeChoice {
+    /// The Snapshot's.
+    Snapshot,
+    /// The ones on disk now.
+    Keep,
+}
+
+/// A file's permission bits in the Snapshot and on disk, where both are known and they differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Modes {
+    /// In the Snapshot.
+    pub snapshot: u32,
+    /// On disk now.
+    pub current: u32,
+}
+
 /// A user's answer to a question no confirmation settles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
@@ -106,6 +134,8 @@ pub enum Resolution {
     RenameTo(String),
     /// Which name a file restored over a name in another case keeps.
     NameCase(NameCase),
+    /// Which permission bits the file ends up with.
+    Modes(ModeChoice),
 }
 
 /// What the destination's filesystem makes of names.
@@ -215,6 +245,9 @@ pub struct Found {
     /// Why the Snapshot holds no version of it, for a Withheld path beneath a directory asked for: there
     /// is nothing to write, and the answer says so rather than leaving it out (ticket 48).
     pub withheld: Option<WithheldReason>,
+    /// The file's permission bits in the Snapshot and on disk, where both are known and differ — which
+    /// only the user can settle (ticket 17).
+    pub modes: Option<Modes>,
 }
 
 /// Why a path is not simply written.
@@ -259,6 +292,13 @@ pub enum Issue {
         /// Which.
         at: RootPath,
     },
+    /// Its permission bits on disk are not the Snapshot's, and nothing said which to keep.
+    ModesDiffer {
+        /// In the Snapshot.
+        snapshot: u32,
+        /// On disk now.
+        current: u32,
+    },
     /// The Snapshot holds no version of it, on purpose. Passed over.
     Withheld {
         /// Why.
@@ -280,6 +320,7 @@ impl Issue {
             Self::TypeConflict => "type_conflict",
             Self::LinkCheckFailed { .. } => "link_check_failed",
             Self::Withheld { .. } => "withheld",
+            Self::ModesDiffer { .. } => "modes_differ",
         }
     }
 
@@ -300,6 +341,7 @@ impl Issue {
             Self::NameCollision { .. } => Some("write"),
             Self::NameInvalid => Some("rename_to"),
             Self::NameCase { .. } => Some("name_case"),
+            Self::ModesDiffer { .. } => Some("modes"),
             _ => None,
         }
     }
@@ -333,6 +375,9 @@ pub struct PathPlan {
     pub step: Step,
     /// What stands in its way — or, for a skipped path, stood.
     pub issues: Vec<Issue>,
+    /// Which permission bits it ends up with, where they diverged and an answer settled it; the
+    /// Snapshot's otherwise.
+    pub modes: Option<ModeChoice>,
 }
 
 /// The whole request's plan.
@@ -388,7 +433,7 @@ pub fn plan(
         .into_iter()
         .map(|found| {
             let resolution = resolutions.get(&found.path);
-            on_its_own(found, naming, resolution)
+            on_its_own(found, naming, resolution, confirmed.modes)
         })
         .collect();
 
@@ -416,7 +461,12 @@ pub fn plan(
 }
 
 /// One path's step and issues from its own facts alone.
-fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> PathPlan {
+fn on_its_own(
+    found: Found,
+    naming: Naming,
+    resolution: Option<&Resolution>,
+    modes_answer: Option<ModeChoice>,
+) -> PathPlan {
     let Found {
         path,
         mut target,
@@ -424,6 +474,7 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
         existing,
         case_variant,
         withheld,
+        modes,
     } = found;
     let mut issues = Vec::new();
     let mut replaces = None;
@@ -435,6 +486,7 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
             replaces,
             step: Step::Skipped,
             issues: vec![Issue::Withheld { reason }],
+            modes: None,
         };
     }
 
@@ -456,7 +508,7 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
         Ancestry::Link { at } => issues.push(Issue::LinkCheckFailed { at }),
     }
 
-    let step = match existing {
+    let mut step = match existing {
         Existing::Absent => Step::Create,
         Existing::Same => Step::Unchanged,
         Existing::File {
@@ -505,12 +557,32 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
         }
     }
 
+    // Diverging modes are the user's to settle, by this path's own answer or the request's; a file
+    // whose content already matches is then restored for its mode alone.
+    let mut chosen = None;
+    if let Some(Modes { snapshot, current }) = modes {
+        let answer = match resolution {
+            Some(Resolution::Modes(choice)) => Some(*choice),
+            _ => modes_answer,
+        };
+        match answer {
+            Some(choice) => {
+                chosen = Some(choice);
+                if step == Step::Unchanged && choice == ModeChoice::Snapshot {
+                    step = Step::Restore;
+                }
+            }
+            None => issues.push(Issue::ModesDiffer { snapshot, current }),
+        }
+    }
+
     PathPlan {
         path,
         target,
         replaces,
         step,
         issues,
+        modes: chosen,
     }
 }
 

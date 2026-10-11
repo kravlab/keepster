@@ -24,8 +24,8 @@ pub use policy::{
     is_reserved, parse_size,
 };
 pub use restore::{
-    Ancestry, Confirmation, Confirmed, Existing, Found, Issue, NameCase, Naming, PathPlan, Plan,
-    Resolution, Step, Unrecoverable, plan, target_of,
+    Ancestry, Confirmation, Confirmed, Existing, Found, Issue, ModeChoice, Modes, NameCase, Naming,
+    PathPlan, Plan, Resolution, Step, Unrecoverable, plan, target_of,
 };
 pub use root::{RootId, containing, overlapping};
 pub use rules::{
@@ -34,8 +34,8 @@ pub use rules::{
 };
 pub use segment::{SegmentName, UnnameableMoment};
 pub use sidecar::{
-    Header, Incomplete, Parsed, Record, SIDECAR, SIDECAR_VERSION, Sidecar, SidecarError,
-    SpecialKind, WithheldReason,
+    Header, Incomplete, ModeKind, ModeTable, Parsed, Record, SIDECAR, SIDECAR_VERSION, Sidecar,
+    SidecarError, SpecialKind, WithheldReason,
 };
 pub use snapshot::{ChangeKind, SnapshotId, Trigger, Verify};
 pub use trigger::{

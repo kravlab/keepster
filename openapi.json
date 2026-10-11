@@ -773,7 +773,7 @@
         },
         "responses": {
           "200": {
-            "description": "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place; a replaced file keeps its permission bits with the Snapshot's executable bit applied, and a new one starts from the umask. A file that changed between the plan and its write fails without being touched.",
+            "description": "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place, with the Snapshot's permission bits — or, where those on disk differ, the ones `modes` chose; a file whose content already matches has only its bits set. Windows keeps no permission bits, and sets none. A file that changed between the plan and its write fails without being touched.",
             "content": {
               "application/json": {
                 "schema": {
@@ -783,7 +783,7 @@
             }
           },
           "400": {
-            "description": "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, which the blanket force never gives), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.",
+            "description": "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, `modes`, which the blanket force never gives — `modes` defaults to the Root's `restore.modes` setting, which by default asks), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1635,7 +1635,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The file's mode on the older side, `0o644` or `0o755` as `entries` gives it — present, with\n`new_mode`, when the mode is what changed.",
+            "description": "The file's permission bits on the older side, all twelve as `entries` gives them in\n`permissions` — present, with `new_mode`, when they changed, alone or with the content.",
             "minimum": 0
           },
           "old_path": {
@@ -1647,7 +1647,7 @@
           },
           "path": {
             "type": "string",
-            "description": "Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root."
+            "description": "Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root. A\ndirectory is named only when its permission bits are all that changed there."
           },
           "too_large": {
             "type": "boolean",
@@ -1783,12 +1783,21 @@
               "null"
             ],
             "format": "int32",
-            "description": "Its permission bits, as a number (`420` is `0o644`). Absent where nothing is recorded; until\nticket 50 a file carries only the executable bit's distinction, `0o644` or `0o755`.",
+            "description": "A file's tree mode as permission bits, `420` (`0o644`) or `493` (`0o755`): whether it is\nexecutable, on every platform. Absent for anything but a file.",
             "minimum": 0
           },
           "path": {
             "type": "string",
             "description": "Where it is, relative to the Root, `/`-separated."
+          },
+          "permissions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "All twelve permission bits of a file or directory as the Snapshot holds them, as a number\n(`384` is `0o600`). Absent where the capture observed none — on Windows, or before ticket 50 —\nand for anything else.",
+            "minimum": 0
           },
           "size": {
             "type": [
@@ -2212,6 +2221,14 @@
           "deleted"
         ]
       },
+      "ModesChoice": {
+        "type": "string",
+        "description": "Which permission bits a restored file ends up with, where the Snapshot's and the disk's differ.",
+        "enum": [
+          "snapshot",
+          "keep"
+        ]
+      },
       "NameCaseChoice": {
         "type": "string",
         "description": "Which name a file restored over a name in another case keeps.",
@@ -2261,6 +2278,17 @@
         "type": "object",
         "description": "The answer to one path's question; exactly one field is set.",
         "properties": {
+          "modes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModesChoice",
+                "description": "For `modes_differ`: take the Snapshot's permission bits, or keep those on disk."
+              }
+            ]
+          },
           "name_case": {
             "oneOf": [
               {
@@ -2431,6 +2459,15 @@
             ],
             "description": "The confirmation that settles it, for the four that one does."
           },
+          "current_mode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For `modes_differ`: the permission bits on disk now.",
+            "minimum": 0
+          },
           "existing": {
             "type": [
               "string",
@@ -2456,14 +2493,23 @@
           },
           "reason": {
             "type": "string",
-            "description": "The reason: `parent_missing`, `type_change`, `hardlinked`, `overwrite_unrecoverable`,\n`name_collision`, `name_invalid`, `name_case`, `type_conflict` or `link_check_failed`. An open set,\nas error codes are."
+            "description": "The reason: `parent_missing`, `type_change`, `hardlinked`, `overwrite_unrecoverable`,\n`name_collision`, `name_invalid`, `name_case`, `modes_differ`, `type_conflict`,\n`link_check_failed` or `withheld`. An open set, as error codes are."
           },
           "resolution": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The resolution that settles it — `write`, `rename_to` or `name_case` — for the three only the user\ncan answer. Neither this nor `confirm` for a path that cannot be restored at all."
+            "description": "The resolution that settles it — `write`, `rename_to`, `name_case` or `modes` — for the four only\nthe user can answer. Neither this nor `confirm` for a path that cannot be restored at all."
+          },
+          "snapshot_mode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For `modes_differ`: the Snapshot's permission bits, as a number (`384` is `0o600`).",
+            "minimum": 0
           },
           "why": {
             "type": [
@@ -2504,6 +2550,17 @@
           "from": {
             "type": "string",
             "description": "The Snapshot whose versions are written, by identity."
+          },
+          "modes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModesChoice",
+                "description": "For every file whose permission bits on disk are not the Snapshot's (`modes_differ`) and that\nhas no answer of its own in `resolutions`: take the Snapshot's, or keep those on disk. Absent,\nthe Root's `restore.modes` setting answers — by default it asks. The blanket force never does\n(ticket 50)."
+              }
+            ]
           },
           "paths": {
             "type": "array",

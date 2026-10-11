@@ -189,3 +189,35 @@ async fn the_trigger_settings_are_reported_with_their_defaults() {
     assert_eq!(value("triggers.rate_limit"), "1m");
     assert_eq!(value("triggers.periodic"), "1h");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_chmod_alone_becomes_a_snapshot_by_itself() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let daemon = Harness::start_with_global_config(QUICK).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "key", b"secret enough");
+    snapshot_changing(&daemon, &root, "key", "watcher").await;
+
+    std::fs::set_permissions(project.join("key"), std::fs::Permissions::from_mode(0o600))
+        .expect("its mode");
+
+    // The watcher passes an attribute event on, and the pass reads the mode from its `stat`.
+    let taken = eventually("a `watcher` Snapshot for the mode alone", || async {
+        let timeline = daemon
+            .get_json(&format!("/v1/roots/{root}/snapshots?path=key"))
+            .await;
+        timeline["snapshots"]
+            .as_array()
+            .and_then(|items| items.first())
+            .filter(|newest| newest["trigger"] == "watcher" && newest["change"] == "modified")
+            .cloned()
+    })
+    .await;
+    let id = taken["id"].as_str().expect("an id");
+    let entries = daemon
+        .get_json(&format!("/v1/roots/{root}/snapshots/{id}/entries"))
+        .await;
+    assert_eq!(entries["entries"][0]["permissions"], 0o600, "{entries}");
+}

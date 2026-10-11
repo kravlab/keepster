@@ -9,9 +9,14 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, Record, RootPath, SIDECAR, SegmentName, SnapshotId};
+use keepster_core::{
+    CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SegmentName, SnapshotId,
+};
 
-use super::{HistoryStore, IncompletePath, SEGMENT_REFS, StoreError, WithheldReason};
+use super::{
+    HistoryStore, IncompletePath, ModeChange, SEGMENT_REFS, StoreError, WithheldReason,
+    mode_changes, mode_kind,
+};
 
 /// The size past which a file's versions are not compared line by line: 8 MiB, either side.
 ///
@@ -64,7 +69,8 @@ pub struct Comparison {
 /// One file's part of a diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
-    /// Where the file is on the newer side — or, for a deletion, where it was.
+    /// Where the file is on the newer side — or, for a deletion, where it was. A directory is named
+    /// only when its mode is all that changed there.
     pub path: RootPath,
     /// Where a renamed file was on the older side.
     pub old_path: Option<RootPath>,
@@ -77,7 +83,8 @@ pub struct FileDiff {
     /// Why the next Snapshot would not hold a file that is still in the Working Tree — which is why it
     /// reads as deleted, and is not (ADR 0009).
     pub withheld: Option<WithheldReason>,
-    /// The file's mode on each side, `0o644` or `0o755`, when that is what changed between them.
+    /// The file's permission bits on each side, all twelve, when they changed between them — alone, or
+    /// with the content (ticket 50).
     pub old_mode: Option<u32>,
     /// See [`FileDiff::old_mode`].
     pub new_mode: Option<u32>,
@@ -127,8 +134,21 @@ struct Compared<'store> {
     diff: git2::Diff<'store>,
     from: git2::Tree<'store>,
     to: git2::Tree<'store>,
+    /// The modes each side holds.
+    modes: (ModeTable, ModeTable),
+    /// Files and directories whose mode changed and nothing else, which git sees no change in.
+    mode_only: Vec<ModeChange>,
     /// What the walk of the Working Tree found it could not hold, when it is the newer side.
     working: Working,
+}
+
+/// One changed file of a comparison.
+#[derive(Debug, Clone, Copy)]
+enum Item {
+    /// The delta at this position of the diff.
+    Delta(usize),
+    /// The mode-only change at this position.
+    ModeOnly(usize),
 }
 
 /// What a walk of the Working Tree left out of the tree it built.
@@ -147,10 +167,10 @@ impl Working {
     }
 }
 
-/// Which deltas a request is about.
+/// Which changes a request is about.
 enum Selection {
     /// These, in this order.
-    Deltas(Vec<usize>),
+    Items(Vec<Item>),
     /// A path no delta names, which is a file on one side or the other.
     Unchanged(FileDiff),
 }
@@ -170,9 +190,9 @@ impl HistoryStore {
     ) -> Result<Comparison, StoreError> {
         let compared = self.compared(from, to)?;
         let files = match self.select(&compared, path)? {
-            Selection::Deltas(positions) => positions
+            Selection::Items(items) => items
                 .into_iter()
-                .map(|position| self.file_diff(&compared, position, path.is_some()))
+                .map(|item| self.file_diff(&compared, item, path.is_some()))
                 .collect::<Result<_, _>>()?,
             Selection::Unchanged(file) => vec![file],
         };
@@ -195,16 +215,25 @@ impl HistoryStore {
         path: Option<&RootPath>,
     ) -> Result<Vec<u8>, StoreError> {
         let compared = self.compared(from, to)?;
-        let Selection::Deltas(positions) = self.select(&compared, path)? else {
+        let Selection::Items(items) = self.select(&compared, path)? else {
             return Ok(Vec::new());
         };
 
         let mut text = Vec::new();
-        for position in positions {
-            let described = self.file_diff(&compared, position, false)?;
+        for item in items {
+            let described = self.file_diff(&compared, item, false)?;
+            let (old, new) = sides(&described);
+            let position = match item {
+                Item::Delta(position) => position,
+                Item::ModeOnly(_) => {
+                    let _ = writeln!(text, "diff --git a/{old} b/{new}");
+                    text.extend_from_slice(&mode_lines(&described));
+                    continue;
+                }
+            };
             if described.too_large {
-                let (old, new) = sides(&described);
                 let _ = writeln!(text, "diff --git a/{old} b/{new}");
+                text.extend_from_slice(&mode_lines(&described));
                 let _ = writeln!(text, "File a/{old} or b/{new} is too large to diff");
                 continue;
             }
@@ -212,7 +241,7 @@ impl HistoryStore {
                 git2::Patch::from_diff(&compared.diff, position).map_err(self.failed("read"))?
             {
                 let buffer = patch.to_buf().map_err(self.failed("read"))?;
-                text.extend_from_slice(&buffer);
+                text.extend_from_slice(&with_modes(&buffer, &described));
             }
         }
 
@@ -227,9 +256,9 @@ impl HistoryStore {
         path: Option<&RootPath>,
     ) -> Result<Selection, StoreError> {
         Ok(match path {
-            None => Selection::Deltas(compared.in_path_order()),
-            Some(path) => match compared.position_of(path) {
-                Some(position) => Selection::Deltas(vec![position]),
+            None => Selection::Items(compared.in_path_order()),
+            Some(path) => match compared.item_of(path) {
+                Some(item) => Selection::Items(vec![item]),
                 None => Selection::Unchanged(self.unchanged(compared, path)?),
             },
         })
@@ -238,6 +267,7 @@ impl HistoryStore {
     /// The two trees, compared, with renames found.
     fn compared(&self, from: SnapshotId, to: &DiffTarget<'_>) -> Result<Compared<'_>, StoreError> {
         let from = self.snapshot_tree(from)?;
+        let from_modes = self.sidecar(&from)?.sidecar.modes();
         let (to, working) = match *to {
             DiffTarget::Snapshot(snapshot) => {
                 let tree = self.snapshot_tree(snapshot)?;
@@ -250,7 +280,7 @@ impl HistoryStore {
                     .into_iter()
                     .filter_map(|record| match record {
                         Record::Withheld { path, reason } => Some((path, reason)),
-                        Record::Incomplete { .. } => None,
+                        Record::Incomplete { .. } | Record::Mode { .. } => None,
                     })
                     .collect();
                 (
@@ -267,6 +297,7 @@ impl HistoryStore {
                 now,
             } => self.working_tree(root_path, policy, now)?,
         };
+        let to_modes = self.sidecar(&to)?.sidecar.modes();
         // The sidecar is the Snapshot's own record, never a file of the Root, so neither side has it:
         // taking it out before comparing also keeps it from ever pairing with a file as a rename.
         let from = self.without_sidecar(from)?;
@@ -291,10 +322,23 @@ impl HistoryStore {
         diff.find_similar(Some(&mut find))
             .map_err(self.failed("read"))?;
 
+        // A file whose content and tree mode are as they were has no delta, whatever its permission
+        // bits did; those are compared from the sidecars.
+        let named: std::collections::HashSet<&[u8]> = diff
+            .deltas()
+            .filter_map(|delta| delta.new_file().path_bytes())
+            .collect();
+        let mode_only = mode_changes(&from, &from_modes, &to, &to_modes)
+            .into_iter()
+            .filter(|change| !named.contains(change.path.as_str().as_bytes()))
+            .collect();
+
         Ok(Compared {
             diff,
             from,
             to,
+            modes: (from_modes, to_modes),
+            mode_only,
             working,
         })
     }
@@ -322,12 +366,14 @@ impl HistoryStore {
             .and_then(|index| index.observations())
             .unwrap_or_default();
 
+        // Whether the header is counted again changes how the modes are written, never what they are.
         let (tree, walked) = self.write_working_tree(
             baseline_tree.as_ref(),
             root_path,
             policy,
             &observations,
             now,
+            false,
         )?;
         let working = Working {
             withheld: walked
@@ -382,13 +428,40 @@ impl HistoryStore {
         Ok(false)
     }
 
-    /// One delta as a file's part of the diff, with its hunks when `with_hunks`.
+    /// One change as a file's part of the diff, with its hunks when `with_hunks`.
     fn file_diff(
         &self,
         compared: &Compared<'_>,
-        position: usize,
+        item: Item,
         with_hunks: bool,
     ) -> Result<FileDiff, StoreError> {
+        let position = match item {
+            Item::Delta(position) => position,
+            Item::ModeOnly(at) => {
+                let change = &compared.mode_only[at];
+                let (binary, too_large) = match change.kind {
+                    ModeKind::Directory => (false, false),
+                    _ => {
+                        let entry = compared
+                            .to
+                            .get_path(Path::new(change.path.as_str()))
+                            .map_err(self.failed("read"))?;
+                        self.classify(&[entry.id()])?
+                    }
+                };
+                return Ok(FileDiff {
+                    path: change.path.clone(),
+                    old_path: None,
+                    change: Some(FileChange::Modified),
+                    binary,
+                    too_large,
+                    withheld: None,
+                    old_mode: Some(change.old),
+                    new_mode: Some(change.new),
+                    hunks: Vec::new(),
+                });
+            }
+        };
         let diff = &compared.diff;
         let delta = diff
             .get_delta(position)
@@ -401,6 +474,17 @@ impl HistoryStore {
         };
         let old = path_of(&delta.old_file());
         let new = path_of(&delta.new_file());
+        // Every bit where both sides observed them; the executable bit alone, as the tree modes carry
+        // it, where either did not.
+        let modes = mode_in(&compared.modes.0, &old, delta.old_file().mode())
+            .zip(mode_in(&compared.modes.1, &new, delta.new_file().mode()))
+            .or_else(|| {
+                regular_mode(delta.old_file().mode()).zip(regular_mode(delta.new_file().mode()))
+            });
+        let (old_mode, new_mode) = match modes {
+            Some((before, after)) if before != after => (Some(before), Some(after)),
+            _ => (None, None),
+        };
         let (path, old_path) = match change {
             FileChange::Deleted => (old, None),
             FileChange::Renamed => (new, Some(old)),
@@ -409,13 +493,6 @@ impl HistoryStore {
         let withheld = match change {
             FileChange::Deleted => compared.working.withheld_at(&path),
             _ => None,
-        };
-        let (old_mode, new_mode) = match (
-            regular_mode(delta.old_file().mode()),
-            regular_mode(delta.new_file().mode()),
-        ) {
-            (Some(before), Some(after)) if before != after => (Some(before), Some(after)),
-            _ => (None, None),
         };
 
         let blobs: Vec<git2::Oid> = [delta.old_file().id(), delta.new_file().id()]
@@ -530,9 +607,9 @@ impl HistoryStore {
 }
 
 impl Compared<'_> {
-    /// Every delta's position, ordered by the path each is reported under.
-    fn in_path_order(&self) -> Vec<usize> {
-        let mut positions: Vec<(RootPath, usize)> = self
+    /// Every change, ordered by the path each is reported under.
+    fn in_path_order(&self) -> Vec<Item> {
+        let mut items: Vec<(RootPath, Item)> = self
             .diff
             .deltas()
             .enumerate()
@@ -541,19 +618,23 @@ impl Compared<'_> {
                     git2::Delta::Deleted => delta.old_file(),
                     _ => delta.new_file(),
                 };
-                (path_of(&file), position)
+                (path_of(&file), Item::Delta(position))
             })
+            .chain(
+                self.mode_only
+                    .iter()
+                    .enumerate()
+                    .map(|(at, change)| (change.path.clone(), Item::ModeOnly(at))),
+            )
             .collect();
-        positions.sort();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
 
-        positions
-            .into_iter()
-            .map(|(_, position)| position)
-            .collect()
+        items.into_iter().map(|(_, item)| item).collect()
     }
 
-    /// The delta that names `path` on its newer side — or, failing that, on its older side.
-    fn position_of(&self, path: &RootPath) -> Option<usize> {
+    /// The change that names `path`: a delta on its newer side — or, failing that, on its older side —
+    /// or a change of its mode alone.
+    fn item_of(&self, path: &RootPath) -> Option<Item> {
         let wanted = Some(path.as_str().as_bytes());
 
         self.diff
@@ -563,6 +644,13 @@ impl Compared<'_> {
                 self.diff
                     .deltas()
                     .position(|delta| delta.old_file().path_bytes() == wanted)
+            })
+            .map(Item::Delta)
+            .or_else(|| {
+                self.mode_only
+                    .iter()
+                    .position(|change| change.path == *path)
+                    .map(Item::ModeOnly)
             })
     }
 }
@@ -579,13 +667,56 @@ fn path_of(file: &git2::DiffFile<'_>) -> RootPath {
         .unwrap_or_else(RootPath::root)
 }
 
-/// A regular file's mode as `entries` reports it, or `None` for anything that is not a regular file.
+/// A regular file's permission bits as `modes` holds them, or `None` for anything that is not a
+/// regular file and where the Snapshot observed none.
+fn mode_in(modes: &ModeTable, path: &RootPath, mode: git2::FileMode) -> Option<u32> {
+    match mode_kind(i32::from(mode))? {
+        ModeKind::Directory => None,
+        kind => modes.mode_of(path, kind),
+    }
+}
+
+/// A regular file's tree mode as permission bits, `0o644` or `0o755`, or `None` for anything that is
+/// not a regular file.
 fn regular_mode(mode: git2::FileMode) -> Option<u32> {
     match mode {
         git2::FileMode::Blob => Some(0o644),
         git2::FileMode::BlobExecutable => Some(0o755),
         _ => None,
     }
+}
+
+/// The lines git writes for a change of mode, with all twelve bits where it writes only the
+/// executable one; nothing when the mode did not change.
+fn mode_lines(file: &FileDiff) -> Vec<u8> {
+    match (file.old_mode, file.new_mode) {
+        (Some(old), Some(new)) => {
+            format!("old mode 10{old:04o}\nnew mode 10{new:04o}\n").into_bytes()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// git's patch for one file with its mode lines replaced by [`mode_lines`]: git knows only the
+/// executable bit, so it writes none for a change of any other, and the wrong bits for that one.
+fn with_modes(patch: &[u8], file: &FileDiff) -> Vec<u8> {
+    let mut lines = patch.split_inclusive(|byte| *byte == b'\n');
+    let mut text = Vec::with_capacity(patch.len());
+    if let Some(first) = lines.next() {
+        text.extend_from_slice(first);
+    }
+    text.extend_from_slice(&mode_lines(file));
+    let mut header = true;
+    for line in lines {
+        // The mode lines come straight after the first, before the `index` line.
+        if header && (line.starts_with(b"old mode ") || line.starts_with(b"new mode ")) {
+            continue;
+        }
+        header = false;
+        text.extend_from_slice(line);
+    }
+
+    text
 }
 
 /// The two names a too-large file goes by in a patch header.

@@ -29,7 +29,13 @@ Restore all hide, which is why it is written down.
   unchanged set of modes yields byte-identical content, the same OID, and an entry carried forward from the baseline
   untouched — leaving ticket 12's short-circuit (0.0036 s against 0.162 s) intact.
 - **The header is recomputed only by Reconciliation.** The modal file and directory modes need a full walk, which
-  Reconciliation performs anyway; every other capture carries the header forward.
+  Reconciliation performs anyway; every other capture carries the header forward — except where there is no header
+  worth carrying: the first Snapshot, and the first after one that observed no modes. A recount that changes no
+  path's mode writes no Snapshot of its own; the next Snapshot that changes something carries it (ticket 50).
+- **The header says whether modes were observed** (the word `modes`, ticket 50). A Snapshot taken on Windows, or
+  before ticket 50, has no such word and therefore no modes at all — never the defaults made up for every path, which
+  would let a Restore loosen a private key to `0644`. So every Snapshot taken on Unix has a sidecar, and only
+  elsewhere does a Snapshot with nothing to say have none.
 - **A permission-only change becomes a real change**, because it changes the sidecar and therefore the tree. The
   watcher cannot tell a `chmod` from a `touch` — `notify` collapses `IN_ATTRIB` into `Modify(Metadata(Any))` and
   Windows attribute and security notifications into `Modify(Any)` — so an attribute event means "go `stat` that

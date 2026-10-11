@@ -448,46 +448,44 @@ async fn a_write_through_a_link_out_of_the_root_is_refused() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_restored_file_keeps_its_permissions_with_the_snapshots_executable_bit() {
+async fn a_restored_file_takes_the_snapshots_permission_bits_when_asked_to() {
     use std::os::unix::fs::PermissionsExt;
 
     let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
+    let chmod = |path: &str, mode: u32| {
+        std::fs::set_permissions(project.join(path), std::fs::Permissions::from_mode(mode))
+            .expect("its mode");
+    };
     write(&project, "run.sh", b"echo saved");
-    std::fs::set_permissions(
-        project.join("run.sh"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .expect("executable");
+    chmod("run.sh", 0o750);
     write(&project, "plain.txt", b"saved");
+    chmod("plain.txt", 0o640);
     let saved = take(&daemon, &root).await;
     write(&project, "run.sh", b"echo since");
-    std::fs::set_permissions(
-        project.join("run.sh"),
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .expect("private, not executable");
+    chmod("run.sh", 0o600);
     std::fs::remove_file(project.join("plain.txt")).expect("deleted");
 
-    let answer = restore(&daemon, &root, json!({ "from": saved })).await;
-    assert_eq!(answer.status, 200);
+    let answer = restore(
+        &daemon,
+        &root,
+        json!({ "from": saved, "modes": "snapshot" }),
+    )
+    .await;
+    assert_eq!(answer.status, 200, "{}", body(&answer));
 
     let mode = |path: &str| {
         std::fs::metadata(project.join(path))
             .expect("the file")
             .permissions()
             .mode()
-            & 0o777
+            & 0o7777
     };
+    assert_eq!(mode("run.sh"), 0o750, "the Snapshot's bits, all of them");
     assert_eq!(
-        mode("run.sh"),
-        0o700,
-        "its own bits, executable where readable"
-    );
-    assert_eq!(
-        mode("plain.txt") & 0o111,
-        0,
-        "a new file starts from the umask, not executable"
+        mode("plain.txt"),
+        0o640,
+        "a new file takes the Snapshot's bits, not the umask's"
     );
 }
 

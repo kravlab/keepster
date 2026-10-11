@@ -24,6 +24,10 @@ pub struct Header {
     pub file_mode: u32,
     /// The mode most directories of the Root have.
     pub dir_mode: u32,
+    /// Whether the capture saw every path's permission bits, written as the word `modes`: on Unix, and
+    /// never on Windows or before ticket 50. Without it the Snapshot holds no mode at all, and the
+    /// defaults above describe nothing (ticket 17).
+    pub observed: bool,
 }
 
 impl Default for Header {
@@ -32,6 +36,7 @@ impl Default for Header {
             version: SIDECAR_VERSION,
             file_mode: 0o644,
             dir_mode: 0o755,
+            observed: false,
         }
     }
 }
@@ -177,13 +182,23 @@ pub enum Record {
         /// Why.
         why: Incomplete,
     },
+    /// `m`: the path's permission bits — all twelve — where they differ from its kind's default in the
+    /// header (ticket 50). A tree-wide `chmod` is then one changed header, not a record per path.
+    Mode {
+        /// Where.
+        path: RootPath,
+        /// The bits, `0o7777` at most.
+        mode: u32,
+    },
 }
 
 impl Record {
     /// The path the record is about.
     pub fn path(&self) -> &RootPath {
         match self {
-            Self::Withheld { path, .. } | Self::Incomplete { path, .. } => path,
+            Self::Withheld { path, .. }
+            | Self::Incomplete { path, .. }
+            | Self::Mode { path, .. } => path,
         }
     }
 
@@ -191,6 +206,7 @@ impl Record {
         match self {
             Self::Withheld { .. } => 'w',
             Self::Incomplete { .. } => 'i',
+            Self::Mode { .. } => 'm',
         }
     }
 
@@ -198,7 +214,105 @@ impl Record {
         match self {
             Self::Withheld { reason, .. } => reason.field(),
             Self::Incomplete { why, .. } => why.as_str().to_owned(),
+            Self::Mode { mode, .. } => format!("{mode:04o}"),
         }
+    }
+}
+
+/// What a path is, for the mode it has by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeKind {
+    /// A regular file whose tree mode is `100644`.
+    File,
+    /// A regular file whose tree mode is `100755`.
+    Executable,
+    /// A directory.
+    Directory,
+}
+
+impl Header {
+    /// The mode a path of `kind` has when no record says otherwise. An executable file's is the file
+    /// default with `x` wherever it has `r` — what `chmod +x` does under the same umask — so the
+    /// executable bit, which the tree mode already carries, never costs a record.
+    pub fn default_mode(&self, kind: ModeKind) -> u32 {
+        match kind {
+            ModeKind::File => self.file_mode,
+            ModeKind::Executable => self.file_mode | ((self.file_mode & 0o444) >> 2),
+            ModeKind::Directory => self.dir_mode,
+        }
+    }
+
+    /// A header naming the modes most of the files and most of the directories among `modes` have, which
+    /// were observed; the built-in defaults where there are none. An executable file counts as the file mode it has without
+    /// `x`, the one whose executable default it is. A tie goes to the lower mode, so the same counts
+    /// always give the same header.
+    pub fn modal(modes: impl IntoIterator<Item = (ModeKind, u32)>) -> Self {
+        fn most(modes: impl IntoIterator<Item = u32>) -> Option<u32> {
+            let mut counts = std::collections::BTreeMap::new();
+            for mode in modes {
+                *counts.entry(mode).or_insert(0_u64) += 1;
+            }
+            // Ascending modes, so the first of the highest counts is the lowest mode among them.
+            counts
+                .into_iter()
+                .fold(None, |best: Option<(u32, u64)>, (mode, count)| match best {
+                    Some((_, most)) if most >= count => best,
+                    _ => Some((mode, count)),
+                })
+                .map(|(mode, _)| mode)
+        }
+
+        let (mut files, mut directories) = (Vec::new(), Vec::new());
+        for (kind, mode) in modes {
+            match kind {
+                ModeKind::File => files.push(mode),
+                ModeKind::Executable => files.push(mode & !0o111),
+                ModeKind::Directory => directories.push(mode),
+            }
+        }
+
+        let defaults = Self::default();
+        Self {
+            version: SIDECAR_VERSION,
+            file_mode: most(files).unwrap_or(defaults.file_mode),
+            dir_mode: most(directories).unwrap_or(defaults.dir_mode),
+            observed: true,
+        }
+    }
+}
+
+/// A sidecar's modes, indexed by path: a tree-wide comparison looks up every path, and one sidecar can
+/// hold a record for each.
+#[derive(Debug, Clone)]
+pub struct ModeTable {
+    header: Header,
+    records: std::collections::HashMap<RootPath, u32>,
+}
+
+impl ModeTable {
+    /// The mode the path at `path`, of `kind`, has: its record's, or its kind's default — or `None`
+    /// when the Snapshot observed no modes, so that none is ever made up.
+    pub fn mode_of(&self, path: &RootPath, kind: ModeKind) -> Option<u32> {
+        if !self.header.observed {
+            return None;
+        }
+
+        Some(
+            self.records
+                .get(path)
+                .copied()
+                .unwrap_or_else(|| self.header.default_mode(kind)),
+        )
+    }
+
+    /// The header the defaults come from.
+    pub fn header(&self) -> Header {
+        self.header
+    }
+
+    /// Every path with a mode of its own, and that mode.
+    pub fn records(&self) -> impl Iterator<Item = (&RootPath, u32)> + '_ {
+        self.records.iter().map(|(path, mode)| (path, *mode))
     }
 }
 
@@ -248,9 +362,13 @@ impl Sidecar {
         let mut records = self.records.clone();
         sort(&mut records);
 
+        // A word a build that does not know it skips, so an older build still reads the records.
         let mut text = format!(
-            "keepster-meta {} file={:04o} dir={:04o}\n",
-            self.header.version, self.header.file_mode, self.header.dir_mode
+            "keepster-meta {} file={:04o} dir={:04o}{}\n",
+            self.header.version,
+            self.header.file_mode,
+            self.header.dir_mode,
+            if self.header.observed { " modes" } else { "" }
         );
         for record in &records {
             text.push(record.letter());
@@ -262,6 +380,21 @@ impl Sidecar {
         }
 
         text.into_bytes()
+    }
+
+    /// The modes this Snapshot holds, to be looked up path by path.
+    pub fn modes(&self) -> ModeTable {
+        ModeTable {
+            header: self.header,
+            records: self
+                .records
+                .iter()
+                .filter_map(|record| match record {
+                    Record::Mode { path, mode } => Some((path.clone(), *mode)),
+                    _ => None,
+                })
+                .collect(),
+        }
     }
 
     /// Read a sidecar blob.
@@ -319,6 +452,8 @@ fn parse_header(line: &str) -> Result<Header, SidecarError> {
             header.file_mode = found;
         } else if let Some(found) = word.strip_prefix("dir=").and_then(mode) {
             header.dir_mode = found;
+        } else if word == "modes" {
+            header.observed = true;
         }
     }
 
@@ -343,6 +478,12 @@ fn parse_record(line: &str) -> Option<Record> {
                 name if !name.is_empty() => Incomplete::Error(name.to_owned()),
                 _ => return None,
             },
+        }),
+        "m" => Some(Record::Mode {
+            path,
+            mode: u32::from_str_radix(field, 8)
+                .ok()
+                .filter(|mode| field.len() == 4 && *mode <= 0o7777)?,
         }),
         _ => None,
     }

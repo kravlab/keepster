@@ -213,9 +213,19 @@ async fn entries_are_shallow_by_default_and_complete_with_depth_infinity() {
     let snapshot = id(&take(&daemon, &root).await);
     let base = format!("/v1/roots/{root}/snapshots/{snapshot}/entries");
 
+    // What the umask gave each path is ticket 50's to test; here it is only the shape.
+    let without_permissions = |mut listing: serde_json::Value| {
+        for entry in listing["entries"].as_array_mut().expect("entries") {
+            entry
+                .as_object_mut()
+                .expect("an entry")
+                .remove("permissions");
+        }
+        listing["entries"].take()
+    };
     let shallow = daemon.get_json(&base).await;
     assert_eq!(
-        shallow["entries"],
+        without_permissions(shallow),
         serde_json::json!([
             { "path": "a.txt", "kind": "file", "size": 3, "mode": 420, "binary": false },
             { "path": "src", "kind": "dir" },
@@ -226,7 +236,7 @@ async fn entries_are_shallow_by_default_and_complete_with_depth_infinity() {
         .get_json(&format!("{base}?path=src&depth=infinity"))
         .await;
     assert_eq!(
-        full["entries"],
+        without_permissions(full),
         serde_json::json!([
             { "path": "src/data.bin", "kind": "file", "size": 4, "mode": 420, "binary": true },
             { "path": "src/lib.rs", "kind": "file", "size": 13, "mode": 420, "binary": false },

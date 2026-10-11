@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use keepster_api::{
-    Confirm, ConfirmAll, Confirmation, ErrorCode, NameCaseChoice, PathResolution, Problem,
-    RestoreOutcome, RestoreRequest, Restored, RestoredPath,
+    Confirm, ConfirmAll, Confirmation, ErrorCode, ModesChoice, NameCaseChoice, PathResolution,
+    Problem, RestoreIssue, RestoreOutcome, RestoreRequest, Restored, RestoredPath,
 };
 
 use crate::client::DaemonClient;
@@ -88,6 +88,7 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
         confirm: confirmations(args),
         resolutions: Default::default(),
         skip_unresolvable: args.skip_unresolvable,
+        modes: None,
     };
     for path in &args.pick {
         match within(path) {
@@ -123,6 +124,25 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
                 request.resolutions.entry(relative).or_default().name_case = Some(choice.1);
             }
             Err(code) => return code,
+        }
+    }
+    for given in &args.modes {
+        let (path, answer) = match given.rsplit_once('=') {
+            Some((path, answer)) => (Some(path), answer),
+            None => (None, given.as_str()),
+        };
+        let Some(choice) = modes_choice(answer) else {
+            eprintln!(
+                "keepster: --modes takes snapshot, keep, PATH=snapshot or PATH=keep, not `{given}`"
+            );
+            return exit::USAGE;
+        };
+        match path.map(|path| within(Path::new(path))) {
+            None => request.modes = Some(choice),
+            Some(Ok(relative)) => {
+                request.resolutions.entry(relative).or_default().modes = Some(choice);
+            }
+            Some(Err(code)) => return code,
         }
     }
 
@@ -173,6 +193,22 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
         };
         return report(&restored, &args.paths);
     }
+}
+
+fn modes_choice(answer: &str) -> Option<ModesChoice> {
+    match answer {
+        "snapshot" | "s" => Some(ModesChoice::Snapshot),
+        "keep" | "k" => Some(ModesChoice::Keep),
+        _ => None,
+    }
+}
+
+/// An issue's two modes, `0644 on disk, 0600 in the Snapshot`, when it is about modes.
+fn modes_of(issue: &RestoreIssue) -> Option<String> {
+    Some(format!(
+        "{:04o} on disk, {:04o} in the Snapshot",
+        issue.current_mode?, issue.snapshot_mode?
+    ))
 }
 
 /// The confirmations the flags give.
@@ -278,6 +314,11 @@ fn report_blocked(paths: &[RestoredPath]) {
                 }
                 (_, Some("rename_to")) => format!("pass --rename {}=<name>", path.path),
                 (_, Some("name_case")) => format!("pass --name-case {}=keep|snapshot", path.path),
+                (_, Some("modes")) => format!(
+                    "{}; pass --modes {}=snapshot|keep, or --modes snapshot|keep for every file",
+                    modes_of(issue).unwrap_or_default(),
+                    path.path
+                ),
                 _ => {
                     "it cannot be restored; pass --skip-unresolvable to restore the rest".to_owned()
                 }
@@ -328,6 +369,32 @@ fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
         }
     }
 
+    // Modes first, and for every file at once where there are several: a `chmod -R` diverges everywhere.
+    let diverging: Vec<(&str, &RestoreIssue)> = blocked
+        .iter()
+        .flat_map(|path| {
+            path.issues
+                .iter()
+                .filter(|issue| issue.resolution.as_deref() == Some("modes"))
+                .map(|issue| (path.path.as_str(), issue))
+        })
+        .collect();
+    if diverging.len() > 1 {
+        let names: Vec<&str> = diverging.iter().map(|(path, _)| *path).collect();
+        let answer = line(&format!(
+            "The permission bits of {} differ from the Snapshot's. Take the Snapshot's, keep those \
+             on disk, or answer for each? [s/k/e] ",
+            names.join(", ")
+        ));
+        match answer.as_str() {
+            "e" | "each" => {}
+            answer => match modes_choice(answer) {
+                Some(choice) => request.modes = Some(choice),
+                None => return false,
+            },
+        }
+    }
+
     let mut refused = Vec::new();
     for path in &blocked {
         for issue in &path.issues {
@@ -363,6 +430,17 @@ fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
                         "s" | "snapshot" => Some(NameCaseChoice::UseSnapshot),
                         _ => return false,
                     };
+                }
+                Some("modes") if request.modes.is_none() => {
+                    let answer = line(&format!(
+                        "{}: permission bits {}. Take the Snapshot's, or keep those on disk? [s/k] ",
+                        path.path,
+                        modes_of(issue).unwrap_or_default()
+                    ));
+                    match modes_choice(&answer) {
+                        Some(choice) => resolution.modes = Some(choice),
+                        None => return false,
+                    }
                 }
                 Some(_) => {}
                 None if issue.confirm.is_none() => {

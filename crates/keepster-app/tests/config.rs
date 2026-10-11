@@ -496,3 +496,29 @@ fn reconciliation_runs_at_start_and_trusts_the_stat_filter_unless_told_otherwise
         error.message
     );
 }
+
+#[test]
+fn a_restore_asks_about_modes_unless_the_configuration_answers() {
+    let defaults = merged(&global(""), None);
+    assert_eq!(defaults.restore_modes, None, "asking is the default");
+    assert_eq!(
+        scalar(&defaults, "restore.modes").value,
+        Value::Name("ask".to_owned())
+    );
+
+    let file = own("[restore]\nmodes = \"keep\"\n");
+    let effective = merged(&global("[restore]\nmodes = \"snapshot\"\n"), Some(&file));
+    assert_eq!(
+        effective.restore_modes,
+        Some(keepster_core::ModeChoice::Keep)
+    );
+    assert_eq!(
+        scalar(&effective, "restore.modes").origin.level,
+        Level::Root,
+        "a Root's own file may answer it"
+    );
+
+    let error = GlobalConfig::parse(Path::new(GLOBAL), "[restore]\nmodes = \"umask\"\n", None)
+        .expect_err("an unknown answer");
+    assert!(error.message.contains("restore.modes"), "{}", error.message);
+}

@@ -8,11 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use keepster_core::{
-    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Kind, Naming, Plan, Record, RootPath,
-    SnapshotId, Step, Unrecoverable, Verdict, WithheldReason, ignore_file_rules,
+    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Kind, ModeChoice, ModeKind, ModeTable,
+    Modes, Naming, Plan, Record, RootPath, SnapshotId, Step, Unrecoverable, Verdict,
+    WithheldReason, ignore_file_rules,
 };
 
-use super::{Content, HistoryStore, StoreError, WirePath, is_beneath, nothing_at, withheld_at};
+use super::{
+    Content, HistoryStore, StoreError, WirePath, is_beneath, mode_kind, nothing_at, permissions,
+    withheld_at,
+};
 
 /// What a Restore covers and where it writes.
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +71,10 @@ pub enum Written {
 struct Source {
     blob: git2::Oid,
     size: u64,
+    /// Its permission bits, all twelve, as the Snapshot holds them (ticket 50) — `None` where it
+    /// observed none.
+    mode: Option<u32>,
+    /// Whether its tree mode is executable: all a Snapshot that observed no modes has to give.
     executable: bool,
     /// Whether it is a link, its blob the target text (ticket 49).
     link: bool,
@@ -110,6 +118,7 @@ impl HistoryStore {
                         existing: Existing::Absent,
                         case_variant: None,
                         withheld: Some(reason),
+                        modes: None,
                     });
                     kept.push(None);
                 }
@@ -152,7 +161,12 @@ impl HistoryStore {
                             "it changed between the preflight and the write".to_owned(),
                         );
                     }
-                    match self.write_one(scope, planned, &now, source) {
+                    // The content is already the version's: only its mode is restored.
+                    let written = match (&now.existing, source.mode) {
+                        (Existing::Same, Some(mode)) => set_in_place(scope, &planned.target, mode),
+                        _ => self.write_one(scope, planned, &now, source),
+                    };
+                    match written {
                         Ok(()) if planned.step == Step::Create => Written::Created,
                         Ok(()) => Written::Restored,
                         Err(error) => Written::Failed(error.to_string()),
@@ -172,6 +186,7 @@ impl HistoryStore {
     ) -> Result<Vec<(RootPath, Version)>, StoreError> {
         let root = self.snapshot_tree(scope.from)?;
         let sidecar = self.sidecar(&root)?.sidecar;
+        let modes = sidecar.modes();
         let whole = [RootPath::root()];
         let asked = if scope.paths.is_empty() {
             &whole[..]
@@ -199,7 +214,7 @@ impl HistoryStore {
             };
 
             if path.is_root() {
-                self.collect_sources(&root, &RootPath::root(), &mut sources)?;
+                self.collect_sources(&root, &RootPath::root(), &modes, &mut sources)?;
                 withheld_beneath(&mut sources);
                 continue;
             }
@@ -220,13 +235,12 @@ impl HistoryStore {
                         .repository
                         .find_tree(entry.id())
                         .map_err(self.failed("read"))?;
-                    self.collect_sources(&tree, path, &mut sources)?;
+                    self.collect_sources(&tree, path, &modes, &mut sources)?;
                     withheld_beneath(&mut sources);
                 }
                 Some(git2::ObjectType::Blob) => {
-                    if let Some(source) = self.source(&entry)? {
-                        sources.insert(path.clone(), Version::Held(source));
-                    }
+                    let source = self.source(path, &entry, &modes)?;
+                    sources.insert(path.clone(), Version::Held(source));
                 }
                 _ => return Err(StoreError::NotAFile(path.clone())),
             }
@@ -239,6 +253,7 @@ impl HistoryStore {
         &self,
         tree: &git2::Tree<'_>,
         under: &RootPath,
+        modes: &ModeTable,
         sources: &mut BTreeMap<RootPath, Version>,
     ) -> Result<(), StoreError> {
         for entry in tree.iter() {
@@ -254,12 +269,11 @@ impl HistoryStore {
                         .repository
                         .find_tree(entry.id())
                         .map_err(self.failed("read"))?;
-                    self.collect_sources(&subtree, &path, sources)?;
+                    self.collect_sources(&subtree, &path, modes, sources)?;
                 }
                 Some(git2::ObjectType::Blob) => {
-                    if let Some(source) = self.source(&entry)? {
-                        sources.insert(path, Version::Held(source));
-                    }
+                    let source = self.source(&path, &entry, modes)?;
+                    sources.insert(path, Version::Held(source));
                 }
                 _ => {}
             }
@@ -268,17 +282,23 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// A file's version — a regular file's, or a link's, which is restored as a link (ticket 49).
-    fn source(&self, entry: &git2::TreeEntry<'_>) -> Result<Option<Source>, StoreError> {
-        const EXECUTABLE: i32 = 0o100_755;
+    /// The version at `path` — a regular file's, or a link's, which is restored as a link (ticket 49).
+    fn source(
+        &self,
+        path: &RootPath,
+        entry: &git2::TreeEntry<'_>,
+        modes: &ModeTable,
+    ) -> Result<Source, StoreError> {
         const SYMLINK: i32 = 0o120_000;
 
-        Ok(Some(Source {
+        let kind = mode_kind(entry.filemode()).unwrap_or(ModeKind::File);
+        Ok(Source {
             blob: entry.id(),
             size: self.blob_size(entry.id())?,
-            executable: entry.filemode() == EXECUTABLE,
+            mode: modes.mode_of(path, kind),
+            executable: kind == ModeKind::Executable,
             link: entry.filemode() == SYMLINK,
-        }))
+        })
     }
 
     /// Write one file as the plan says, acting on what is there now — which an earlier file of the same
@@ -325,11 +345,25 @@ impl HistoryStore {
             (Some(replaces), None) => absolute(root, replaces),
             _ => target.clone(),
         };
-        let base_mode = match &found.existing {
-            Existing::File { .. } => fs::metadata(&replaced)
-                .ok()
-                .map(|metadata| mode_of(&metadata)),
-            _ => None,
+        let bits = match (planned.modes, found.modes, source.mode) {
+            // The bits the user kept are the old file's, but setuid and setgid were granted to the old
+            // content, not to this.
+            (Some(ModeChoice::Keep), Some(Modes { current, .. }), _) => {
+                Bits::Exactly(current & !0o6000)
+            }
+            (_, _, Some(mode)) => Bits::Exactly(mode),
+            // A Snapshot that observed no modes has the executable bit alone to give, applied to the
+            // replaced file's bits, or to those the umask gives a new one.
+            (_, _, None) => Bits::Executable {
+                base: match &found.existing {
+                    Existing::File { .. } => fs::metadata(&replaced)
+                        .ok()
+                        .and_then(|metadata| permissions(&metadata))
+                        .map(|mode| mode & 0o777),
+                    _ => None,
+                },
+                executable: source.executable,
+            },
         };
 
         // Short, whatever the file's own name: a long name plus a suffix could exceed what the
@@ -342,7 +376,7 @@ impl HistoryStore {
         let written = if source.link {
             self.link_temporary(&temporary, source)
         } else {
-            self.write_temporary(&temporary, source, base_mode)
+            self.write_temporary(&temporary, source, bits)
         };
         if let Err(error) = written.and_then(|()| fs::rename(&temporary, &replaced)) {
             let _ = fs::remove_file(&temporary);
@@ -385,20 +419,14 @@ impl HistoryStore {
         }
     }
 
-    /// The version's bytes in a new file at `temporary`, synced, with its permissions set.
-    fn write_temporary(
-        &self,
-        temporary: &Path,
-        source: &Source,
-        base_mode: Option<u32>,
-    ) -> io::Result<()> {
-        // A file replacing one whose bits are known starts private, so content the old file kept from
-        // others is never readable by them for the moment before its bits are set; a new file starts
-        // from the umask, as it ends.
+    /// The version's bytes in a new file at `temporary`, synced, with its permission bits set.
+    fn write_temporary(&self, temporary: &Path, source: &Source, bits: Bits) -> io::Result<()> {
+        // A file whose bits are known starts private, so content kept from others is never readable by
+        // them for the moment before its bits are set; one whose bits the umask decides starts from it.
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        if base_mode.is_some() {
+        if !matches!(bits, Bits::Executable { base: None, .. }) {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
@@ -413,7 +441,7 @@ impl HistoryStore {
             .map_err(|error| io::Error::other(error.to_string()))?;
         // Through the open file, so the bits land on what was written and on nothing a path could be
         // swapped for in between.
-        set_mode(&file, base_mode, source.executable)?;
+        set_mode(&file, bits)?;
 
         file.sync_all()
     }
@@ -441,7 +469,7 @@ fn still_as_planned(before: &Found, now: &Found) -> bool {
         (before, now) => before == now,
     };
 
-    ancestry && existing && now.case_variant == before.case_variant
+    ancestry && existing && now.case_variant == before.case_variant && now.modes == before.modes
 }
 
 /// What is on disk where the file `path` of the Snapshot would go, at `target`.
@@ -508,6 +536,10 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
         Ancestry::Present => existing(scope, target, source),
         _ => Existing::Absent,
     };
+    let modes = match existing {
+        Existing::Same | Existing::File { .. } => diverging_modes(scope, target, source),
+        _ => None,
+    };
 
     Found {
         path: path.clone(),
@@ -516,6 +548,7 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
         existing,
         case_variant,
         withheld: None,
+        modes,
     }
 }
 
@@ -579,11 +612,13 @@ fn file_existing(
     metadata: &fs::Metadata,
     source: &Source,
 ) -> Existing {
+    // The content alone where the Snapshot observed modes: one that differs is a question of its own
+    // (ticket 17). Otherwise the executable bit is part of the version, where the platform keeps it.
     let same_content = git2::Oid::hash_file(git2::ObjectType::Blob, at)
         .is_ok_and(|current| current == source.blob);
-    // Where the platform keeps no executable bit, the content alone decides.
-    let mode_matches = executable(metadata).is_none_or(|current| current == source.executable);
-    if same_content && mode_matches {
+    let same_bit = source.mode.is_some()
+        || executable(metadata).is_none_or(|current| current == source.executable);
+    if same_content && same_bit {
         return Existing::Same;
     }
 
@@ -592,6 +627,46 @@ fn file_existing(
         links_inside: Vec::new(),
         unrecoverable: unrecoverable_file(scope, target, at, metadata),
     }
+}
+
+/// The permission bits a written file ends up with — none on Windows, which keeps none to set.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code))]
+enum Bits {
+    /// These.
+    Exactly(u32),
+    /// `base` — the umask's, when `None` — with the executable bit set for every class that may read,
+    /// or cleared for all.
+    Executable { base: Option<u32>, executable: bool },
+}
+
+/// The version's permission bits and those of the regular file at `target` — or the file a followed link
+/// there leads to — where the platform keeps them and they differ.
+fn diverging_modes(scope: &RestoreScope<'_>, target: &RootPath, source: &Source) -> Option<Modes> {
+    let snapshot = source.mode.filter(|_| !source.link)?;
+    let at = absolute(scope.root_path, target);
+    let at = match fs::symlink_metadata(&at) {
+        Ok(metadata) if metadata.file_type().is_symlink() => followed(scope, target, &at)?,
+        _ => at,
+    };
+    let metadata = fs::symlink_metadata(at)
+        .ok()
+        .filter(fs::Metadata::is_file)?;
+    let current = permissions(&metadata)?;
+
+    (current != snapshot).then_some(Modes { snapshot, current })
+}
+
+/// Give the file at `target` — or the file a followed link there leads to — the permission bits `mode`,
+/// its content already the version's.
+fn set_in_place(scope: &RestoreScope<'_>, target: &RootPath, mode: u32) -> io::Result<()> {
+    let at = absolute(scope.root_path, target);
+    let at = followed(scope, target, &at).unwrap_or(at);
+    // Opened without following, so the bits land on the file that was checked and not on whatever a
+    // link swapped in for it would lead to.
+    let file = super::open_unfollowed(&at)?;
+
+    set_mode(&file, Bits::Exactly(mode))
 }
 
 /// Why the regular file at `at` could not be brought back by the Safety Snapshot, if it could not.
@@ -808,42 +883,44 @@ fn executable(_: &fs::Metadata) -> Option<bool> {
     None
 }
 
-/// The permission bits of a file.
+/// Give the open file its permission bits: through the file, so they land on what was written and on
+/// nothing a path could be swapped for in between.
+///
+/// The bits are read back, since the system may drop some without an error — setgid for a group the
+/// user is not in — and a file that did not get the bits asked for has failed (ticket 17).
 #[cfg(unix)]
-fn mode_of(metadata: &fs::Metadata) -> u32 {
+fn set_mode(file: &File, bits: Bits) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    // Never setuid, setgid or sticky: those were granted to the old content, not to this.
-    metadata.permissions().mode() & 0o777
-}
-
-#[cfg(not(unix))]
-fn mode_of(_: &fs::Metadata) -> u32 {
-    0
-}
-
-/// The replaced file's permission bits — or, for a new file, those the umask gave it — with the
-/// Snapshot's executable bit applied: set for every class that may read, or cleared for all.
-#[cfg(unix)]
-fn set_mode(file: &File, base: Option<u32>, executable: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let base = match base {
-        Some(base) => base,
-        None => file.metadata()?.permissions().mode() & 0o777,
+    let mode = match bits {
+        Bits::Exactly(mode) => mode,
+        Bits::Executable { base, executable } => {
+            let base = match base {
+                Some(base) => base,
+                None => file.metadata()?.permissions().mode() & 0o777,
+            };
+            if executable {
+                base | ((base & 0o444) >> 2)
+            } else {
+                base & !0o111
+            }
+        }
     };
-    let mode = if executable {
-        base | ((base & 0o444) >> 2)
-    } else {
-        base & !0o111
-    };
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
 
-    file.set_permissions(fs::Permissions::from_mode(mode))
+    let set = file.metadata()?.permissions().mode() & 0o7777;
+    if set != mode {
+        return Err(io::Error::other(format!(
+            "its permission bits came out {set:04o}, not {mode:04o}: the system would not set them all"
+        )));
+    }
+
+    Ok(())
 }
 
-/// Windows keeps no mode bits a Snapshot could carry (ticket 10).
+/// Windows keeps no permission bits a Snapshot could carry (ticket 50).
 #[cfg(not(unix))]
-fn set_mode(_: &File, _: Option<u32>, _: bool) -> io::Result<()> {
+fn set_mode(_: &File, _: Bits) -> io::Result<()> {
     Ok(())
 }
 

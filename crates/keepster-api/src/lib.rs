@@ -395,6 +395,24 @@ pub struct RestoreRequest {
     /// Skip each path still in the way, with its reasons, rather than stop the request.
     #[serde(default)]
     pub skip_unresolvable: bool,
+    /// For every file whose permission bits on disk are not the Snapshot's (`modes_differ`) and that
+    /// has no answer of its own in `resolutions`: take the Snapshot's, or keep those on disk. Absent,
+    /// the Root's `restore.modes` setting answers — by default it asks. The blanket force never does
+    /// (ticket 50).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<ModesChoice>,
+}
+
+/// Which permission bits a restored file ends up with, where the Snapshot's and the disk's differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ModesChoice {
+    /// The Snapshot's.
+    Snapshot,
+    /// The ones on disk now — without setuid and setgid when the content is replaced, since those were
+    /// granted to the old content.
+    Keep,
 }
 
 /// The confirmations a Restore request gives.
@@ -451,6 +469,9 @@ pub struct PathResolution {
     /// For `name_case`: keep the name already on disk, or take the Snapshot's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_case: Option<NameCaseChoice>,
+    /// For `modes_differ`: take the Snapshot's permission bits, or keep those on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<ModesChoice>,
 }
 
 /// Which name a file restored over a name in another case keeps.
@@ -522,14 +543,14 @@ pub enum RestoreOutcome {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RestoreIssue {
     /// The reason: `parent_missing`, `type_change`, `hardlinked`, `overwrite_unrecoverable`,
-    /// `name_collision`, `name_invalid`, `name_case`, `type_conflict` or `link_check_failed`. An open set,
-    /// as error codes are.
+    /// `name_collision`, `name_invalid`, `name_case`, `modes_differ`, `type_conflict`,
+    /// `link_check_failed` or `withheld`. An open set, as error codes are.
     pub reason: String,
     /// The confirmation that settles it, for the four that one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm: Option<String>,
-    /// The resolution that settles it — `write`, `rename_to` or `name_case` — for the three only the user
-    /// can answer. Neither this nor `confirm` for a path that cannot be restored at all.
+    /// The resolution that settles it — `write`, `rename_to`, `name_case` or `modes` — for the four only
+    /// the user can answer. Neither this nor `confirm` for a path that cannot be restored at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
     /// For `type_change` and `link_check_failed`: where, Root-relative.
@@ -548,6 +569,12 @@ pub struct RestoreIssue {
     /// For `overwrite_unrecoverable`: why — `too_large`, `excluded`, `unreadable` or `unsupported`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// For `modes_differ`: the Snapshot's permission bits, as a number (`384` is `0o600`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_mode: Option<u32>,
+    /// For `modes_differ`: the permission bits on disk now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_mode: Option<u32>,
 }
 
 /// The `to` of a diff that names the Working Tree rather than a Snapshot.
@@ -579,7 +606,8 @@ pub struct Diff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DiffFile {
-    /// Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root.
+    /// Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root. A
+    /// directory is named only when its permission bits are all that changed there.
     pub path: String,
     /// Where a renamed file was on the older side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -596,8 +624,8 @@ pub struct DiffFile {
     /// this version — which is why it reads as deleted, and is not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<String>,
-    /// The file's mode on the older side, `0o644` or `0o755` as `entries` gives it — present, with
-    /// `new_mode`, when the mode is what changed.
+    /// The file's permission bits on the older side, all twelve as `entries` gives them in
+    /// `permissions` — present, with `new_mode`, when they changed, alone or with the content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_mode: Option<u32>,
     /// The file's mode on the newer side, when it differs from `old_mode`.
@@ -907,10 +935,15 @@ pub struct Entry {
     /// Its size in bytes. Absent for a directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    /// Its permission bits, as a number (`420` is `0o644`). Absent where nothing is recorded; until
-    /// ticket 50 a file carries only the executable bit's distinction, `0o644` or `0o755`.
+    /// A file's tree mode as permission bits, `420` (`0o644`) or `493` (`0o755`): whether it is
+    /// executable, on every platform. Absent for anything but a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+    /// All twelve permission bits of a file or directory as the Snapshot holds them, as a number
+    /// (`384` is `0o600`). Absent where the capture observed none — on Windows, or before ticket 50 —
+    /// and for anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<u32>,
     /// Whether the content is binary by git's rule. A display flag only: binary files are stored as
     /// they are (ticket 10). Absent for anything but a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]

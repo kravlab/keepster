@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use keepster_core::{
-    Ancestry, Confirmation, Confirmed, Existing, Found, Issue, NameCase, Naming, Resolution,
-    RootPath, Step, Unrecoverable, plan, target_of,
+    Ancestry, Confirmation, Confirmed, Existing, Found, Issue, ModeChoice, NameCase, Naming,
+    Resolution, RootPath, Step, Unrecoverable, plan, target_of,
 };
 
 fn rp(path: &str) -> RootPath {
@@ -22,6 +22,7 @@ fn absent(path: &str) -> Found {
         existing: Existing::Absent,
         case_variant: None,
         withheld: None,
+        modes: None,
     }
 }
 
@@ -501,4 +502,93 @@ fn a_withheld_path_inside_what_was_asked_for_is_passed_over_with_its_reason() {
     );
     assert_eq!(planned.paths[0].issues[0].code(), "withheld");
     assert_eq!(planned.paths[1].step, Step::Create);
+}
+
+fn diverging(path: &str, existing: Existing) -> Found {
+    Found {
+        existing,
+        modes: Some(keepster_core::Modes {
+            snapshot: 0o600,
+            current: 0o644,
+        }),
+        ..absent(path)
+    }
+}
+
+#[test]
+fn diverging_modes_are_asked_about_and_the_blanket_force_does_not_answer() {
+    // Ticket 17: both outcomes are legitimate, so it is a question — and `--force`, typed reflexively in
+    // scripts, must not bring back "the Snapshot always wins" through the back door.
+    let planned = plan(
+        vec![diverging("key", Existing::Same)],
+        LINUX,
+        &Confirmed::all(),
+        &BTreeMap::new(),
+        false,
+    );
+
+    assert_eq!(planned.paths[0].step, Step::Blocked);
+    assert_eq!(
+        planned.paths[0].issues,
+        [Issue::ModesDiffer {
+            snapshot: 0o600,
+            current: 0o644
+        }]
+    );
+    assert_eq!(planned.paths[0].issues[0].code(), "modes_differ");
+    assert_eq!(planned.paths[0].issues[0].resolution(), Some("modes"));
+}
+
+#[test]
+fn the_request_s_answer_about_modes_decides_and_a_path_s_own_answer_overrides_it() {
+    let found = || {
+        vec![
+            diverging("same", Existing::Same),
+            diverging("edited", differing("edited").existing),
+        ]
+    };
+
+    let snapshot = plan(
+        found(),
+        LINUX,
+        &Confirmed::none().with_modes(ModeChoice::Snapshot),
+        &BTreeMap::new(),
+        false,
+    );
+    assert_eq!(
+        snapshot
+            .paths
+            .iter()
+            .map(|path| (path.step, path.modes))
+            .collect::<Vec<_>>(),
+        [
+            (Step::Restore, Some(ModeChoice::Snapshot)),
+            (Step::Restore, Some(ModeChoice::Snapshot)),
+        ],
+        "a file whose content already matches is restored for its mode alone"
+    );
+
+    let kept = plan(
+        found(),
+        LINUX,
+        &Confirmed::none().with_modes(ModeChoice::Snapshot),
+        &BTreeMap::from([(rp("same"), Resolution::Modes(ModeChoice::Keep))]),
+        false,
+    );
+    assert_eq!(kept.paths[0].step, Step::Unchanged, "{kept:?}");
+    assert_eq!(kept.paths[0].modes, Some(ModeChoice::Keep));
+}
+
+#[test]
+fn matching_modes_or_a_new_file_ask_nothing() {
+    let planned = plan(
+        vec![absent("new"), differing("old")],
+        LINUX,
+        &Confirmed::none(),
+        &BTreeMap::new(),
+        false,
+    );
+
+    assert!(planned.proceeds());
+    assert!(planned.paths.iter().all(|path| path.modes.is_none()));
 }
