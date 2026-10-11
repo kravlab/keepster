@@ -28,6 +28,11 @@ pub struct CliRun {
 pub struct Harness {
     daemon: RunningDaemon,
     client: DaemonClient,
+    /// The temporary directory as the operating system names it once every link is resolved. Every
+    /// path the harness hands out starts here, so a Root registered from a test and the working
+    /// directory a CLI reports name the same place: on macOS the temporary directory sits under
+    /// `/var`, a link to `/private/var`, and a process started inside it reports the latter.
+    base: PathBuf,
     // Dropped last, after the daemon has been asked to stop and the socket file is gone.
     directory: TempDir,
 }
@@ -58,9 +63,10 @@ impl Harness {
     }
 
     async fn start_in(directory: TempDir) -> Self {
-        let control_path = directory.path().join("d.sock");
-        let store_base = directory.path().join("store");
-        let config_path = directory.path().join("config.toml");
+        let base = resolved(directory.path());
+        let control_path = control_path(&base);
+        let store_base = base.join("store");
+        let config_path = base.join("config.toml");
 
         let daemon = keepster_daemon::start(DaemonConfig {
             control_path: control_path.clone(),
@@ -73,6 +79,7 @@ impl Harness {
         Self {
             client: DaemonClient::new(control_path),
             daemon,
+            base,
             directory,
         }
     }
@@ -87,20 +94,19 @@ impl Harness {
     /// Tests use it to assert what deregistering does and does not erase — the one question where the
     /// answer is a file on disk rather than an answer from the API.
     pub fn store_dir(&self, root_id: &str) -> PathBuf {
-        self.directory.path().join("store").join(root_id)
+        self.base.join("store").join(root_id)
     }
 
     /// Write the global configuration this daemon reads, replacing whatever it held.
     ///
     /// The daemon reads it at every capture and every `explain`, so the next request sees it.
     pub fn write_global_config(&self, content: &[u8]) {
-        std::fs::write(self.directory.path().join("config.toml"), content)
-            .expect("the global configuration");
+        std::fs::write(self.base.join("config.toml"), content).expect("the global configuration");
     }
 
     /// Create a directory beside the daemon's own state, for use as a Watched Root.
     pub fn scratch(&self, name: &str) -> PathBuf {
-        let path = self.directory.path().join(name);
+        let path = self.base.join(name);
         std::fs::create_dir_all(&path).expect("a scratch directory");
 
         path
@@ -207,6 +213,45 @@ impl Harness {
     /// `POST` JSON to the given path and parse the answer, requiring success.
     pub async fn post_json(&self, path: &str, body: &serde_json::Value) -> serde_json::Value {
         json_body("POST", path, self.post(path, body).await)
+    }
+}
+
+/// `path` with every link resolved, where the platform's paths allow it.
+///
+/// On Windows, canonicalising yields a verbatim `\\?\` path that much of the toolchain does not accept,
+/// and the temporary directory there is no link, so it is used as it is.
+fn resolved(path: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        path.canonicalize()
+            .expect("the temporary directory resolves")
+    }
+
+    #[cfg(not(unix))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// The control channel for a daemon whose state lives in `base`.
+///
+/// A socket file on Unix, kept short because `sun_path` holds 104 bytes on macOS and 108 on Linux; a
+/// named pipe on Windows, where a control channel is not a file and must be named `\\.\pipe\…`. The pipe
+/// takes the temporary directory's own unique name, so parallel tests never share one, and a restart
+/// over the same directory reuses it.
+fn control_path(base: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let unique = base
+            .file_name()
+            .expect("a temporary directory has a name")
+            .to_string_lossy();
+        PathBuf::from(format!(r"\\.\pipe\keepster-test-{unique}"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        base.join("d.sock")
     }
 }
 
