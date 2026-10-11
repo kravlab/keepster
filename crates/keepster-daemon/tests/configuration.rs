@@ -154,7 +154,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.1, "capture_unavailable");
+    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
 
     write(
         &project,
@@ -208,7 +208,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.1, "capture_unavailable");
+    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
 }
 
 #[tokio::test]
@@ -266,7 +266,7 @@ async fn a_root_file_setting_a_global_only_key_is_ignored_and_the_root_not_degra
         serde_json::json!([])
     );
     assert_eq!(configuration["warnings"][0]["code"], "key_ignored");
-    assert_eq!(state(&daemon, &root).await.1, "capture_unavailable");
+    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
 }
 
 #[tokio::test]

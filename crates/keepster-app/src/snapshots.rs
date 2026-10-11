@@ -87,15 +87,36 @@ pub fn capture(
     trigger: Trigger,
     now: SystemTime,
 ) -> Result<CapturedSnapshot, CaptureError> {
+    let store = open_for_capture(root, location)?;
+
+    Ok(store.capture(root.id, &root.path, policy, trigger, now)?)
+}
+
+/// Capture the Root as [`capture`] does for an automatic Trigger: nothing is written when nothing
+/// changed, so a touched file or a quiet periodic floor leaves no Snapshot behind.
+pub fn capture_if_changed(
+    root: &RootRecord,
+    location: &StoreLocation,
+    policy: &CapturePolicy,
+    trigger: Trigger,
+    now: SystemTime,
+) -> Result<Option<CapturedSnapshot>, CaptureError> {
+    let store = open_for_capture(root, location)?;
+
+    Ok(store.capture_if_changed(root.id, &root.path, policy, trigger, now)?)
+}
+
+fn open_for_capture(
+    root: &RootRecord,
+    location: &StoreLocation,
+) -> Result<HistoryStore, CaptureError> {
     if !root.path.is_dir() {
         return Err(CaptureError::RootUnavailable {
             path: root.path.clone(),
         });
     }
 
-    let store = HistoryStore::open(&location.store, &location.index)?;
-
-    Ok(store.capture(root.id, &root.path, policy, trigger, now)?)
+    Ok(HistoryStore::open(&location.store, &location.index)?)
 }
 
 /// Bring a Root's derived index up to date, rebuilding it if it is damaged or missing.

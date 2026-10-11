@@ -16,6 +16,7 @@ mod openapi;
 mod problem;
 mod roots;
 mod snapshots;
+mod triggers;
 
 use std::collections::HashMap;
 use std::io;
@@ -108,8 +109,11 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     // `Degraded` state — does not wait for a client.
     let ticker = tokio::spawn(configuration::reload_continually(state.clone()));
     let task = tokio::spawn(async move {
-        let served = serve(listener, router(state), stop).await;
+        let served = serve(listener, router(state.clone()), stop).await;
+        // No further Trigger is accepted; the captures in flight finish and every pending debounce
+        // window is captured before the daemon is done (ticket 05).
         ticker.abort();
+        state.triggers.stop().await;
         served
     });
 
@@ -181,6 +185,8 @@ struct DaemonState {
     store_locks: Arc<Mutex<HashMap<RootId, Arc<Mutex<()>>>>>,
     /// The configuration in force for every Root, re-read whenever its files change.
     config: Arc<Mutex<keepster_app::config::Configuration>>,
+    /// Every Root's automatic capture.
+    triggers: Arc<triggers::Triggers>,
 }
 
 impl DaemonState {
@@ -194,6 +200,7 @@ impl DaemonState {
                 std::env::home_dir(),
                 store_base,
             ))),
+            triggers: Arc::default(),
         }
     }
 

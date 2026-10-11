@@ -11,6 +11,7 @@ mod root;
 mod rules;
 mod segment;
 mod snapshot;
+mod trigger;
 
 pub use identity::NotAnIdentity;
 pub use path::{InvalidPath, RootPath};
@@ -25,3 +26,7 @@ pub use rules::{
 };
 pub use segment::{SegmentName, UnnameableMoment};
 pub use snapshot::{ChangeKind, SnapshotId, Trigger};
+pub use trigger::{
+    Action, InvalidDuration, PolicyEvent, PolicyState, Triggers, decide, format_duration,
+    parse_duration,
+};

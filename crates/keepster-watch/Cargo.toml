@@ -8,3 +8,11 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+keepster-core.workspace = true
+notify = "8.2.0"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"

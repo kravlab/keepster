@@ -111,7 +111,8 @@ _Avoid_: purge, scrub, delete, redact
 
 **Degraded**:
 The state of a Root the daemon is still watching but cannot serve as promised — its configuration failed to
-load and the last known-good one is in force, or its coverage guarantee has been switched off.
+load and the last known-good one is in force, or its coverage guarantee has been switched off or does not
+exist yet.
 _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:

@@ -20,10 +20,11 @@ async fn a_registered_directory_is_listed_and_survives_a_restart() {
     );
     assert_eq!(created["path"], project.to_string_lossy().as_ref());
 
-    // Nothing captures yet, so claiming `watching` would be exactly the comfortable lie ticket 05
-    // forbids. Tickets 43 and 44 are what let a Root report that it is watched.
+    // The watcher captures it, but the watcher is only a latency optimisation: until Reconciliation
+    // (ticket 44) gives the guarantee, claiming `watching` would be exactly the comfortable lie ticket 05
+    // forbids.
     assert_eq!(created["state"], "degraded");
-    assert_eq!(created["state_code"], "capture_unavailable");
+    assert_eq!(created["state_code"], "coverage_not_guaranteed");
 
     let listed = daemon.get_json("/v1/roots").await;
     assert_eq!(listed.as_array().expect("an array of Roots").len(), 1);

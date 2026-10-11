@@ -258,7 +258,7 @@ async fn explain_names_the_rule_its_level_and_line_and_the_pruning_ancestor() {
 
     // The warning does not make the Root Degraded for a new reason: its state is what it was.
     let listed = daemon.get_json(&format!("/v1/roots/{root}")).await;
-    assert_eq!(listed["state_code"], "capture_unavailable");
+    assert_eq!(listed["state_code"], "coverage_not_guaranteed");
 }
 
 #[tokio::test]

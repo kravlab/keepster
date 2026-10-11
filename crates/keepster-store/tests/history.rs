@@ -546,3 +546,46 @@ fn the_first_snapshot_of_a_new_hour_is_still_based_on_the_previous_one() {
         second.unreadable
     );
 }
+
+#[test]
+fn an_automatic_capture_that_changes_nothing_writes_no_snapshot() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = working_tree(directory.path());
+    let store = HistoryStore::open(
+        directory.path().join("history.git"),
+        directory.path().join("index.sqlite"),
+    )
+    .expect("a store");
+    let root_id = RootId::generate(at(MOMENT));
+    let policy = CapturePolicy::default();
+
+    let first = store
+        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT))
+        .expect("a capture");
+    assert!(
+        first.is_some(),
+        "the first Snapshot of a Root always has something to hold"
+    );
+
+    let unchanged = store
+        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT + 60))
+        .expect("a capture");
+    assert!(unchanged.is_none(), "a touched file is not a new version");
+
+    fs::write(root.join("notes.txt"), b"edited").expect("an edit");
+    let edited = store
+        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT + 120))
+        .expect("a capture")
+        .expect("an edit is a new version");
+    assert_eq!(edited.trigger, Trigger::Watcher);
+
+    let page = store
+        .timeline(&keepster_store::TimelineQuery {
+            path: None,
+            before: None,
+            not_before: None,
+            limit: 10,
+        })
+        .expect("the timeline");
+    assert_eq!(page.snapshots.len(), 2);
+}

@@ -125,6 +125,12 @@ pub(crate) async fn reload_continually(state: DaemonState) {
 /// not be removing at the same moment. The order is always the Registry, then the configuration.
 fn reload(state: &DaemonState) {
     let registry = state.registry();
+    reload_with(state, &registry);
+}
+
+/// The reload pass over a Registry the caller already holds — which a handler that has just changed it
+/// does, so that a Root registered or moved is watched at once rather than at the next tick.
+pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Registry) {
     let records = match registry.readable() {
         Ok(records) => records,
         Err(error) => {
@@ -133,10 +139,15 @@ fn reload(state: &DaemonState) {
         }
     };
 
-    for record in &records {
-        state.configuration(record.id, &record.path);
-    }
+    let resolved = records
+        .iter()
+        .map(|record| {
+            let effective = state.configuration(record.id, &record.path).effective;
+            (record.clone(), effective)
+        })
+        .collect();
     state.forget_configuration_except(&records);
+    state.triggers.sync(state, resolved);
 }
 
 /// A value as the wire types it.
@@ -144,6 +155,8 @@ fn wire(value: &Value) -> serde_json::Value {
     match value {
         Value::Bool(switch) => json!(switch),
         Value::Bytes(bytes) => json!(bytes),
+        Value::Duration(duration) => json!(keepster_core::format_duration(*duration)),
+        Value::Words(words) => json!(words),
         Value::Pattern(pattern) => json!(pattern),
         Value::SizePattern { pattern, max } => json!({ "pattern": pattern, "max": max }),
     }

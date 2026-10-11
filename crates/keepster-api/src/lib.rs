@@ -113,6 +113,14 @@ pub struct Root {
     /// The machine-readable reason behind a state that is not `Watching`, so a client can branch on it
     /// rather than on prose. Absent while the Root is `Watching`.
     pub state_code: Option<String>,
+    /// How many paths changed since the last Snapshot and wait for their debounce window or the rate
+    /// limit. A count rather than a listing, because a listing of a debounce queue is stale as it prints
+    /// (ticket 20).
+    #[serde(default)]
+    pub pending_paths: u64,
+    /// How long the oldest of those changes has waited, in seconds; absent when nothing is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_seconds: Option<u64>,
 }
 
 /// What a client sends to register a directory.
@@ -358,8 +366,10 @@ pub struct RootConfiguration {
 pub struct ConfigKey {
     /// The key as a person writes it, `table.key`.
     pub key: String,
-    /// The value in force, typed as the key is: a switch, a number of bytes, or a list. A pattern list
-    /// holds its patterns as written; `files.max_size_by_pattern` holds `{ pattern, max }` objects.
+    /// The value in force, typed as the key is: a switch, a number of bytes, a duration written as text
+    /// in the largest whole unit (`3s`, `1m`, `1h`), or a list. A pattern list holds its patterns as
+    /// written; `files.max_size_by_pattern` holds `{ pattern, max }` objects; `triggers.active` holds the
+    /// names of the active Triggers.
     pub value: serde_json::Value,
     /// Where the value was set: the most specific level that set a scalar — the built-in default when
     /// none did — and, for a list, its last entry's.

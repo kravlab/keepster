@@ -245,6 +245,69 @@ fn a_typo_or_a_bad_block_makes_the_whole_file_invalid() {
     assert!(error.message.contains("root"), "{}", error.message);
 }
 
+#[test]
+fn the_triggers_default_to_the_watcher_alone_and_a_set_is_replaced_wholesale() {
+    let defaults = merged(&global(""), None);
+    assert_eq!(defaults.triggers, keepster_core::Triggers::default());
+    assert_eq!(
+        scalar(&defaults, "triggers.active").value,
+        Value::Words(vec!["watcher".to_owned()])
+    );
+    assert_eq!(
+        scalar(&defaults, "triggers.debounce").value,
+        Value::Duration(std::time::Duration::from_secs(3))
+    );
+
+    let config = global(
+        "[triggers]\nactive = [\"watcher\", \"periodic\"]\nperiodic = \"30m\"\nrate_limit = \"5m\"\n",
+    );
+    let file = own("[triggers]\nactive = [\"periodic\"]\ndebounce = \"10s\"\n");
+    let effective = merged(&config, Some(&file));
+
+    assert!(
+        !effective.triggers.watcher,
+        "the Root's set replaces the global one, it does not add to it"
+    );
+    assert_eq!(
+        effective.triggers.periodic,
+        Some(std::time::Duration::from_secs(1800))
+    );
+    assert_eq!(
+        effective.triggers.debounce,
+        std::time::Duration::from_secs(10)
+    );
+    assert_eq!(
+        effective.triggers.rate_limit,
+        std::time::Duration::from_secs(300)
+    );
+    assert_eq!(
+        scalar(&effective, "triggers.active").origin.level,
+        Level::Root
+    );
+    assert_eq!(
+        scalar(&effective, "triggers.rate_limit").origin.level,
+        Level::Global
+    );
+}
+
+#[test]
+fn a_trigger_setting_that_cannot_be_honoured_is_refused() {
+    for (text, expected) in [
+        ("[triggers]\nactive = [\"inotify\"]\n", "inotify"),
+        ("[triggers]\ndebounce = \"3\"\n", "debounce"),
+        ("[triggers]\nrate_limit = \"0s\"\n", "rate_limit"),
+        ("[triggers]\nperiodic = \"0s\"\n", "periodic"),
+        ("[triggers]\nwatcher = true\n", "watcher"),
+    ] {
+        let error = GlobalConfig::parse(Path::new(GLOBAL), text, None).expect_err(text);
+        assert!(
+            error.message.contains(expected),
+            "{text:?} is refused naming {expected}: {}",
+            error.message
+        );
+    }
+}
+
 mod held {
     //! The configuration the daemon holds across edits: reload, the last known-good, and the queue of
     //! Roots whose classification changed.

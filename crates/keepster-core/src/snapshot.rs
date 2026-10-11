@@ -100,12 +100,16 @@ impl fmt::Display for ChangeKind {
 
 /// Which Trigger caused a Snapshot.
 ///
-/// Only a capture someone asked for exists in this build; ticket 43 adds the watcher, the periodic
-/// floor and Reconciliation, each as a variant of its own, which is additive on the wire.
+/// Each is a variant of its own, so a new one is additive on the wire; ticket 44 adds Reconciliation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Trigger {
     /// A person or a script asked for this Snapshot.
     Manual,
+    /// The watcher saw a change, and the Root then stayed quiet for the debounce window — or the daemon
+    /// was stopping with that window still counting down.
+    Watcher,
+    /// The periodic floor fell due.
+    Periodic,
 }
 
 impl Trigger {
@@ -113,6 +117,8 @@ impl Trigger {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
+            Self::Watcher => "watcher",
+            Self::Periodic => "periodic",
         }
     }
 
@@ -120,6 +126,8 @@ impl Trigger {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "manual" => Some(Self::Manual),
+            "watcher" => Some(Self::Watcher),
+            "periodic" => Some(Self::Periodic),
             _ => None,
         }
     }

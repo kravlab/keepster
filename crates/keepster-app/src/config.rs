@@ -13,9 +13,12 @@ use std::path::{Path, PathBuf};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
+use std::time::Duration;
+
 use keepster_core::{
     CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, PathGlob, RootId,
-    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, ignore_file_rules, parse_size,
+    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, ignore_file_rules,
+    parse_duration, parse_size,
 };
 use serde::Deserialize;
 use toml::Spanned;
@@ -104,7 +107,22 @@ pub const SCHEMA: &[KeySpec] = &[
         live: true,
         classifies: true,
     },
+    trigger_key("triggers.active"),
+    trigger_key("triggers.debounce"),
+    trigger_key("triggers.rate_limit"),
+    trigger_key("triggers.periodic"),
 ];
+
+/// A key deciding when a Root is captured rather than what a capture holds: settable per Root, as ticket
+/// 04 lists the Trigger set and its intervals, and changing it reclassifies nothing.
+const fn trigger_key(name: &'static str) -> KeySpec {
+    KeySpec {
+        name,
+        root_settable: true,
+        live: true,
+        classifies: false,
+    }
+}
 
 const fn capture_key(name: &'static str) -> KeySpec {
     KeySpec {
@@ -123,6 +141,9 @@ fn spec(name: &str) -> &'static KeySpec {
         .expect("every key the merge reports is in the schema")
 }
 
+/// How often the periodic floor captures once it is switched on, unless configured otherwise.
+const DEFAULT_PERIODIC: Duration = Duration::from_secs(3600);
+
 /// One value, as the schema types it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -130,6 +151,10 @@ pub enum Value {
     Bool(bool),
     /// A size, in bytes.
     Bytes(u64),
+    /// A length of time.
+    Duration(Duration),
+    /// A set of names, replaced wholesale by a more specific level.
+    Words(Vec<String>),
     /// A pattern, exactly as written.
     Pattern(String),
     /// A pattern with the size cap it sets; a negated pattern sets none, returning its paths to the
@@ -202,6 +227,8 @@ pub struct EffectiveKey {
 pub struct Effective {
     /// What decides what a Snapshot holds.
     pub policy: CapturePolicy,
+    /// When the Root is captured.
+    pub triggers: Triggers,
     /// Every key of the schema, in schema order, with its provenance.
     pub keys: Vec<EffectiveKey>,
     /// What was defined but almost certainly not meant.
@@ -229,6 +256,10 @@ struct Layer {
     max_size: Option<Entry>,
     max_size_by_pattern: Vec<SizeRule>,
     secret_opt_in: Vec<Rule>,
+    active: Option<Entry>,
+    debounce: Option<Entry>,
+    rate_limit: Option<Entry>,
+    periodic: Option<Entry>,
 }
 
 impl Layer {
@@ -245,6 +276,10 @@ impl Layer {
             "files.max_size" => self.max_size.take().is_some(),
             "files.max_size_by_pattern" => emptied(&mut self.max_size_by_pattern),
             "files.secret_opt_in" => emptied(&mut self.secret_opt_in),
+            "triggers.active" => self.active.take().is_some(),
+            "triggers.debounce" => self.debounce.take().is_some(),
+            "triggers.rate_limit" => self.rate_limit.take().is_some(),
+            "triggers.periodic" => self.periodic.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -273,17 +308,31 @@ impl GlobalConfig {
         let document: GlobalDocument =
             toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
 
-        let base = layer(&document.files, Level::Global, path, text, "files")?;
+        let base = settings_layer(
+            &document.files,
+            &document.triggers,
+            Level::Global,
+            path,
+            text,
+            "",
+        )?;
 
         let mut by_id = BTreeMap::new();
         for (key, block) in &document.root {
             let id = key
                 .parse::<RootId>()
                 .map_err(|_| invalid(format!("[root.{key}]: `{key}` is not a Root identity")))?;
-            let table = format!("root.{key}.files");
+            let block_name = format!("root.{key}.");
             by_id.insert(
                 id,
-                layer(&block.files, Level::GlobalRoot, path, text, &table)?,
+                settings_layer(
+                    &block.files,
+                    &block.triggers,
+                    Level::GlobalRoot,
+                    path,
+                    text,
+                    &block_name,
+                )?,
             );
         }
 
@@ -304,12 +353,13 @@ impl GlobalConfig {
                 .map_err(|error| invalid(format!("[[roots]] path: {error}")))?;
             patterns.push((
                 glob,
-                layer(
+                settings_layer(
                     &block.files,
+                    &block.triggers,
                     Level::GlobalPattern,
                     path,
                     text,
-                    "roots.files",
+                    "roots.",
                 )?,
             ));
         }
@@ -341,7 +391,14 @@ impl RootConfig {
             message: error.to_string(),
         })?;
 
-        let mut layer = layer(&document.files, Level::Root, path, text, "files")?;
+        let mut layer = settings_layer(
+            &document.files,
+            &document.triggers,
+            Level::Root,
+            path,
+            text,
+            "",
+        )?;
         let mut warnings = Vec::new();
         for spec in SCHEMA.iter().filter(|spec| !spec.root_settable) {
             if layer.unset(spec.name) {
@@ -472,6 +529,40 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
             })
             .collect(),
     );
+    let active = scalar(
+        |layer| layer.active.as_ref(),
+        Value::Words(vec![Trigger::Watcher.as_str().to_owned()]),
+    );
+    let defaults = Triggers::default();
+    let debounce = scalar(
+        |layer| layer.debounce.as_ref(),
+        Value::Duration(defaults.debounce),
+    );
+    let rate_limit = scalar(
+        |layer| layer.rate_limit.as_ref(),
+        Value::Duration(defaults.rate_limit),
+    );
+    let periodic = scalar(
+        |layer| layer.periodic.as_ref(),
+        Value::Duration(DEFAULT_PERIODIC),
+    );
+    let duration = |entry: &Entry| match entry.value {
+        Value::Duration(duration) => duration,
+        _ => unreachable!("an interval is only ever set as a duration"),
+    };
+    let Value::Words(names) = &active.value else {
+        unreachable!("the active Triggers are only ever set as names")
+    };
+    let triggers = Triggers {
+        watcher: names.iter().any(|name| name == Trigger::Watcher.as_str()),
+        periodic: names
+            .iter()
+            .any(|name| name == Trigger::Periodic.as_str())
+            .then(|| duration(&periodic)),
+        debounce: duration(&debounce),
+        rate_limit: duration(&rate_limit),
+    };
+
     let settings = [
         ("files.exclude", patterns(|layer| &layer.exclude)),
         ("files.include", patterns(|layer| &layer.include)),
@@ -485,6 +576,10 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
             "files.secret_opt_in",
             patterns(|layer| &layer.secret_opt_in),
         ),
+        ("triggers.active", Setting::Scalar(active)),
+        ("triggers.debounce", Setting::Scalar(debounce)),
+        ("triggers.rate_limit", Setting::Scalar(rate_limit)),
+        ("triggers.periodic", Setting::Scalar(periodic)),
     ];
     let keys = settings
         .into_iter()
@@ -499,6 +594,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
 
     Effective {
         policy,
+        triggers,
         keys,
         warnings,
     }
@@ -569,6 +665,8 @@ struct GlobalDocument {
     #[serde(default)]
     files: Files,
     #[serde(default)]
+    triggers: TriggerTable,
+    #[serde(default)]
     root: BTreeMap<String, Settings>,
     #[serde(default)]
     roots: Vec<PatternBlock>,
@@ -580,6 +678,8 @@ struct GlobalDocument {
 struct Settings {
     #[serde(default)]
     files: Files,
+    #[serde(default)]
+    triggers: TriggerTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -589,6 +689,18 @@ struct PatternBlock {
     path: Spanned<String>,
     #[serde(default)]
     files: Files,
+    #[serde(default)]
+    triggers: TriggerTable,
+}
+
+/// The `[triggers]` table: which Triggers are active, and their intervals (ticket 43).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TriggerTable {
+    active: Option<Spanned<Vec<String>>>,
+    debounce: Option<Spanned<String>>,
+    rate_limit: Option<Spanned<String>>,
+    periodic: Option<Spanned<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -612,6 +724,77 @@ struct SizeEntry {
     pattern: String,
     /// Required, except for a negated pattern, which returns its paths to the scalar cap.
     max: Option<String>,
+}
+
+/// Check the tables of one block of the file at `path` — the top level, or a per-Root block named by
+/// `block` — and compile what they say, as the settings of `level`.
+fn settings_layer(
+    files: &Files,
+    triggers: &TriggerTable,
+    level: Level,
+    path: &Path,
+    text: &str,
+    block: &str,
+) -> Result<Layer, ConfigError> {
+    let mut layer = layer(files, level, path, text, &format!("{block}files"))?;
+
+    let origin = |span: std::ops::Range<usize>| RuleOrigin {
+        level,
+        source: path.to_string_lossy().into_owned(),
+        line: Some(line_of(text, span.start)),
+    };
+    let invalid = |key: &str, message: String| ConfigError {
+        path: path.to_path_buf(),
+        message: format!("{block}triggers.{key}: {message}"),
+    };
+    let interval = |key: &str, written: &Option<Spanned<String>>, zero_allowed: bool| {
+        written
+            .as_ref()
+            .map(|written| {
+                let duration = parse_duration(written.get_ref())
+                    .map_err(|error| invalid(key, error.to_string()))?;
+                if duration.is_zero() && !zero_allowed {
+                    return Err(invalid(key, "it cannot be zero".to_owned()));
+                }
+                Ok(Entry {
+                    value: Value::Duration(duration),
+                    origin: origin(written.span()),
+                })
+            })
+            .transpose()
+    };
+
+    layer.debounce = interval("debounce", &triggers.debounce, true)?;
+    // Always in force, so a rate limit of nothing is refused rather than meaning "none".
+    layer.rate_limit = interval("rate_limit", &triggers.rate_limit, false)?;
+    layer.periodic = interval("periodic", &triggers.periodic, false)?;
+    layer.active = triggers
+        .active
+        .as_ref()
+        .map(|active| {
+            let known = [Trigger::Watcher, Trigger::Periodic].map(Trigger::as_str);
+            let mut names: Vec<String> = Vec::new();
+            for name in active.get_ref() {
+                if !known.contains(&name.as_str()) {
+                    return Err(invalid(
+                        "active",
+                        format!(
+                            "`{name}` is not a Trigger; the Triggers are `watcher` and `periodic`"
+                        ),
+                    ));
+                }
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+            Ok(Entry {
+                value: Value::Words(names),
+                origin: origin(active.span()),
+            })
+        })
+        .transpose()?;
+
+    Ok(layer)
 }
 
 /// Check one `[files]` table of the file at `path` and compile what it says, as the settings of
@@ -689,6 +872,7 @@ fn layer(
         max_size,
         max_size_by_pattern,
         secret_opt_in: rules("secret_opt_in", &files.secret_opt_in, Rule::parse)?,
+        ..Layer::default()
     })
 }
 

@@ -508,6 +508,37 @@ impl HistoryStore {
         trigger: Trigger,
         now: SystemTime,
     ) -> Result<CapturedSnapshot, StoreError> {
+        let captured = self.write_snapshot(root_id, root_path, policy, trigger, now, true)?;
+
+        Ok(captured.expect("a Snapshot is always written when asked to record an unchanged tree"))
+    }
+
+    /// Capture the Root as [`Self::capture`] does, but write nothing when the tree is the one its baseline
+    /// already holds.
+    ///
+    /// What an automatic Trigger uses: a touched file or a quiet periodic floor is not a new version,
+    /// and a history of identical Snapshots would bury the ones that matter. A Snapshot someone asked
+    /// for is always written, because asking is the point.
+    pub fn capture_if_changed(
+        &self,
+        root_id: RootId,
+        root_path: &Path,
+        policy: &CapturePolicy,
+        trigger: Trigger,
+        now: SystemTime,
+    ) -> Result<Option<CapturedSnapshot>, StoreError> {
+        self.write_snapshot(root_id, root_path, policy, trigger, now, false)
+    }
+
+    fn write_snapshot(
+        &self,
+        root_id: RootId,
+        root_path: &Path,
+        policy: &CapturePolicy,
+        trigger: Trigger,
+        now: SystemTime,
+        record_unchanged: bool,
+    ) -> Result<Option<CapturedSnapshot>, StoreError> {
         let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
         let reference = format!("{SEGMENT_REFS}/{segment}");
 
@@ -541,6 +572,9 @@ impl HistoryStore {
         let tree_id = index
             .write_tree_to(&self.repository)
             .map_err(self.failed("written"))?;
+        if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
+            return Ok(None);
+        }
         let tree = self
             .repository
             .find_tree(tree_id)
@@ -583,7 +617,7 @@ impl HistoryStore {
         .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
         .map_err(|source| self.failed("read")(source).to_string());
 
-        Ok(CapturedSnapshot {
+        Ok(Some(CapturedSnapshot {
             id,
             segment,
             trigger,
@@ -591,7 +625,7 @@ impl HistoryStore {
             withheld: walked.withheld,
             changed_paths,
             index_lag: self.catch_up().err().map(|error| error.to_string()),
-        })
+        }))
     }
 
     /// One page of the Root's chronology, newest first.

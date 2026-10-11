@@ -7,9 +7,12 @@ use axum::{Json, response::IntoResponse};
 use keepster_api::{
     Change, Entries, Entry, EntryKind, ErrorCode, Problem, Snapshot, Timeline, Withheld,
 };
+use keepster_app::config::Effective;
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
 use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
-use keepster_store::{CapturedSnapshot, Depth, SnapshotSummary, StoreError, TimelineQuery};
+use keepster_store::{
+    CapturedSnapshot, Depth, RootRecord, SnapshotSummary, StoreError, TimelineQuery,
+};
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
@@ -65,23 +68,7 @@ pub(crate) async fn create(
         )
     })?;
 
-    // The Registry is read and released before the walk begins: a capture can take seconds, and an
-    // unrelated Root has no reason to wait for it. The configuration is resolved while it is held, as
-    // everywhere, because resolving may write into the Root's store directory.
-    //
-    // Resolved before the store is locked, and never applied in part: a configuration with no version
-    // to apply refuses the capture rather than falling back to defaults, which would drop the user's
-    // exclude rules and pull into history exactly what they existed to keep out (ticket 04).
-    let (root, location, loaded) = {
-        let registry = state.registry();
-        let entry = roots::record(&registry, id)?;
-        let loaded = state.effective(id, &entry.path)?;
-
-        (entry, snapshots::location(&registry.root_dir(id)), loaded)
-    };
-    for warning in &loaded.warnings {
-        tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
-    }
+    let (root, location, loaded) = prepare(&state, id)?;
 
     // One capture at a time per store: git documents a corruption risk under concurrent access, and two
     // captures racing would leave one of them unreferenced whatever git did (ticket 06).
@@ -102,6 +89,33 @@ pub(crate) async fn create(
     }
 
     Ok((StatusCode::CREATED, Json(describe_captured(&captured))))
+}
+
+/// What a capture of the Root `id` needs: its record, its store and the configuration in force.
+///
+/// The Registry is read and released before the walk begins: a capture can take seconds, and an
+/// unrelated Root has no reason to wait for it. The configuration is resolved while it is held, as
+/// everywhere, because resolving may write into the Root's store directory.
+///
+/// Resolved before the store is locked, and never applied in part: a configuration with no version to
+/// apply refuses the capture rather than falling back to defaults, which would drop the user's exclude
+/// rules and pull into history exactly what they existed to keep out (ticket 04).
+pub(crate) fn prepare(
+    state: &DaemonState,
+    id: RootId,
+) -> Result<(RootRecord, StoreLocation, Effective), ProblemResponse> {
+    let (root, location, loaded) = {
+        let registry = state.registry();
+        let entry = roots::record(&registry, id)?;
+        let loaded = state.effective(id, &entry.path)?;
+
+        (entry, snapshots::location(&registry.root_dir(id)), loaded)
+    };
+    for warning in &loaded.warnings {
+        tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
+    }
+
+    Ok((root, location, loaded))
 }
 
 /// Which part of a Root's chronology to list. Every field is text, so a malformed value is answered
@@ -505,7 +519,7 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
     }
 }
 
-fn capture_problem(error: CaptureError) -> ProblemResponse {
+pub(crate) fn capture_problem(error: CaptureError) -> ProblemResponse {
     match error {
         CaptureError::NotFound { id } => ProblemResponse::new(
             StatusCode::NOT_FOUND,

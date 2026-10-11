@@ -1084,7 +1084,7 @@
             "description": "Whether a file sets this key to something else that only a restart applies. The value above is\nthe one in force."
           },
           "value": {
-            "description": "The value in force, typed as the key is: a switch, a number of bytes, or a list. A pattern list\nholds its patterns as written; `files.max_size_by_pattern` holds `{ pattern, max }` objects."
+            "description": "The value in force, typed as the key is: a switch, a number of bytes, a duration written as text\nin the largest whole unit (`3s`, `1m`, `1h`), or a list. A pattern list holds its patterns as\nwritten; `files.max_size_by_pattern` holds `{ pattern, max }` objects; `triggers.active` holds the\nnames of the active Triggers."
           }
         }
       },
@@ -1451,9 +1451,24 @@
             "type": "string",
             "description": "The Root's identity, which survives renaming or moving its directory."
           },
+          "oldest_pending_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the oldest of those changes has waited, in seconds; absent when nothing is pending.",
+            "minimum": 0
+          },
           "path": {
             "type": "string",
             "description": "Where its directory is right now. A path is a mutable attribute of the registration."
+          },
+          "pending_paths": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many paths changed since the last Snapshot and wait for their debounce window or the rate\nlimit. A count rather than a listing, because a listing of a debounce queue is stale as it prints\n(ticket 20).",
+            "minimum": 0
           },
           "state": {
             "$ref": "#/components/schemas/RootState",

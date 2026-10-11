@@ -24,8 +24,8 @@ async fn watch_names_the_root_it_registered_and_roots_lists_it() {
     let listed = String::from_utf8(listed.stdout).expect("text");
     assert!(listed.contains("my-project"), "no Root in:\n{listed}");
     assert!(
-        listed.contains("capture_unavailable"),
-        "the listing must say why a Root is not watched yet, in:\n{listed}"
+        listed.contains("coverage_not_guaranteed"),
+        "the listing must say why a Root is not watched as promised, in:\n{listed}"
     );
 }
 

@@ -121,6 +121,7 @@ pub(crate) async fn register(
     let registry = state.registry();
     let record =
         roots::register(&registry, now(), request.path.as_ref()).map_err(register_problem)?;
+    configuration::reload_with(&state, &registry);
 
     Ok((StatusCode::CREATED, Json(describe_record(&state, &record))))
 }
@@ -163,6 +164,7 @@ pub(crate) async fn deregister(
     let id = parse_id(&id)?;
     let registry = state.registry();
     roots::deregister(&registry, id, query.purge).map_err(root_problem)?;
+    configuration::reload_with(&state, &registry);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -194,6 +196,7 @@ pub(crate) async fn move_root(
     let id = parse_id(&id)?;
     let registry = state.registry();
     let record = roots::move_root(&registry, id, request.path.as_ref()).map_err(root_problem)?;
+    configuration::reload_with(&state, &registry);
 
     Ok(Json(describe_record(&state, &record)))
 }
@@ -310,6 +313,8 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
             // and saying so beats inventing a path.
             path: unreadable_path(error),
             state: RootState::Unavailable,
+            pending_paths: 0,
+            oldest_pending_seconds: None,
             state_code: Some(
                 match error {
                     RegistryError::TooNew { .. } => "store_too_new",
@@ -326,14 +331,20 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 /// The state is the honest one this build can determine, the most serious reason first: a directory
 /// that is gone means nothing can be captured at all, which `CONTEXT.md` calls `Unavailable`, and so
 /// does a configuration with no version to apply; one whose current version is invalid leaves the last
-/// known-good in force, `Degraded`; otherwise automatic capture simply does not exist yet (tickets 43
-/// and 44), which is a promise not kept rather than a Root that cannot be served.
+/// known-good in force, `Degraded`. Otherwise the Root is captured automatically but without the
+/// guarantee Reconciliation gives (ticket 44) — or not automatically at all, when every Trigger is off.
 fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
+    let activity = daemon.triggers.activity(record.id).unwrap_or_default();
     let (state, state_code) = if !record.path.is_dir() {
         (RootState::Unavailable, "root_missing")
-    } else {
+    } else if let Some(state) =
         configuration::state_of(&daemon.configuration(record.id, &record.path))
-            .unwrap_or((RootState::Degraded, "capture_unavailable"))
+    {
+        state
+    } else if activity.automatic {
+        (RootState::Degraded, "coverage_not_guaranteed")
+    } else {
+        (RootState::Degraded, "capture_unavailable")
     };
 
     Root {
@@ -343,6 +354,10 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
         path: record.path.to_string_lossy().into_owned(),
         state,
         state_code: Some(state_code.to_owned()),
+        pending_paths: activity.pending_paths,
+        oldest_pending_seconds: activity
+            .pending_since
+            .map(|since| since.elapsed().as_secs()),
     }
 }
 
