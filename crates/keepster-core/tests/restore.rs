@@ -423,3 +423,49 @@ fn every_reason_has_a_stable_wire_name() {
         );
     }
 }
+
+#[test]
+fn a_new_name_must_be_free_and_two_files_cannot_take_the_same_one() {
+    let taken = Found {
+        target: rp("dir/existing.txt"),
+        existing: Existing::File {
+            links: 1,
+            links_inside: Vec::new(),
+            unrecoverable: None,
+        },
+        ..absent("dir/con.txt")
+    };
+    let renamed = BTreeMap::from([(
+        rp("dir/con.txt"),
+        Resolution::RenameTo("existing.txt".to_owned()),
+    )]);
+    let mut planned = plan(vec![taken], WINDOWS, &Confirmed::all(), &renamed, false);
+    assert_eq!(
+        planned.paths.remove(0).issues,
+        [Issue::NameInvalid],
+        "a rename never overwrites what is already there"
+    );
+
+    let twins = vec![
+        Found {
+            target: rp("same.txt"),
+            ..absent("a.txt")
+        },
+        Found {
+            target: rp("same.txt"),
+            ..absent("b.txt")
+        },
+    ];
+    let renames = BTreeMap::from([
+        (rp("a.txt"), Resolution::RenameTo("same.txt".to_owned())),
+        (rp("b.txt"), Resolution::RenameTo("same.txt".to_owned())),
+    ]);
+    let planned = plan(twins, LINUX, &Confirmed::none(), &renames, false);
+    assert!(
+        planned
+            .paths
+            .iter()
+            .all(|path| matches!(path.issues[..], [Issue::NameCollision { .. }])),
+        "even where case is significant: {planned:?}"
+    );
+}

@@ -155,7 +155,14 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
                     let mut out = io::stdout().lock();
                     let _ = out.write_all(&body);
                     let _ = writeln!(out);
-                    exit::SUCCESS
+                    // The same exit code as the printed form: some file failed is a partial success.
+                    let failed = serde_json::from_slice::<Restored>(&body).is_ok_and(|restored| {
+                        restored
+                            .paths
+                            .iter()
+                            .any(|path| path.outcome == RestoreOutcome::Failed)
+                    });
+                    if failed { exit::PARTIAL } else { exit::SUCCESS }
                 }
                 Err(code) => code,
             };
@@ -282,6 +289,7 @@ fn report_blocked(paths: &[RestoredPath]) {
 
 /// Ask about everything that stopped the request, and amend it; `false` when the person declined.
 fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
+    let asked = request.clone();
     let blocked: Vec<&RestoredPath> = paths
         .iter()
         .filter(|path| path.outcome == RestoreOutcome::Blocked)
@@ -376,7 +384,8 @@ fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
         request.skip_unresolvable = true;
     }
 
-    true
+    // Declining every question leaves the request as it was, and sending it again would only ask again.
+    *request != asked
 }
 
 fn parse_confirmation(name: &str) -> Option<Confirmation> {

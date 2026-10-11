@@ -30,7 +30,7 @@ mod restore;
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
 };
-pub use restore::{Preflight, RestoreScope, Written, destination_naming};
+pub use restore::{LinkNames, Preflight, RestoreScope, Written, destination_naming};
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///

@@ -9,7 +9,7 @@ use keepster_core::{
     plan, target_of,
 };
 use keepster_store::{
-    CaptureRequest, CapturedSnapshot, RestoreScope, RootRecord, StoreError, Written,
+    CaptureRequest, CapturedSnapshot, LinkNames, RestoreScope, RootRecord, StoreError, Written,
     destination_naming,
 };
 
@@ -30,6 +30,8 @@ pub struct RestoreRequest {
     pub skip_unresolvable: bool,
     /// Only plan: write nothing and take no Safety Snapshot.
     pub dry_run: bool,
+    /// How this platform lists every name of a file, where std cannot.
+    pub link_names: Option<LinkNames>,
 }
 
 /// What a Restore did — or, for a dry run, would do.
@@ -104,6 +106,7 @@ pub fn restore(
         policy,
         naming: destination_naming(&root.path),
         renamed: &renamed,
+        link_names: request.link_names,
     };
 
     let preflight = store.restore_preflight(&scope)?;

@@ -564,3 +564,103 @@ async fn a_request_that_cannot_be_planned_is_refused_with_a_reason() {
         assert_eq!(body(&answer)["code"], code, "{request}");
     }
 }
+
+#[tokio::test]
+async fn files_sharing_a_missing_directory_are_all_restored_by_one_request() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "deep/a.txt", b"a");
+    write(&project, "deep/b.txt", b"b");
+    write(&project, "docs/one.md", b"one");
+    write(&project, "docs/two.md", b"two");
+    let saved = take(&daemon, &root).await;
+    std::fs::remove_dir_all(project.join("deep")).expect("removed");
+    std::fs::remove_dir_all(project.join("docs")).expect("removed");
+    write(&project, "docs", b"a file where a directory was");
+
+    let answer = restore(
+        &daemon,
+        &root,
+        json!({ "from": saved, "confirm": ["create_parents", "replace_type"] }),
+    )
+    .await;
+
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert_eq!(
+        outcomes(&body(&answer)),
+        pairs(&[
+            ("deep/a.txt", "created"),
+            ("deep/b.txt", "created"),
+            ("docs/one.md", "created"),
+            ("docs/two.md", "created"),
+        ]),
+        "writing one file of a directory does not make the next one look changed"
+    );
+    assert_eq!(read(&project, "docs/two.md"), b"two");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn both_names_of_a_hardlinked_file_restored_together_are_both_written() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "a.txt", b"saved a");
+    write(&project, "b.txt", b"saved b");
+    let saved = take(&daemon, &root).await;
+    write(&project, "a.txt", b"since");
+    std::fs::remove_file(project.join("b.txt")).expect("removed");
+    std::fs::hard_link(project.join("a.txt"), project.join("b.txt")).expect("a twin");
+
+    let answer = restore(
+        &daemon,
+        &root,
+        json!({ "from": saved, "confirm": ["break_hardlinks"] }),
+    )
+    .await;
+
+    assert_eq!(
+        outcomes(&body(&answer)),
+        pairs(&[("a.txt", "restored"), ("b.txt", "restored")])
+    );
+    assert_eq!(read(&project, "a.txt"), b"saved a");
+    assert_eq!(read(&project, "b.txt"), b"saved b");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_special_file_in_the_way_is_one_no_snapshot_can_hold() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, "pipe/file.txt", b"saved");
+    let saved = take(&daemon, &root).await;
+    std::fs::remove_dir_all(project.join("pipe")).expect("removed");
+    let made = std::process::Command::new("mkfifo")
+        .arg(project.join("pipe"))
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success());
+
+    let refused = body(
+        &restore(
+            &daemon,
+            &root,
+            json!({ "from": saved, "confirm": ["replace_type"] }),
+        )
+        .await,
+    );
+
+    assert_eq!(
+        refused["paths"][0]["issues"],
+        json!([{
+            "reason": "overwrite_unrecoverable",
+            "confirm": "overwrite_unrecoverable",
+            "why": "unsupported",
+        }]),
+        "replacing it needs more than the type change agreed to"
+    );
+}

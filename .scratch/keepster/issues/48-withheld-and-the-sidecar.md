@@ -29,3 +29,11 @@ carrying `unstable` or the errno, a cloud placeholder's mtime, and a junction ma
       path plus the raw bytes whenever the name is not UTF-8
 - [ ] The sidecar's record grammar is versioned in its header, an unknown record type is skipped **and reported**,
       and no existing type's meaning may change
+
+## Comments
+
+- 2026-10-11: ticket 47 left the Withheld refusal here. A Withheld path has no tree entry, so a Restore asking
+  for it answers `path_not_found` today; once this ticket records Withheld paths, `restore_preflight` in
+  `keepster-store` should find the record and `keepster_core::plan` refuse it as `withheld` with its reason,
+  beside `type_conflict` and `link_check_failed`. `keepster diff` against the Working Tree already says
+  `withheld` for a file the next Snapshot would not hold (ticket 46).

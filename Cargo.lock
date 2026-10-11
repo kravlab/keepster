@@ -770,7 +770,6 @@ version = "0.1.0"
 dependencies = [
  "git2",
  "keepster-core",
- "keepster-service",
  "memmap2",
  "rusqlite",
  "serde",

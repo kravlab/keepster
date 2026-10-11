@@ -29,3 +29,11 @@ per-user resource and a mutable real-to-logical path mapping loses events silent
       a link-mode Root follows a retargeted link, with the overlap rule still enforced
 - [ ] Restoring through a followed link writes through it only while the link is still matched and leads nowhere
       forbidden; otherwise the path is refused with its reason
+
+## Comments
+
+- 2026-10-11: ticket 47's Restore passes over a link in a Snapshot (`source()` in
+  `keepster-store/src/history/restore.rs` returns `None` for mode `120000`), since none are captured yet; this
+  ticket makes it restore one as a link, and raise `symlink_unsupported` where the platform cannot. The
+  `link_check_failed` refusal there today refuses every link above a file, because no link is followed yet —
+  `files.follow_symlinks` decides which may be.

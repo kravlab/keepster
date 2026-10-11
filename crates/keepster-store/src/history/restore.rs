@@ -29,7 +29,13 @@ pub struct RestoreScope<'a> {
     pub naming: Naming,
     /// Where a renamed file is written instead of its own path.
     pub renamed: &'a BTreeMap<RootPath, RootPath>,
+    /// How this platform lists every name of a file, where std cannot — Windows, whose call lives with
+    /// the rest of the workspace's `unsafe` in `keepster-service`. `None` uses `(dev, ino)` on Unix.
+    pub link_names: Option<LinkNames>,
 }
+
+/// Every name of the file at a path, as full paths.
+pub type LinkNames = fn(&Path) -> io::Result<Vec<PathBuf>>;
 
 /// The facts a plan is made from, with the versions to write.
 #[derive(Debug, Clone)]
@@ -50,7 +56,8 @@ pub enum Written {
     Unchanged,
     /// Passed over, as the plan said.
     Skipped,
-    /// It could not be written, and why. Nothing of it was left half-done.
+    /// It could not be written, and why. What was there is left as it was, unless the reason says the
+    /// content is in place under the name that was there.
     Failed(String),
 }
 
@@ -80,7 +87,7 @@ impl HistoryStore {
             found.push(facts(scope, &path, &target, &source));
             kept.push(source);
         }
-        fill_links_inside(scope.root_path, &mut found);
+        fill_links_inside(scope, &mut found);
 
         Ok(Preflight {
             found,
@@ -108,13 +115,13 @@ impl HistoryStore {
                 Step::Skipped | Step::Blocked => Written::Skipped,
                 Step::Restore | Step::Create => {
                     let mut now = facts(scope, &before.path, &before.target, source);
-                    fill_links_inside(scope.root_path, std::slice::from_mut(&mut now));
-                    if now != *before {
+                    fill_links_inside(scope, std::slice::from_mut(&mut now));
+                    if !still_as_planned(before, &now) {
                         return Written::Failed(
                             "it changed between the preflight and the write".to_owned(),
                         );
                     }
-                    match self.write_one(scope.root_path, planned, before, source) {
+                    match self.write_one(scope.root_path, planned, &now, source) {
                         Ok(()) if planned.step == Step::Create => Written::Created,
                         Ok(()) => Written::Restored,
                         Err(error) => Written::Failed(error.to_string()),
@@ -209,7 +216,8 @@ impl HistoryStore {
         }))
     }
 
-    /// Write one file as the plan says.
+    /// Write one file as the plan says, acting on what is there now — which an earlier file of the same
+    /// request may have changed.
     fn write_one(
         &self,
         root: &Path,
@@ -248,27 +256,33 @@ impl HistoryStore {
             _ => None,
         };
 
+        // Short, whatever the file's own name: a long name plus a suffix could exceed what the
+        // filesystem allows in one component.
         let temporary = parent.join(format!(
-            ".{}.{}.{}.keepster-restore",
-            planned.target.name(),
+            ".keepster-restore.{}.{}",
             std::process::id(),
             TEMPORARY.fetch_add(1, Ordering::Relaxed)
         ));
-        let written = self
+        if let Err(error) = self
             .write_temporary(&temporary, source, base_mode)
-            .and_then(|()| {
-                fs::rename(&temporary, &replaced)?;
-                // A name in another case was replaced: the file now takes the Snapshot's spelling.
-                if replaced != target {
-                    fs::rename(&replaced, &target)?;
-                }
-                Ok(())
-            });
-        if written.is_err() {
+            .and_then(|()| fs::rename(&temporary, &replaced))
+        {
             let _ = fs::remove_file(&temporary);
+            return Err(error);
         }
+        // A name in another case was replaced: the file now takes the Snapshot's spelling.
+        if replaced != target {
+            fs::rename(&replaced, &target).map_err(|error| {
+                io::Error::other(format!(
+                    "the content is in place as {}, but the name could not take the Snapshot's \
+                     spelling: {error}",
+                    replaced.display()
+                ))
+            })?;
+        }
+        sync_directory(&parent);
 
-        written
+        Ok(())
     }
 
     /// The version's bytes in a new file at `temporary`, synced, with its permissions set.
@@ -278,10 +292,17 @@ impl HistoryStore {
         source: &Source,
         base_mode: Option<u32>,
     ) -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary)?;
+        // A file replacing one whose bits are known starts private, so content the old file kept from
+        // others is never readable by them for the moment before its bits are set; a new file starts
+        // from the umask, as it ends.
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if base_mode.is_some() {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(temporary)?;
         let content = Content {
             store: self,
             blob: source.blob,
@@ -290,11 +311,37 @@ impl HistoryStore {
         content
             .read(0, source.size, &mut |chunk| file.write_all(chunk))
             .map_err(|error| io::Error::other(error.to_string()))?;
-        file.sync_all()?;
-        drop(file);
+        // Through the open file, so the bits land on what was written and on nothing a path could be
+        // swapped for in between.
+        set_mode(&file, base_mode, source.executable)?;
 
-        set_mode(temporary, base_mode, source.executable)
+        file.sync_all()
     }
+}
+
+/// Whether what is on disk now is what the plan was made for — or what an earlier file of the same
+/// request made of it: a directory it created, or put where a file was, and links it broke.
+fn still_as_planned(before: &Found, now: &Found) -> bool {
+    let ancestry = now.ancestry == before.ancestry
+        || (matches!(before.ancestry, Ancestry::Missing | Ancestry::File { .. })
+            && now.ancestry == Ancestry::Present);
+    let existing = match (&before.existing, &now.existing) {
+        (
+            Existing::File {
+                links: was,
+                unrecoverable: then,
+                ..
+            },
+            Existing::File {
+                links: is,
+                unrecoverable: still,
+                ..
+            },
+        ) => then == still && is <= was,
+        (before, now) => before == now,
+    };
+
+    ancestry && existing && now.case_variant == before.case_variant
 }
 
 /// What is on disk where the file `path` of the Snapshot would go, at `target`.
@@ -314,7 +361,16 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(metadata) => {
-                let unrecoverable = recoverability(scope, &ancestor, &metadata);
+                // A special file in the way — a pipe, a device — is nothing a Snapshot holds.
+                let unrecoverable = if metadata.is_file() {
+                    recoverability(scope, &ancestor, &metadata).or_else(|| {
+                        File::open(absolute(root, &ancestor))
+                            .is_err()
+                            .then_some(Unrecoverable::Unreadable)
+                    })
+                } else {
+                    Some(Unrecoverable::Unsupported)
+                };
                 ancestry = Ancestry::File {
                     at: ancestor,
                     unrecoverable,
@@ -373,7 +429,7 @@ fn existing(scope: &RestoreScope<'_>, target: &RootPath, source: &Source) -> Exi
     });
 
     Existing::File {
-        links: link_count(&at, &metadata),
+        links: link_count(scope, &at, &metadata),
         links_inside: Vec::new(),
         unrecoverable,
     }
@@ -428,14 +484,7 @@ fn variant_of(root: &Path, target: &RootPath, naming: Naming) -> Option<String> 
 }
 
 /// Fill in, for every file with more than one name, its other names inside the Root.
-fn fill_links_inside(root: &Path, found: &mut [Found]) {
-    if found
-        .iter()
-        .all(|found| !matches!(found.existing, Existing::File { links, .. } if links > 1))
-    {
-        return;
-    }
-
+fn fill_links_inside(scope: &RestoreScope<'_>, found: &mut [Found]) {
     for found in found.iter_mut() {
         let target = found.target.clone();
         if let Existing::File {
@@ -445,15 +494,54 @@ fn fill_links_inside(root: &Path, found: &mut [Found]) {
         } = &mut found.existing
         {
             if *links > 1 {
-                *links_inside = other_names(root, &target);
+                *links_inside = other_names(scope, &target);
             }
         }
     }
 }
 
 /// The other names inside the Root of the file at `target`.
+fn other_names(scope: &RestoreScope<'_>, target: &RootPath) -> Vec<RootPath> {
+    let root = scope.root_path;
+    let mut names = match scope.link_names {
+        Some(list) => list(&absolute(root, target))
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|name| inside_root(root, name))
+            .filter(|path| path != target)
+            .collect(),
+        None => same_inode(root, target),
+    };
+    names.sort();
+
+    names
+}
+
+/// `name` as a path inside `root`, compared as Windows compares names — without case, and whatever
+/// prefix either carries — or `None` when it is elsewhere.
+fn inside_root(root: &Path, name: &Path) -> Option<RootPath> {
+    let plain = |path: &Path| {
+        let text = path.to_string_lossy().replace('\\', "/");
+        text.strip_prefix("//?/")
+            .map(ToOwned::to_owned)
+            .unwrap_or(text)
+    };
+    let root = plain(root);
+    let name = plain(name);
+    if name.len() <= root.len() || !name.is_char_boundary(root.len()) {
+        return None;
+    }
+    let (head, rest) = name.split_at(root.len());
+    if !head.eq_ignore_ascii_case(&root) {
+        return None;
+    }
+
+    RootPath::parse(rest.trim_start_matches('/')).ok()
+}
+
+/// The other names inside the Root of the file at `target`, found by its `(dev, ino)`.
 #[cfg(unix)]
-fn other_names(root: &Path, target: &RootPath) -> Vec<RootPath> {
+fn same_inode(root: &Path, target: &RootPath) -> Vec<RootPath> {
     use std::os::unix::fs::MetadataExt;
 
     let Ok(wanted) = fs::metadata(absolute(root, target)) else {
@@ -484,56 +572,32 @@ fn other_names(root: &Path, target: &RootPath) -> Vec<RootPath> {
             }
         }
     }
-    names.sort();
 
     names
 }
 
-/// The other names inside the Root of the file at `target`, as Windows lists every name of a file.
-#[cfg(windows)]
-fn other_names(root: &Path, target: &RootPath) -> Vec<RootPath> {
-    let at = absolute(root, target);
-    let Ok(names) = keepster_service::hard_link_names(&at) else {
-        return Vec::new();
-    };
-    let mut inside: Vec<RootPath> = names
-        .iter()
-        .filter_map(|name| name.strip_prefix(root).ok())
-        .filter_map(|relative| {
-            let joined: Vec<String> = relative
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy().into_owned())
-                .collect();
-            RootPath::parse(&joined.join("/")).ok()
-        })
-        .filter(|path| path != target)
-        .collect();
-    inside.sort();
-
-    inside
-}
-
-#[cfg(not(any(unix, windows)))]
-fn other_names(_: &Path, _: &RootPath) -> Vec<RootPath> {
+#[cfg(not(unix))]
+fn same_inode(_: &Path, _: &RootPath) -> Vec<RootPath> {
     Vec::new()
 }
 
 /// How many names the file has.
+fn link_count(scope: &RestoreScope<'_>, at: &Path, metadata: &fs::Metadata) -> u64 {
+    match scope.link_names {
+        Some(list) => list(at).map_or(1, |names| names.len().max(1) as u64),
+        None => nlink(metadata),
+    }
+}
+
 #[cfg(unix)]
-fn link_count(_: &Path, metadata: &fs::Metadata) -> u64 {
+fn nlink(metadata: &fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
 
     metadata.nlink()
 }
 
-/// How many names the file has.
-#[cfg(windows)]
-fn link_count(at: &Path, _: &fs::Metadata) -> u64 {
-    keepster_service::hard_link_names(at).map_or(1, |names| names.len().max(1) as u64)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn link_count(_: &Path, _: &fs::Metadata) -> u64 {
+#[cfg(not(unix))]
+fn nlink(_: &fs::Metadata) -> u64 {
     1
 }
 
@@ -555,7 +619,8 @@ fn executable(_: &fs::Metadata) -> Option<bool> {
 fn mode_of(metadata: &fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
 
-    metadata.permissions().mode() & 0o7777
+    // Never setuid, setgid or sticky: those were granted to the old content, not to this.
+    metadata.permissions().mode() & 0o777
 }
 
 #[cfg(not(unix))]
@@ -566,12 +631,12 @@ fn mode_of(_: &fs::Metadata) -> u32 {
 /// The replaced file's permission bits — or, for a new file, those the umask gave it — with the
 /// Snapshot's executable bit applied: set for every class that may read, or cleared for all.
 #[cfg(unix)]
-fn set_mode(path: &Path, base: Option<u32>, executable: bool) -> io::Result<()> {
+fn set_mode(file: &File, base: Option<u32>, executable: bool) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let base = match base {
         Some(base) => base,
-        None => fs::metadata(path)?.permissions().mode() & 0o7777,
+        None => file.metadata()?.permissions().mode() & 0o777,
     };
     let mode = if executable {
         base | ((base & 0o444) >> 2)
@@ -579,13 +644,24 @@ fn set_mode(path: &Path, base: Option<u32>, executable: bool) -> io::Result<()> 
         base & !0o111
     };
 
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    file.set_permissions(fs::Permissions::from_mode(mode))
 }
 
 /// Windows keeps no mode bits a Snapshot could carry (ticket 10).
 #[cfg(not(unix))]
-fn set_mode(_: &Path, _: Option<u32>, _: bool) -> io::Result<()> {
+fn set_mode(_: &File, _: Option<u32>, _: bool) -> io::Result<()> {
     Ok(())
+}
+
+/// Make a rename in `directory` durable, where the platform lets a directory be synced. Best effort:
+/// the file is in place either way, and a failure here is no reason to report it otherwise.
+fn sync_directory(directory: &Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = File::open(directory) {
+        let _ = handle.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
 }
 
 fn absolute(root: &Path, path: &RootPath) -> PathBuf {

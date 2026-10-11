@@ -243,7 +243,13 @@ pub fn hard_link_names(path: &std::path::Path) -> io::Result<Vec<std::path::Path
     let volume = std::path::PathBuf::from(OsString::from_wide(&volume[..end]));
 
     let name_of = |buffer: &[u16], length: u32| {
-        let units = &buffer[..(length as usize).saturating_sub(1).min(buffer.len())];
+        // Up to the terminating NUL, which the reported length may or may not count.
+        let filled = &buffer[..(length as usize).min(buffer.len())];
+        let end = filled
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(filled.len());
+        let units = &filled[..end];
         let name = OsString::from_wide(units);
         let relative = name.to_string_lossy().trim_start_matches('\\').to_owned();
         volume.join(relative)

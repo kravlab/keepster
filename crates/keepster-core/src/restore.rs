@@ -236,7 +236,7 @@ pub enum Issue {
         /// Which.
         with: Vec<RootPath>,
     },
-    /// The destination cannot hold the name.
+    /// The destination cannot hold the name — or the new name given for it is already taken there.
     NameInvalid,
     /// An entry by the same name in another case is there.
     NameCase {
@@ -413,7 +413,10 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
     let mut issues = Vec::new();
     let mut replaces = None;
 
-    if naming.windows_names && !valid_on_windows(&target) {
+    let renamed = matches!(resolution, Some(Resolution::RenameTo(_)));
+    if (naming.windows_names && !valid_on_windows(&target))
+        || (renamed && existing != Existing::Absent)
+    {
         issues.push(Issue::NameInvalid);
     }
     match ancestry {
@@ -488,11 +491,9 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
 
 /// Find the paths that are one file on the destination, and settle each group by the one the user chose
 /// to write — or ask, when none or several were chosen.
+///
+/// Where the destination folds nothing, only identical targets collide — two files renamed to one name.
 fn collide(paths: &mut [PathPlan], naming: Naming, resolutions: &BTreeMap<RootPath, Resolution>) {
-    if !naming.folds_case && !naming.folds_normalization {
-        return;
-    }
-
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (position, path) in paths.iter().enumerate() {
         groups

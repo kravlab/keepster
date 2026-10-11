@@ -10,8 +10,8 @@ mod registry;
 
 pub use history::{
     CaptureRequest, CapturedSnapshot, Comparison, Content, DIFF_MAX_SIZE, Depth, DiffLine,
-    DiffTarget, Entry, EntryKind, FileChange, FileDiff, HistoryStore, Hunk, LineKind, Pass,
-    Preflight, RestoreScope, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
+    DiffTarget, Entry, EntryKind, FileChange, FileDiff, HistoryStore, Hunk, LineKind, LinkNames,
+    Pass, Preflight, RestoreScope, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
     WithheldPath, WithheldReason, Written, destination_naming,
 };
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

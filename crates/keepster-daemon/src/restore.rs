@@ -157,7 +157,22 @@ fn parsed(request: RestoreRequest) -> Result<restore::RestoreRequest, ProblemRes
         resolutions,
         skip_unresolvable: request.skip_unresolvable,
         dry_run: request.dry_run,
+        link_names: link_names(),
     })
+}
+
+/// How this platform lists every name of a file: on Windows through `keepster-service`, which holds the
+/// workspace's `unsafe`; elsewhere the store finds them by `(dev, ino)`.
+fn link_names() -> Option<keepster_store::LinkNames> {
+    #[cfg(windows)]
+    {
+        Some(keepster_service::hard_link_names)
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// One path's answer, which must answer exactly one question.
