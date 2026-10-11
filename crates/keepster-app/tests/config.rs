@@ -603,9 +603,15 @@ fn the_retention_ladder_is_the_users_to_set_and_must_be_one() {
 
 #[test]
 fn the_git_maintenance_runs_with_is_named_at_the_top_of_the_global_file_alone() {
+    // Absolute on the platform the test runs on: `/opt/...` is not, on Windows.
+    let absolute = if cfg!(windows) {
+        r"C:\Program Files\Git\cmd\git.exe"
+    } else {
+        "/opt/git/bin/git"
+    };
     let named = GlobalConfig::parse(
         Path::new(GLOBAL),
-        "[git]\npath = \"/opt/git/bin/git\"\n",
+        &format!("[git]\npath = '{absolute}'\n"),
         None,
     );
     assert!(named.is_ok(), "{named:?}");
