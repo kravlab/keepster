@@ -3,18 +3,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{
-    CapturePolicy, Incomplete, RootId, RootPath, RuleSet, SIDECAR, Trigger, Verify, WithheldReason,
-};
-use keepster_store::{
-    CaptureRequest, CapturedSnapshot, Depth, EntryKind, HistoryStore, IncompletePath, Pass,
-};
 #[cfg(unix)]
-use keepster_store::{DiffTarget, Entry, FileChange, StoreError};
+use keepster_core::Incomplete;
+use keepster_core::{
+    CapturePolicy, RootId, RootPath, RuleSet, SIDECAR, Trigger, Verify, WithheldReason,
+};
+use keepster_store::{CaptureRequest, CapturedSnapshot, HistoryStore, Pass};
+#[cfg(unix)]
+use keepster_store::{Depth, DiffTarget, Entry, EntryKind, FileChange, IncompletePath, StoreError};
 
 /// 2026-09-30T14:37:05Z.
 const MOMENT: u64 = 1_790_779_025;
@@ -361,82 +359,45 @@ fn a_directory_that_cannot_be_listed_names_its_errno_and_keeps_what_it_held() {
     );
 }
 
-/// A file at `busy.log` that no read finds as its `stat` described, for as long as this lives.
+/// Put a file at `busy.log` that no read finds as its `stat` described: a followed link to a procfs
+/// file, which reports a size of zero and always holds more — unstable on every read, whatever else the
+/// machine is doing.
 ///
-/// On Linux it is a followed link to a procfs file, which reports a size of zero and always holds more:
-/// unstable on every read, whatever else the machine is doing. Elsewhere a thread appends to a large
-/// file while it is read, which a starved machine can fail to interleave.
-struct Busy {
-    writer: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>,
+/// Linux only, deliberately: elsewhere the only way to keep a file changing is a thread writing to it
+/// while it is read, and a busy machine fails to interleave the two often enough that such a test says
+/// nothing. The retry and carry-forward it exercises are the same code on every platform.
+#[cfg(target_os = "linux")]
+fn make_busy(fixture: &Fixture) {
+    let path = fixture.root.join("busy.log");
+    let _ = fs::remove_file(&path);
+    std::os::unix::fs::symlink("/proc/self/stat", &path).expect("a link to procfs");
 }
 
-impl Busy {
-    fn start(fixture: &Fixture) -> Self {
-        let path = fixture.root.join("busy.log");
-        let _ = fs::remove_file(&path);
-
-        #[cfg(target_os = "linux")]
-        {
-            std::os::unix::fs::symlink("/proc/self/stat", &path).expect("a link to procfs");
-            Self { writer: None }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            use std::io::Write;
-
-            fs::write(&path, vec![b'.'; 8 * 1024 * 1024]).expect("a large file");
-            let stop = Arc::new(AtomicBool::new(false));
-            let flag = Arc::clone(&stop);
-            let writer = std::thread::spawn(move || {
-                let mut file = fs::OpenOptions::new()
-                    .append(true)
-                    .open(path)
-                    .expect("the file opens for appending");
-                while !flag.load(Ordering::Relaxed) {
-                    file.write_all(b"more\n").expect("an append");
-                }
-            });
-            Self {
-                writer: Some((stop, writer)),
-            }
-        }
-    }
-
-    /// What a pass needs to read `busy.log` as the busy file it is.
-    fn policy() -> CapturePolicy {
-        CapturePolicy::default().following(RuleSet::new(vec![
-            keepster_core::Rule::parse(
-                "busy.log",
-                RootPath::root(),
-                keepster_core::RuleOrigin {
-                    level: keepster_core::Level::Global,
-                    source: "test".to_owned(),
-                    line: None,
-                },
-            )
-            .expect("a pattern"),
-        ]))
-    }
+/// What a pass needs to read `busy.log` through its link.
+#[cfg(target_os = "linux")]
+fn busy_policy() -> CapturePolicy {
+    CapturePolicy::default().following(RuleSet::new(vec![
+        keepster_core::Rule::parse(
+            "busy.log",
+            RootPath::root(),
+            keepster_core::RuleOrigin {
+                level: keepster_core::Level::Global,
+                source: "test".to_owned(),
+                line: None,
+            },
+        )
+        .expect("a pattern"),
+    ]))
 }
 
-impl Drop for Busy {
-    fn drop(&mut self) {
-        if let Some((stop, writer)) = self.writer.take() {
-            stop.store(true, Ordering::Relaxed);
-            let _ = writer.join();
-        }
-    }
-}
-
+#[cfg(target_os = "linux")]
 #[test]
 fn a_file_that_never_settles_is_unstable_and_carries_its_previous_version_forward() {
     let fixture = Fixture::new();
-    let policy = Busy::policy();
+    let policy = busy_policy();
 
-    let busy = Busy::start(&fixture);
+    make_busy(&fixture);
     let first = fixture.capture(&policy, MOMENT);
-    drop(busy);
 
     assert_eq!(
         first.incomplete,
@@ -460,9 +421,8 @@ fn a_file_that_never_settles_is_unstable_and_carries_its_previous_version_forwar
     assert!(settled.incomplete.is_empty());
     assert_eq!(fixture.sidecar(), None, "the record goes once it is read");
 
-    let busy = Busy::start(&fixture);
+    make_busy(&fixture);
     let third = fixture.capture(&policy, MOMENT + 120);
-    drop(busy);
 
     assert_eq!(third.incomplete.len(), 1);
     assert_eq!(
@@ -558,12 +518,12 @@ fn entries_list_withheld_paths_with_their_reasons_and_never_the_sidecar() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn an_unstable_path_is_listed_as_omitted_or_marked_where_its_previous_version_is_kept() {
     let fixture = Fixture::new();
-    let busy = Busy::start(&fixture);
-    let captured = fixture.capture(&Busy::policy(), MOMENT);
-    drop(busy);
+    make_busy(&fixture);
+    let captured = fixture.capture(&busy_policy(), MOMENT);
 
     let listing = fixture
         .store
