@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use keepster_api::Problem;
+use keepster_api::{ErrorCode, Problem};
 
 /// A failure on its way to a client, as RFC 9457 Problem Details.
 ///
@@ -21,14 +21,14 @@ impl ProblemResponse {
     ///
     /// `code` is the stable part of the contract and `detail` is not, so the two are given separately
     /// rather than assembled from one string.
-    pub fn new(status: StatusCode, code: &str, detail: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, code: ErrorCode, detail: impl Into<String>) -> Self {
         Self {
             status,
             problem: Problem {
                 title: status.canonical_reason().unwrap_or("Error").to_owned(),
                 status: status.as_u16(),
                 detail: detail.into(),
-                code: code.to_owned(),
+                code: code.as_str().to_owned(),
                 details: BTreeMap::new(),
             },
         }

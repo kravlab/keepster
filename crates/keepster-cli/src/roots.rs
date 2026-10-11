@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{Problem, RegisterRoot, Root};
+use keepster_api::{ErrorCode, Problem, RegisterRoot, Root};
 use serde::de::DeserializeOwned;
 
 use crate::client::{ClientError, DaemonClient, Response};
@@ -112,21 +112,44 @@ pub(crate) fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, 
 /// falls back to its status, which is exactly what ADR 0005 requires of any client — the set is open and
 /// grows inside `/v1`.
 fn exit_code_for(problem: Option<&Problem>, status: u16) -> u8 {
-    match problem.map(|problem| problem.code.as_str()) {
-        Some("root_not_found" | "snapshot_not_found" | "path_not_found") => exit::NOT_FOUND,
-        Some("root_overlaps" | "store_too_new") => exit::STATE_CONFLICT,
-        // Asking for the content of a directory, or the entries of a file, is a mistake in what was
-        // asked rather than a state anything is in.
-        Some(
-            "path_invalid" | "limit_invalid" | "cursor_invalid" | "moment_invalid"
-            | "depth_invalid" | "not_a_file" | "not_a_directory",
-        ) => exit::USAGE,
-        _ => match status {
+    match problem.and_then(|problem| ErrorCode::parse(&problem.code)) {
+        Some(code) => exit_code_for_known(code),
+        None => match status {
             404 => exit::NOT_FOUND,
             409 => exit::STATE_CONFLICT,
             400 => exit::USAGE,
             _ => exit::OTHER,
         },
+    }
+}
+
+/// The exit code each known code earns.
+///
+/// Exhaustive and without a wildcard on purpose (ADR 0005): a code added to `keepster-api` fails to
+/// compile here until someone decides what a script should see, rather than silently becoming `1`.
+fn exit_code_for_known(code: ErrorCode) -> u8 {
+    match code {
+        ErrorCode::RootNotFound | ErrorCode::SnapshotNotFound | ErrorCode::PathNotFound => {
+            exit::NOT_FOUND
+        }
+        ErrorCode::RootOverlaps | ErrorCode::RootUnavailable => exit::STATE_CONFLICT,
+        // Asking for the content of a directory, or the entries of a file, is a mistake in what was
+        // asked rather than a state anything is in.
+        ErrorCode::PathInvalid
+        | ErrorCode::LimitInvalid
+        | ErrorCode::CursorInvalid
+        | ErrorCode::MomentInvalid
+        | ErrorCode::DepthInvalid
+        | ErrorCode::NotAFile
+        | ErrorCode::NotADirectory
+        | ErrorCode::PurgeInvalid => exit::USAGE,
+        // The CLI builds every body from the contract types, so a refused one is this build's fault and
+        // nothing the person typed.
+        ErrorCode::BodyInvalid
+        | ErrorCode::RegistryFailed
+        | ErrorCode::CaptureFailed
+        | ErrorCode::ClockUnusable
+        | ErrorCode::HistoryUnreadable => exit::OTHER,
     }
 }
 
@@ -220,5 +243,76 @@ pub async fn move_root(args: &MoveArgs, control_path: &Path) -> u8 {
     match answered::<Root>(answer) {
         Ok(moved) => print_roots(std::slice::from_ref(&moved)),
         Err(code) => code,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use keepster_api::Problem;
+
+    use super::exit_code_for;
+    use crate::exit;
+
+    fn problem(code: &str) -> Problem {
+        Problem {
+            title: "Title".to_owned(),
+            status: 0,
+            detail: "detail".to_owned(),
+            code: code.to_owned(),
+            details: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_known_code_decides_the_exit_code_whatever_the_status() {
+        // Asking for the entries of a file is a mistake in what was asked, though the daemon answers 409.
+        assert_eq!(
+            exit_code_for(Some(&problem("not_a_directory")), 409),
+            exit::USAGE
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("snapshot_not_found")), 404),
+            exit::NOT_FOUND
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("root_overlaps")), 409),
+            exit::STATE_CONFLICT
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("root_unavailable")), 409),
+            exit::STATE_CONFLICT
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("depth_invalid")), 400),
+            exit::USAGE
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("history_unreadable")), 500),
+            exit::OTHER
+        );
+    }
+
+    #[test]
+    fn an_unknown_code_is_handled_as_its_http_status() {
+        // ADR 0005: the set grows inside `/v1`, so a newer daemon may send a code this build never saw.
+        assert_eq!(
+            exit_code_for(Some(&problem("from_the_future")), 404),
+            exit::NOT_FOUND
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("from_the_future")), 409),
+            exit::STATE_CONFLICT
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("from_the_future")), 400),
+            exit::USAGE
+        );
+        assert_eq!(
+            exit_code_for(Some(&problem("from_the_future")), 503),
+            exit::OTHER
+        );
+        assert_eq!(exit_code_for(None, 404), exit::NOT_FOUND);
     }
 }

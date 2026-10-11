@@ -1,9 +1,10 @@
 //! The Watched Root registry endpoints: registering, listing, resolving, moving and deregistering.
 
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{RegisterRoot, Root, RootState};
+use keepster_api::{ErrorCode, Problem, RegisterRoot, Root, RootState};
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::RootId;
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
@@ -11,8 +12,18 @@ use keepster_store::{RegistryEntry, RegistryError, RootRecord};
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
 
+/// The `{id}` segment every Root endpoint is addressed by: the extractor and its description at once.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Path)]
+pub(crate) struct RootAddress {
+    /// The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving
+    /// those is the client's convenience, done before the request.
+    pub(crate) id: String,
+}
+
 /// Which Roots to return: all of them, or the one holding a path.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ListQuery {
     /// Resolve this path to the Root that holds it. Absolute, because the daemon's own working
     /// directory means nothing to a client.
@@ -24,6 +35,18 @@ pub(crate) struct ListQuery {
 /// Filtering rather than a second endpoint, and an empty answer rather than a refusal: ticket 07 makes
 /// `?path=` a filter over a collection wherever it appears, so a client renders one list with one code
 /// path and "no Root here" is a value rather than an error.
+#[utoipa::path(
+    get,
+    path = "/v1/roots",
+    operation_id = "list_roots",
+    tag = "roots",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Every registered Root, or the one holding `path`; empty when none does.", body = Vec<Root>),
+        (status = 400, description = "`path` is not absolute.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn list(
     State(state): State<DaemonState>,
     Query(query): Query<ListQuery>,
@@ -42,9 +65,21 @@ pub(crate) async fn list(
 }
 
 /// One Root, addressed by its identity.
+#[utoipa::path(
+    get,
+    path = "/v1/roots/{id}",
+    operation_id = "get_root",
+    tag = "roots",
+    params(RootAddress),
+    responses(
+        (status = 200, description = "The Root.", body = Root),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn show(
     State(state): State<DaemonState>,
-    Path(id): Path<String>,
+    Path(RootAddress { id }): Path<RootAddress>,
 ) -> Result<Json<Root>, ProblemResponse> {
     let id = parse_id(&id)?;
     let registry = state.registry();
@@ -57,10 +92,26 @@ pub(crate) async fn show(
 }
 
 /// Register a directory as a Watched Root.
+#[utoipa::path(
+    post,
+    path = "/v1/roots",
+    operation_id = "register_root",
+    tag = "roots",
+    request_body = RegisterRoot,
+    responses(
+        (status = 201, description = "The directory is now a Watched Root.", body = Root),
+        (status = 400, description = "The path is not a directory, or cannot be resolved; or the body is not JSON.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The directory overlaps a Root that is already registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be written.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn register(
     State(state): State<DaemonState>,
-    Json(request): Json<RegisterRoot>,
+    body: Result<Json<RegisterRoot>, JsonRejection>,
 ) -> Result<impl IntoResponse, ProblemResponse> {
+    let Json(request) = body.map_err(body_problem)?;
     let registry = state.registry();
     let record =
         roots::register(&registry, now(), request.path.as_ref()).map_err(register_problem)?;
@@ -69,7 +120,8 @@ pub(crate) async fn register(
 }
 
 /// Whether a deregistration also erases the History Store.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct DeleteQuery {
     /// Erase the History Store as well. Off unless asked for.
     #[serde(default)]
@@ -77,11 +129,31 @@ pub(crate) struct DeleteQuery {
 }
 
 /// Deregister a Root, and with `purge=true` erase its History Store.
+#[utoipa::path(
+    delete,
+    path = "/v1/roots/{id}",
+    operation_id = "unwatch_root",
+    tag = "roots",
+    params(RootAddress, DeleteQuery),
+    responses(
+        (status = 204, description = "The Root is no longer watched; its history is kept unless `purge` was asked for."),
+        (status = 400, description = "`purge` is not a boolean.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be written.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn deregister(
     State(state): State<DaemonState>,
-    Path(id): Path<String>,
-    Query(query): Query<DeleteQuery>,
+    Path(RootAddress { id }): Path<RootAddress>,
+    query: Result<Query<DeleteQuery>, QueryRejection>,
 ) -> Result<StatusCode, ProblemResponse> {
+    let Query(query) = query.map_err(|rejection| {
+        ProblemResponse::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::PurgeInvalid,
+            rejection.body_text(),
+        )
+    })?;
     let id = parse_id(&id)?;
     let registry = state.registry();
     roots::deregister(&registry, id, query.purge).map_err(root_problem)?;
@@ -90,11 +162,29 @@ pub(crate) async fn deregister(
 }
 
 /// Record that a Root's directory has moved.
+#[utoipa::path(
+    patch,
+    path = "/v1/roots/{id}",
+    operation_id = "move_root",
+    tag = "roots",
+    params(RootAddress),
+    request_body = RegisterRoot,
+    responses(
+        (status = 200, description = "The Root, at its new path.", body = Root),
+        (status = 400, description = "The new path is not a directory; or the body is not JSON.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The new path overlaps another Root.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be written.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn move_root(
     State(state): State<DaemonState>,
-    Path(id): Path<String>,
-    Json(request): Json<RegisterRoot>,
+    Path(RootAddress { id }): Path<RootAddress>,
+    body: Result<Json<RegisterRoot>, JsonRejection>,
 ) -> Result<Json<Root>, ProblemResponse> {
+    let Json(request) = body.map_err(body_problem)?;
     let id = parse_id(&id)?;
     let registry = state.registry();
     let record = roots::move_root(&registry, id, request.path.as_ref()).map_err(root_problem)?;
@@ -128,8 +218,12 @@ pub(crate) fn record(
         .ok_or_else(|| not_found(&id.to_string()))?;
 
     entry.record.map_err(|error| {
-        ProblemResponse::new(StatusCode::CONFLICT, "root_unavailable", error.to_string())
-            .with_detail("root", id.to_string())
+        ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RootUnavailable,
+            error.to_string(),
+        )
+        .with_detail("root", id.to_string())
     })
 }
 
@@ -145,10 +239,23 @@ pub(crate) fn parse_id(segment: &str) -> Result<RootId, ProblemResponse> {
 fn not_found(segment: &str) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::NOT_FOUND,
-        "root_not_found",
+        ErrorCode::RootNotFound,
         format!("no Root `{segment}` is registered"),
     )
     .with_detail("root", segment)
+}
+
+/// A body the framework could not turn into the request type, in the one shape every endpoint uses.
+///
+/// The status stays the framework's — `415` for a body that is not declared as JSON, `400` for one that
+/// is not JSON, `422` for JSON of the wrong shape — and the code is one, because a client reacts to all
+/// three the same way: by fixing what it sends.
+fn body_problem(rejection: JsonRejection) -> ProblemResponse {
+    ProblemResponse::new(
+        rejection.status(),
+        ErrorCode::BodyInvalid,
+        rejection.body_text(),
+    )
 }
 
 /// A `path=` query parameter, which must be absolute.
@@ -163,7 +270,7 @@ fn absolute_query_path(path: &str) -> Result<std::path::PathBuf, ProblemResponse
     } else {
         Err(ProblemResponse::new(
             StatusCode::BAD_REQUEST,
-            "path_invalid",
+            ErrorCode::PathInvalid,
             "a `path` query parameter must be absolute",
         )
         .with_detail("path", path.to_string_lossy()))
@@ -237,15 +344,19 @@ fn unreadable_path(error: &RegistryError) -> String {
 fn register_problem(error: RegisterError) -> ProblemResponse {
     match error {
         RegisterError::NotADirectory { ref path, .. }
-        | RegisterError::Unresolvable { ref path, .. } => {
-            ProblemResponse::new(StatusCode::BAD_REQUEST, "path_invalid", error.to_string())
-                .with_detail("path", path.to_string_lossy())
-        }
-        RegisterError::Overlaps { ref path, existing } => {
-            ProblemResponse::new(StatusCode::CONFLICT, "root_overlaps", error.to_string())
-                .with_detail("path", path.to_string_lossy())
-                .with_detail("root", existing.to_string())
-        }
+        | RegisterError::Unresolvable { ref path, .. } => ProblemResponse::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::PathInvalid,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy()),
+        RegisterError::Overlaps { ref path, existing } => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RootOverlaps,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy())
+        .with_detail("root", existing.to_string()),
         RegisterError::Registry(error) => registry_problem(error),
     }
 }
@@ -253,15 +364,19 @@ fn register_problem(error: RegisterError) -> ProblemResponse {
 fn root_problem(error: RootError) -> ProblemResponse {
     match error {
         RootError::NotFound { id } => not_found(&id.to_string()),
-        RootError::Overlaps { ref path, existing } => {
-            ProblemResponse::new(StatusCode::CONFLICT, "root_overlaps", error.to_string())
-                .with_detail("path", path.to_string_lossy())
-                .with_detail("root", existing.to_string())
-        }
-        RootError::NotADirectory { ref path, .. } => {
-            ProblemResponse::new(StatusCode::BAD_REQUEST, "path_invalid", error.to_string())
-                .with_detail("path", path.to_string_lossy())
-        }
+        RootError::Overlaps { ref path, existing } => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RootOverlaps,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy())
+        .with_detail("root", existing.to_string()),
+        RootError::NotADirectory { ref path, .. } => ProblemResponse::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::PathInvalid,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy()),
         RootError::Registry(error) => registry_problem(error),
     }
 }
@@ -271,7 +386,7 @@ fn root_problem(error: RootError) -> ProblemResponse {
 fn registry_problem(error: RegistryError) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "registry_failed",
+        ErrorCode::RegistryFailed,
         error.to_string(),
     )
 }

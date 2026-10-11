@@ -7,6 +7,7 @@
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use keepster_api::ErrorCode;
 use keepster_app::snapshots::{self, StoreLocation};
 use keepster_core::{RootPath, SnapshotId};
 use keepster_store::StoreError;
@@ -179,7 +180,7 @@ pub(crate) async fn serve(
         .map_err(|_| {
             ProblemResponse::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "history_unreadable",
+                ErrorCode::HistoryUnreadable,
                 "the version could not be read",
             )
         })?

@@ -5,7 +5,12 @@
 //! pipe on Windows — and, from ticket 60, on a loopback listener for the browser. Everything below
 //! this crate takes the time it needs as a parameter.
 
+// A contract mechanism, not a style choice: a handler that is never passed to `routes!` is neither
+// routed nor documented, and this is what turns that silent omission into a build failure (ticket 40).
+#![deny(dead_code)]
+
 mod content;
+mod openapi;
 mod problem;
 mod roots;
 mod snapshots;
@@ -19,11 +24,15 @@ use std::time::Instant;
 use keepster_core::RootId;
 
 use axum::extract::State;
-use axum::{Json, Router, routing::get};
-use keepster_api::{API_VERSION, DaemonStatus, Reported, Status, VersionInfo};
+use axum::{Json, Router};
+use keepster_api::{API_VERSION, DaemonStatus, Problem, Reported, Status, VersionInfo};
 use keepster_store::Registry;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
+
+pub use openapi::openapi_json;
 
 /// How to run a daemon instance.
 #[derive(Debug, Clone)]
@@ -199,35 +208,52 @@ impl DaemonState {
 }
 
 fn router(state: DaemonState) -> Router {
-    Router::new()
-        .route("/v1/version", get(version))
-        .route("/v1/status", get(status))
-        .route("/v1/roots", get(roots::list).post(roots::register))
-        .route(
-            "/v1/roots/{id}/snapshots",
-            get(snapshots::list).post(snapshots::create),
-        )
-        .route(
-            "/v1/roots/{id}/snapshots/{snapshot}/entries",
-            get(snapshots::entries),
-        )
-        .route(
-            "/v1/roots/{id}/snapshots/{snapshot}/content",
-            get(snapshots::content),
-        )
-        .route(
-            "/v1/roots/{id}",
-            get(roots::show)
-                .delete(roots::deregister)
-                .patch(roots::move_root),
-        )
-        .with_state(state)
+    let (router, _) = api().split_for_parts();
+
+    router.with_state(state)
 }
 
+/// Every route, each with its description.
+///
+/// `routes!` takes the path from the handler's own `#[utoipa::path]` and hands the same string to axum,
+/// so the route and the documented path are one literal: renaming a handler fails to compile, and a
+/// handler left out is dead code. Handlers are grouped by path, because one `routes!` registers one
+/// path.
+fn api() -> OpenApiRouter<DaemonState> {
+    OpenApiRouter::with_openapi(openapi::base())
+        .routes(routes!(openapi::serve))
+        .routes(routes!(version))
+        .routes(routes!(status))
+        .routes(routes!(roots::list, roots::register))
+        .routes(routes!(roots::show, roots::deregister, roots::move_root))
+        .routes(routes!(snapshots::list, snapshots::create))
+        .routes(routes!(snapshots::entries))
+        .routes(routes!(snapshots::content))
+}
+
+/// Which build and which API this daemon is.
+#[utoipa::path(
+    get,
+    path = "/v1/version",
+    operation_id = "get_version",
+    tag = "contract",
+    responses((status = 200, description = "The build and the API it speaks. Served before authentication.", body = VersionInfo)),
+)]
 async fn version() -> Json<VersionInfo> {
     Json(version_info())
 }
 
+/// The whole health surface.
+#[utoipa::path(
+    get,
+    path = "/v1/status",
+    operation_id = "get_status",
+    tag = "status",
+    responses(
+        (status = 200, description = "The daemon and every Watched Root. `keepster status --json` prints exactly this.", body = Status),
+        (status = 500, description = "The Registry could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 async fn status(
     State(state): State<DaemonState>,
 ) -> Result<Json<Status>, problem::ProblemResponse> {

@@ -9,5 +9,12 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Schema generation for the `/v1` document (ticket 40). Default-off, because the orphan rule forces the
+# schemas into the crate that owns the types, and nothing but the daemon has a use for them: the CLI and
+# the tray parse the same types without it.
+openapi = ["dep:utoipa"]
+
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
+utoipa = { version = "5.5.0", default-features = false, features = ["macros"], optional = true }

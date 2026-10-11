@@ -1,0 +1,1251 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Keepster",
+    "description": "The local HTTP API of the Keepster daemon.\n\nEverything under `/v1` is additive-only: a field, an endpoint or an error code may be added inside `/v1`, and anything else waits for `/v2`. A client must therefore ignore a field it does not know.\n\nEvery failure is an RFC 9457 problem document (`application/problem+json`) with a `code` extension. `code` is the stable part a client branches on; the prose is not. The set of codes is open: it grows inside `/v1`, so a client must treat a code it does not know as its HTTP status.",
+    "version": "1"
+  },
+  "paths": {
+    "/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "contract"
+        ],
+        "summary": "This document.",
+        "operationId": "get_openapi_document",
+        "responses": {
+          "200": {
+            "description": "This document, as OpenAPI 3.1 JSON.",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots": {
+      "get": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Every registered Root, in registration order — or, with `path`, the one that holds it.",
+        "description": "Filtering rather than a second endpoint, and an empty answer rather than a refusal: ticket 07 makes\n`?path=` a filter over a collection wherever it appears, so a client renders one list with one code\npath and \"no Root here\" is a value rather than an error.",
+        "operationId": "list_roots",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Resolve this path to the Root that holds it. Absolute, because the daemon's own working\ndirectory means nothing to a client.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every registered Root, or the one holding `path`; empty when none does.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Root"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`path` is not absolute.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Register a directory as a Watched Root.",
+        "operationId": "register_root",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRoot"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The directory is now a Watched Root.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Root"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The path is not a directory, or cannot be resolved; or the body is not JSON.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The directory overlaps a Root that is already registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not declared as `application/json`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is JSON of the wrong shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be written.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}": {
+      "get": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "One Root, addressed by its identity.",
+        "operationId": "get_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Root.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Root"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Deregister a Root, and with `purge=true` erase its History Store.",
+        "operationId": "unwatch_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "purge",
+            "in": "query",
+            "description": "Erase the History Store as well. Off unless asked for.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The Root is no longer watched; its history is kept unless `purge` was asked for."
+          },
+          "400": {
+            "description": "`purge` is not a boolean.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be written.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Record that a Root's directory has moved.",
+        "operationId": "move_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRoot"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The Root, at its new path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Root"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The new path is not a directory; or the body is not JSON.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The new path overlaps another Root.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not declared as `application/json`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is JSON of the wrong shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be written.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "One page of a Root's chronology, newest first — or, with `path`, of the Snapshots that changed it.",
+        "description": "One endpoint for both questions, because they return the same shape and a client would otherwise\nrender one table with two code paths (ticket 07). A Root never captured has an empty chronology.",
+        "operationId": "list_snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Only the Snapshots that changed this Root-relative path.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only Snapshots taken at or before this RFC 3339 moment.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Only Snapshots taken strictly after this RFC 3339 moment.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many; 100 by default, 1000 at most.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the chronology, newest first. A Root never captured has an empty one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Timeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Capture the Root's current contents now.",
+        "description": "Ticket 43 adds the Triggers that make this happen by itself; until then a capture is something a\nperson or a script asks for, which is also what lets the write path be exercised end to end.",
+        "operationId": "take_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The Snapshot just taken. It may be incomplete: some files could not be read, and `omitted` names them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable: its directory or its record is missing or unreadable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Snapshot could not be written, or the clock cannot be recorded.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/snapshots/{snapshot}/content": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "One version's raw bytes, with `Content-Length`, `ETag` and `Range` (ticket 07).",
+        "operationId": "read_content",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The file, Root-relative.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "One byte range, as `bytes=first-last`, `bytes=first-` or `bytes=-suffix`. Several ranges, or one that cannot be parsed, are answered with the whole content.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "An `ETag` this API returned for the same version; a match is answered with `304`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version's raw bytes, streamed.",
+            "headers": {
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `bytes`."
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "The size of the version in bytes."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Names the content: equal tags mean equal bytes."
+              }
+            },
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "206": {
+            "description": "The requested range of the version's bytes.",
+            "headers": {
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always `bytes`."
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "The length of the range."
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Which bytes, as `bytes first-last/size`."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Names the whole content, not the range."
+              }
+            },
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "304": {
+            "description": "The client's copy, named by `If-None-Match`, is current.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The tag that matched."
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or the path is not a file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The range lies outside the content. No body.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The content's size, as `bytes */size`."
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/snapshots/{snapshot}/entries": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "The paths a Snapshot holds under a directory.",
+        "description": "Shallow by default, because a 50 000-file tree is expanded lazily in a UI anyway; `infinity` serves\nthe CLI and scripts (ticket 07).",
+        "operationId": "list_entries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The directory to list, Root-relative; the Root itself when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "depth",
+            "in": "query",
+            "description": "`1` for the directory's own children (the default), `infinity` for everything beneath it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The paths the Snapshot holds under the directory, in byte order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Entries"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or the path is not a directory.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "tags": [
+          "status"
+        ],
+        "summary": "The whole health surface.",
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "description": "The daemon and every Watched Root. `keepster status --json` prints exactly this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/version": {
+      "get": {
+        "tags": [
+          "contract"
+        ],
+        "summary": "Which build and which API this daemon is.",
+        "operationId": "get_version",
+        "responses": {
+          "200": {
+            "description": "The build and the API it speaks. Served before authentication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Change": {
+        "type": "string",
+        "description": "How one path differs between a Snapshot and the Snapshot before it.",
+        "enum": [
+          "added",
+          "modified",
+          "deleted"
+        ]
+      },
+      "DaemonStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VersionInfo",
+            "description": "Which build and which API, the same three fields the version handshake returns."
+          },
+          {
+            "type": "object",
+            "required": [
+              "pid",
+              "uptime_seconds",
+              "autostart",
+              "linger",
+              "maintenance"
+            ],
+            "properties": {
+              "autostart": {
+                "$ref": "#/components/schemas/Reported",
+                "description": "Whether autostart is installed. Filled by ticket 61."
+              },
+              "linger": {
+                "$ref": "#/components/schemas/Reported",
+                "description": "Whether coverage survives logout. Filled by ticket 61, and on macOS it reads as unavailable\nbecause a LaunchAgent dies at logout."
+              },
+              "maintenance": {
+                "$ref": "#/components/schemas/Reported",
+                "description": "Whether store maintenance can run at all, which depends on the external `git`. Filled by\nticket 52."
+              },
+              "pid": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The daemon's process id, informational only — the pid file's lock, not its content, is the\nsingle-instance authority (ticket 05).",
+                "minimum": 0
+              },
+              "uptime_seconds": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How long this daemon has been serving, measured monotonically.",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "The daemon's own rows."
+      },
+      "Entries": {
+        "type": "object",
+        "description": "The paths a Snapshot holds under a directory, as `…/entries` serves them.",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "description": "One per path, in byte order of the path."
+          }
+        }
+      },
+      "Entry": {
+        "type": "object",
+        "description": "One path a Snapshot holds.",
+        "required": [
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "binary": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the content is binary by git's rule. A display flag only: binary files are stored as\nthey are (ticket 10). Absent for anything but a file."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntryKind",
+            "description": "What it is."
+          },
+          "mode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its permission bits, as a number (`420` is `0o644`). Absent where nothing is recorded; until\nticket 50 a file carries only the executable bit's distinction, `0o644` or `0o755`.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Where it is, relative to the Root, `/`-separated."
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Its size in bytes. Absent for a directory.",
+            "minimum": 0
+          }
+        }
+      },
+      "EntryKind": {
+        "type": "string",
+        "description": "What kind of thing a Snapshot holds at a path.",
+        "enum": [
+          "file",
+          "dir",
+          "symlink"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "A failure, in the one shape every endpoint uses.\n\nRFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's\nlibrary already parses, and `code` — not the prose of `title` or `detail` — is the stable part\nclients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it\ndoes not know as its HTTP status.",
+        "required": [
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`."
+          },
+          "detail": {
+            "type": "string",
+            "description": "A human-readable explanation of this occurrence."
+          },
+          "details": {
+            "type": "object",
+            "description": "Machine-readable particulars — which path, which id, which limit — so a client composes its own\nmessage instead of parsing ours.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status code, repeated in the body as RFC 9457 prescribes.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "A short, human-readable summary of the problem type."
+          }
+        }
+      },
+      "RegisterRoot": {
+        "type": "object",
+        "description": "What a client sends to register a directory.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The directory to watch. Made absolute by the daemon; not resolved through symlinks."
+          }
+        }
+      },
+      "Reported": {
+        "type": "string",
+        "description": "A row whose owning behaviour has not been built yet.\n\nIt exists so that `status` can say \"not known\" instead of a comfortable default: ticket 05 forbids\nthe tool to look healthier than it is. Each variant below is added by the ticket that can actually\ndetermine the fact, and adding one is an additive change to `/v1`.",
+        "enum": [
+          "unknown"
+        ]
+      },
+      "Root": {
+        "type": "object",
+        "description": "A Watched Root, as both the registry endpoints and `status` serve it.\n\nOne shape, not two: ticket 07 keeps a Root's state on the Root itself rather than duplicating it\ninto a second per-Root health resource, so a client learns a Root's health from the same object it\nlearned the Root from.",
+        "required": [
+          "id",
+          "path",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The Root's identity, which survives renaming or moving its directory."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where its directory is right now. A path is a mutable attribute of the registration."
+          },
+          "state": {
+            "$ref": "#/components/schemas/RootState",
+            "description": "What the daemon can currently promise for it."
+          },
+          "state_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The machine-readable reason behind a state that is not `Watching`, so a client can branch on it\nrather than on prose. Absent while the Root is `Watching`."
+          }
+        }
+      },
+      "RootState": {
+        "type": "string",
+        "description": "What a Root's state means for the insurance it provides.",
+        "enum": [
+          "watching",
+          "degraded",
+          "unavailable"
+        ]
+      },
+      "Snapshot": {
+        "type": "object",
+        "description": "A Snapshot, as the API serves it — from a capture and from the timeline alike.\n\nOne shape for both, so a client renders the Snapshot it just took with the same code as the ones it\npages through. Adding a field is an additive change inside `/v1`.",
+        "required": [
+          "id",
+          "segment",
+          "taken_at",
+          "trigger",
+          "incomplete"
+        ],
+        "properties": {
+          "change": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Change",
+                "description": "With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise."
+              }
+            ]
+          },
+          "changed_paths": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.\n\nAbsent only from the answer to a capture whose count failed after the Snapshot was already\nwritten — the Snapshot exists, and the timeline carries its count once the index has it.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "The Snapshot's stable identity, which outlives the commit that holds it."
+          },
+          "incomplete": {
+            "type": "boolean",
+            "description": "Whether some file that was meant to be captured could not be read.\n\nA Snapshot is taken anyway — an honest partial Snapshot beats no Snapshot (ticket 05) — so every\nshape that returns one has to be able to say that it is not whole."
+          },
+          "omitted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The paths that could not be read, each one the reason this Snapshot is incomplete.\n\nNamed by the answer to a capture. The timeline carries the flag but not the list, which ticket\n48 makes a record of the Snapshot itself and `entries` the place to read it."
+          },
+          "segment": {
+            "type": "string",
+            "description": "The Segment it belongs to, named for the period it falls in."
+          },
+          "taken_at": {
+            "type": "string",
+            "description": "When it was taken, in UTC, as RFC 3339, to the millisecond its identity carries."
+          },
+          "trigger": {
+            "type": "string",
+            "description": "The Trigger that caused it: `manual` for one a person or a script asked for. The set grows\ninside `/v1` as Triggers are added, so a client must accept a name it does not know."
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "description": "The whole health surface, as `GET /v1/status` serves it and as `keepster status --json` prints it\nverbatim.\n\nOne payload, not two: a parallel CLI schema would double the versioning cost and drift at the\nfirst added field (ticket 07). It is built from live daemon state and never from logs, because a\ndead daemon writes nothing and that is indistinguishable from a quiet healthy one (ticket 05).",
+        "required": [
+          "daemon",
+          "roots"
+        ],
+        "properties": {
+          "daemon": {
+            "$ref": "#/components/schemas/DaemonStatus",
+            "description": "The daemon itself."
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Root"
+            },
+            "description": "One entry per Watched Root, in registration order."
+          }
+        }
+      },
+      "Timeline": {
+        "type": "object",
+        "description": "One page of a Root's chronology, as `GET /v1/roots/{id}/snapshots` serves it.\n\nNewest first, and paged by cursor rather than offset: the list grows at one end and erodes at the\nother, so an offset would shift under the reader in both directions (ticket 07).",
+        "required": [
+          "snapshots"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `cursor` that fetches the next, older page; absent on the last page."
+          },
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Snapshot"
+            },
+            "description": "The Snapshots on this page, newest first."
+          }
+        }
+      },
+      "VersionInfo": {
+        "type": "object",
+        "description": "What a client learns before authenticating: which build it is talking to, and which API it speaks.\n\nServed on both listeners and, on the loopback listener, before authentication — otherwise a client\ncannot tell a rejected token from a version mismatch (ticket 07).",
+        "required": [
+          "build_version",
+          "build_hash",
+          "api_version"
+        ],
+        "properties": {
+          "api_version": {
+            "type": "string",
+            "description": "The API version, `v1` for this build."
+          },
+          "build_hash": {
+            "type": "string",
+            "description": "The full commit hash of this build, never abbreviated — an abbreviation's length depends on\nrepository size and clone depth. `unknown` where the build had no repository to read."
+          },
+          "build_version": {
+            "type": "string",
+            "description": "The product version of this build. The only version a user cites; it implies nothing about\nthe API version or the store format, which move independently (ticket 27)."
+          }
+        }
+      }
+    }
+  }
+}

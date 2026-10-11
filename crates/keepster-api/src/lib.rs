@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod code;
+
+pub use code::ErrorCode;
+
 /// Percent-encode a path for the `path=` query parameter, which is how every endpoint takes a path.
 ///
 /// Paths travel as bytes (ticket 10), so this encodes bytes rather than characters: a name that is not
@@ -30,6 +34,7 @@ pub const API_VERSION: &str = "v1";
 /// Served on both listeners and, on the loopback listener, before authentication — otherwise a client
 /// cannot tell a rejected token from a version mismatch (ticket 07).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VersionInfo {
     /// The product version of this build. The only version a user cites; it implies nothing about
     /// the API version or the store format, which move independently (ticket 27).
@@ -48,6 +53,7 @@ pub struct VersionInfo {
 /// first added field (ticket 07). It is built from live daemon state and never from logs, because a
 /// dead daemon writes nothing and that is indistinguishable from a quiet healthy one (ticket 05).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Status {
     /// The daemon itself.
     pub daemon: DaemonStatus,
@@ -57,6 +63,7 @@ pub struct Status {
 
 /// The daemon's own rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DaemonStatus {
     /// Which build and which API, the same three fields the version handshake returns.
     #[serde(flatten)]
@@ -82,6 +89,7 @@ pub struct DaemonStatus {
 /// the tool to look healthier than it is. Each variant below is added by the ticket that can actually
 /// determine the fact, and adding one is an additive change to `/v1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Reported {
     /// This build cannot determine the fact yet.
@@ -94,6 +102,7 @@ pub enum Reported {
 /// into a second per-Root health resource, so a client learns a Root's health from the same object it
 /// learned the Root from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Root {
     /// The Root's identity, which survives renaming or moving its directory.
     pub id: String,
@@ -108,6 +117,7 @@ pub struct Root {
 
 /// What a client sends to register a directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RegisterRoot {
     /// The directory to watch. Made absolute by the daemon; not resolved through symlinks.
     pub path: String,
@@ -118,6 +128,7 @@ pub struct RegisterRoot {
 /// One shape for both, so a client renders the Snapshot it just took with the same code as the ones it
 /// pages through. Adding a field is an additive change inside `/v1`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Snapshot {
     /// The Snapshot's stable identity, which outlives the commit that holds it.
     pub id: String,
@@ -152,6 +163,7 @@ pub struct Snapshot {
 
 /// How one path differs between a Snapshot and the Snapshot before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Change {
     /// The path holds content here and held none before.
@@ -167,6 +179,7 @@ pub enum Change {
 /// Newest first, and paged by cursor rather than offset: the list grows at one end and erodes at the
 /// other, so an offset would shift under the reader in both directions (ticket 07).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Timeline {
     /// The Snapshots on this page, newest first.
     pub snapshots: Vec<Snapshot>,
@@ -177,6 +190,7 @@ pub struct Timeline {
 
 /// The paths a Snapshot holds under a directory, as `…/entries` serves them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Entries {
     /// One per path, in byte order of the path.
     pub entries: Vec<Entry>,
@@ -184,6 +198,7 @@ pub struct Entries {
 
 /// One path a Snapshot holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Entry {
     /// Where it is, relative to the Root, `/`-separated.
     pub path: String,
@@ -204,6 +219,7 @@ pub struct Entry {
 
 /// What kind of thing a Snapshot holds at a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     /// A regular file.
@@ -221,6 +237,7 @@ pub enum EntryKind {
 /// clients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it
 /// does not know as its HTTP status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Problem {
     /// A short, human-readable summary of the problem type.
     pub title: String,
@@ -229,6 +246,10 @@ pub struct Problem {
     /// A human-readable explanation of this occurrence.
     pub detail: String,
     /// The stable machine-readable code. Contract; the prose above is not.
+    ///
+    /// A string rather than an [`ErrorCode`], because the set is open: a code this build does not know
+    /// must still parse, so that a client can fall back to `status` (ADR 0005).
+    #[cfg_attr(feature = "openapi", schema(schema_with = code::code_schema))]
     pub code: String,
     /// Machine-readable particulars — which path, which id, which limit — so a client composes its own
     /// message instead of parsing ours.
@@ -238,6 +259,7 @@ pub struct Problem {
 
 /// What a Root's state means for the insurance it provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RootState {
     /// Captured as promised.

@@ -4,14 +4,24 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{Change, Entries, Entry, EntryKind, Snapshot, Timeline};
+use keepster_api::{Change, Entries, Entry, EntryKind, ErrorCode, Problem, Snapshot, Timeline};
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
 use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
 use keepster_store::{CapturedSnapshot, Depth, SnapshotSummary, StoreError, TimelineQuery};
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
-use crate::roots;
+use crate::roots::{self, RootAddress};
+
+/// The `{id}` and `{snapshot}` segments a Snapshot is addressed by.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Path)]
+pub(crate) struct SnapshotAddress {
+    /// The Root's identity, in its canonical form.
+    id: String,
+    /// The Snapshot's identity, as the timeline returned it.
+    snapshot: String,
+}
 
 /// How many Snapshots a timeline page holds when the client does not say (ticket 07).
 const DEFAULT_LIMIT: usize = 100;
@@ -23,9 +33,22 @@ const MAX_LIMIT: usize = 1_000;
 ///
 /// Ticket 43 adds the Triggers that make this happen by itself; until then a capture is something a
 /// person or a script asks for, which is also what lets the write path be exercised end to end.
+#[utoipa::path(
+    post,
+    path = "/v1/roots/{id}/snapshots",
+    operation_id = "take_snapshot",
+    tag = "snapshots",
+    params(RootAddress),
+    responses(
+        (status = 201, description = "The Snapshot just taken. It may be incomplete: some files could not be read, and `omitted` names them.", body = Snapshot),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable: its directory or its record is missing or unreadable.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Snapshot could not be written, or the clock cannot be recorded.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn create(
     State(state): State<DaemonState>,
-    Path(id): Path<String>,
+    Path(RootAddress { id }): Path<RootAddress>,
 ) -> Result<impl IntoResponse, ProblemResponse> {
     let id = roots::parse_id(&id)?;
     let now = roots::now();
@@ -35,7 +58,7 @@ pub(crate) async fn create(
     jiff::Timestamp::try_from(now).map_err(|_| {
         ProblemResponse::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "clock_unusable",
+            ErrorCode::ClockUnusable,
             "the system clock is outside the range a Snapshot can record",
         )
     })?;
@@ -72,15 +95,19 @@ pub(crate) async fn create(
 
 /// Which part of a Root's chronology to list. Every field is text, so a malformed value is answered
 /// with a Problem naming it rather than with a framework's own refusal.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct TimelineParameters {
     /// Only the Snapshots that changed this Root-relative path.
     path: Option<String>,
     /// Only Snapshots taken at or before this RFC 3339 moment.
+    #[param(format = DateTime)]
     before: Option<String>,
     /// Only Snapshots taken strictly after this RFC 3339 moment.
+    #[param(format = DateTime)]
     after: Option<String>,
     /// At most this many; 100 by default, 1000 at most.
+    #[param(value_type = Option<u32>, minimum = 1)]
     limit: Option<String>,
     /// The `next_cursor` of the previous page.
     cursor: Option<String>,
@@ -90,9 +117,23 @@ pub(crate) struct TimelineParameters {
 ///
 /// One endpoint for both questions, because they return the same shape and a client would otherwise
 /// render one table with two code paths (ticket 07). A Root never captured has an empty chronology.
+#[utoipa::path(
+    get,
+    path = "/v1/roots/{id}/snapshots",
+    operation_id = "list_snapshots",
+    tag = "snapshots",
+    params(RootAddress, TimelineParameters),
+    responses(
+        (status = 200, description = "One page of the chronology, newest first. A Root never captured has an empty one.", body = Timeline),
+        (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The history could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn list(
     State(state): State<DaemonState>,
-    Path(id): Path<String>,
+    Path(RootAddress { id }): Path<RootAddress>,
     Query(parameters): Query<TimelineParameters>,
 ) -> Result<Json<Timeline>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
@@ -104,7 +145,7 @@ pub(crate) async fn list(
             Ok(0) | Err(_) => {
                 return Err(ProblemResponse::new(
                     StatusCode::BAD_REQUEST,
-                    "limit_invalid",
+                    ErrorCode::LimitInvalid,
                     "`limit` must be a positive whole number",
                 )
                 .with_detail("limit", text));
@@ -121,7 +162,7 @@ pub(crate) async fn list(
             text.parse::<SnapshotId>().map_err(|_| {
                 ProblemResponse::new(
                     StatusCode::BAD_REQUEST,
-                    "cursor_invalid",
+                    ErrorCode::CursorInvalid,
                     "`cursor` must be a `next_cursor` this API returned",
                 )
                 .with_detail("cursor", text)
@@ -168,7 +209,8 @@ pub(crate) async fn list(
 }
 
 /// Where and how deep to list a Snapshot's entries.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct EntriesParameters {
     /// The directory to list, Root-relative; the Root itself when absent.
     path: Option<String>,
@@ -180,9 +222,23 @@ pub(crate) struct EntriesParameters {
 ///
 /// Shallow by default, because a 50 000-file tree is expanded lazily in a UI anyway; `infinity` serves
 /// the CLI and scripts (ticket 07).
+#[utoipa::path(
+    get,
+    path = "/v1/roots/{id}/snapshots/{snapshot}/entries",
+    operation_id = "list_entries",
+    tag = "snapshots",
+    params(SnapshotAddress, EntriesParameters),
+    responses(
+        (status = 200, description = "The paths the Snapshot holds under the directory, in byte order.", body = Entries),
+        (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root, Snapshot or path.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or the path is not a directory.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The history could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn entries(
     State(state): State<DaemonState>,
-    Path((id, snapshot)): Path<(String, String)>,
+    Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
     Query(parameters): Query<EntriesParameters>,
 ) -> Result<Json<Entries>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
@@ -194,7 +250,7 @@ pub(crate) async fn entries(
         Some(other) => {
             return Err(ProblemResponse::new(
                 StatusCode::BAD_REQUEST,
-                "depth_invalid",
+                ErrorCode::DepthInvalid,
                 "`depth` must be `1` or `infinity`",
             )
             .with_detail("depth", other));
@@ -223,16 +279,52 @@ pub(crate) async fn entries(
 }
 
 /// Which version's bytes to read.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ContentParameters {
     /// The file, Root-relative.
     path: Option<String>,
 }
 
 /// One version's raw bytes, with `Content-Length`, `ETag` and `Range` (ticket 07).
+#[utoipa::path(
+    get,
+    path = "/v1/roots/{id}/snapshots/{snapshot}/content",
+    operation_id = "read_content",
+    tag = "snapshots",
+    params(
+        SnapshotAddress,
+        ContentParameters,
+        ("Range" = Option<String>, Header, description = "One byte range, as `bytes=first-last`, `bytes=first-` or `bytes=-suffix`. Several ranges, or one that cannot be parsed, are answered with the whole content."),
+        ("If-None-Match" = Option<String>, Header, description = "An `ETag` this API returned for the same version; a match is answered with `304`."),
+    ),
+    responses(
+        (status = 200, description = "The version's raw bytes, streamed.", content_type = "application/octet-stream", headers(
+            ("Content-Length" = u64, description = "The size of the version in bytes."),
+            ("ETag" = String, description = "Names the content: equal tags mean equal bytes."),
+            ("Accept-Ranges" = String, description = "Always `bytes`."),
+        )),
+        (status = 206, description = "The requested range of the version's bytes.", content_type = "application/octet-stream", headers(
+            ("Content-Length" = u64, description = "The length of the range."),
+            ("Content-Range" = String, description = "Which bytes, as `bytes first-last/size`."),
+            ("ETag" = String, description = "Names the whole content, not the range."),
+            ("Accept-Ranges" = String, description = "Always `bytes`."),
+        )),
+        (status = 304, description = "The client's copy, named by `If-None-Match`, is current.", headers(
+            ("ETag" = String, description = "The tag that matched."),
+        )),
+        (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root, Snapshot or path.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or the path is not a file.", body = Problem, content_type = "application/problem+json"),
+        (status = 416, description = "The range lies outside the content. No body.", headers(
+            ("Content-Range" = String, description = "The content's size, as `bytes */size`."),
+        )),
+        (status = 500, description = "The history could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
 pub(crate) async fn content(
     State(state): State<DaemonState>,
-    Path((id, snapshot)): Path<(String, String)>,
+    Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
     Query(parameters): Query<ContentParameters>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, ProblemResponse> {
@@ -266,7 +358,7 @@ where
         .map_err(|joined| {
             ProblemResponse::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "history_unreadable",
+                ErrorCode::HistoryUnreadable,
                 joined.to_string(),
             )
         })?
@@ -281,8 +373,12 @@ fn parse_snapshot(segment: &str) -> Result<SnapshotId, ProblemResponse> {
 /// A `path=` parameter in the one form every endpoint takes (ticket 07).
 fn parse_path(text: &str) -> Result<RootPath, ProblemResponse> {
     RootPath::parse(text).map_err(|reason| {
-        ProblemResponse::new(StatusCode::BAD_REQUEST, "path_invalid", reason.to_string())
-            .with_detail("path", text)
+        ProblemResponse::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::PathInvalid,
+            reason.to_string(),
+        )
+        .with_detail("path", text)
     })
 }
 
@@ -293,7 +389,7 @@ fn parse_moment(name: &str, text: &str) -> Result<std::time::SystemTime, Problem
         .map_err(|_| {
             ProblemResponse::new(
                 StatusCode::BAD_REQUEST,
-                "moment_invalid",
+                ErrorCode::MomentInvalid,
                 format!("`{name}` must be an RFC 3339 moment, such as 2026-09-30T14:37:05Z"),
             )
             .with_detail(name, text)
@@ -349,7 +445,7 @@ fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
 fn snapshot_not_found(segment: &str) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::NOT_FOUND,
-        "snapshot_not_found",
+        ErrorCode::SnapshotNotFound,
         format!("no Snapshot `{segment}` is in this Root's history"),
     )
     .with_detail("snapshot", segment)
@@ -359,18 +455,22 @@ fn snapshot_not_found(segment: &str) -> ProblemResponse {
 pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
     match error {
         StoreError::SnapshotNotFound(id) => snapshot_not_found(&id.to_string()),
-        StoreError::PathNotFound(ref path) => {
-            ProblemResponse::new(StatusCode::NOT_FOUND, "path_not_found", error.to_string())
-                .with_detail("path", path.as_str())
-        }
+        StoreError::PathNotFound(ref path) => ProblemResponse::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::PathNotFound,
+            error.to_string(),
+        )
+        .with_detail("path", path.as_str()),
         StoreError::NotAFile(ref path) => {
-            ProblemResponse::new(StatusCode::CONFLICT, "not_a_file", error.to_string())
+            ProblemResponse::new(StatusCode::CONFLICT, ErrorCode::NotAFile, error.to_string())
                 .with_detail("path", path.as_str())
         }
-        StoreError::NotADirectory(ref path) => {
-            ProblemResponse::new(StatusCode::CONFLICT, "not_a_directory", error.to_string())
-                .with_detail("path", path.as_str())
-        }
+        StoreError::NotADirectory(ref path) => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::NotADirectory,
+            error.to_string(),
+        )
+        .with_detail("path", path.as_str()),
         StoreError::Git { .. }
         | StoreError::Index { .. }
         | StoreError::IndexUnusable { .. }
@@ -379,7 +479,7 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
         | StoreError::UnnameableMoment(_)
         | StoreError::Delivery(_) => ProblemResponse::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "history_unreadable",
+            ErrorCode::HistoryUnreadable,
             error.to_string(),
         ),
     }
@@ -387,21 +487,27 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
 
 fn capture_problem(error: CaptureError) -> ProblemResponse {
     match error {
-        CaptureError::NotFound { id } => {
-            ProblemResponse::new(StatusCode::NOT_FOUND, "root_not_found", error.to_string())
-                .with_detail("root", id.to_string())
-        }
-        CaptureError::RootUnavailable { ref path } => {
-            ProblemResponse::new(StatusCode::CONFLICT, "root_unavailable", error.to_string())
-                .with_detail("path", path.to_string_lossy())
-        }
-        CaptureError::Unreadable { id, .. } => {
-            ProblemResponse::new(StatusCode::CONFLICT, "root_unavailable", error.to_string())
-                .with_detail("root", id.to_string())
-        }
+        CaptureError::NotFound { id } => ProblemResponse::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::RootNotFound,
+            error.to_string(),
+        )
+        .with_detail("root", id.to_string()),
+        CaptureError::RootUnavailable { ref path } => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RootUnavailable,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy()),
+        CaptureError::Unreadable { id, .. } => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RootUnavailable,
+            error.to_string(),
+        )
+        .with_detail("root", id.to_string()),
         CaptureError::Registry(_) | CaptureError::Store(_) => ProblemResponse::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "capture_failed",
+            ErrorCode::CaptureFailed,
             error.to_string(),
         ),
     }

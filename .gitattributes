@@ -1,0 +1,3 @@
+# The committed `/v1` document is compared byte for byte with the generated one (ticket 40), so a
+# checkout must never rewrite its line endings — a Windows clone would otherwise fail the drift test.
+/openapi.json text eol=lf

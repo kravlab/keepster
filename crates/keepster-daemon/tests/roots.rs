@@ -258,3 +258,60 @@ async fn moving_a_root_onto_an_overlap_is_refused() {
         "the no-overlap rule holds for a move too, or it is bypassed in two steps"
     );
 }
+
+/// The content type and the `code` of a refusal, which every endpoint answers as a problem document.
+fn refusal(response: &keepster_cli::Response) -> (String, String) {
+    let content_type = response
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let code = serde_json::from_slice::<serde_json::Value>(&response.body)
+        .ok()
+        .and_then(|problem| problem["code"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+
+    (content_type, code)
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_the_one_asked_for_is_refused_as_a_problem() {
+    let daemon = Harness::start().await;
+
+    let response = daemon
+        .post("/v1/roots", &serde_json::json!({ "directory": "/tmp" }))
+        .await;
+
+    assert!(response.status.is_client_error(), "{}", response.status);
+    assert_eq!(
+        refusal(&response),
+        (
+            "application/problem+json".to_owned(),
+            "body_invalid".to_owned()
+        ),
+        "a refusal by the framework is still the one shape every endpoint uses"
+    );
+}
+
+#[tokio::test]
+async fn a_purge_that_is_not_a_boolean_is_refused_as_a_problem() {
+    let daemon = Harness::start().await;
+    let project = daemon.scratch("project");
+    let root = daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": project }))
+        .await;
+    let id = root["id"].as_str().expect("an id");
+
+    let response = daemon.delete(&format!("/v1/roots/{id}?purge=maybe")).await;
+
+    assert_eq!(response.status, 400);
+    assert_eq!(
+        refusal(&response),
+        (
+            "application/problem+json".to_owned(),
+            "purge_invalid".to_owned()
+        )
+    );
+    daemon.get_json(&format!("/v1/roots/{id}")).await;
+}
