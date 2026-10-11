@@ -37,6 +37,13 @@
       "skillPath": "skills/engineering/domain-modeling/SKILL.md",
       "computedHash": "a11713c0ff7870efa3c331b2e273f09116158485246edc89ae5088eefd1b0b48"
     },
+    "frontend-design": {
+      "source": "vercel-labs/open-agents",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/frontend-design/SKILL.md",
+      "computedHash": "9499ab7bccec7baa6b520fe8cdd73268de1721b58f949bb9351e5b51f99f02dc"
+    },
     "git-guardrails-claude-code": {
       "source": "mattpocock/skills",
       "sourceType": "github",
@@ -121,6 +128,12 @@
       "skillPath": "skills/in-progress/retro/SKILL.md",
       "computedHash": "b9bd2e5e0378214bf54d2a293df50490669b845a4c2a71c8f747ce8ab365f53a"
     },
+    "rust-expert": {
+      "source": "BjornMelin/dev-skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-expert/SKILL.md",
+      "computedHash": "0823737696077e5bd9c2e08b9697bd3876d398f1aefa64095ac6d5db60442639"
+    },
     "scaffold-exercises": {
       "source": "mattpocock/skills",
       "sourceType": "github",
@@ -144,6 +157,13 @@
       "sourceType": "github",
       "skillPath": "skills/in-progress/setup-ts-deep-modules/SKILL.md",
       "computedHash": "61508216ede38d8cfa712879197a76f75f4896615dbf7abc3f62571f8f5923cc"
+    },
+    "svelte-code-writer": {
+      "source": "sveltejs/ai-tools",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "packages/opencode/skills/svelte-code-writer/SKILL.md",
+      "computedHash": "6f78193a79906175595ce8e4ca8d726da350eb99035a9544b6553620df5673a1"
     },
     "tdd": {
       "source": "mattpocock/skills",
