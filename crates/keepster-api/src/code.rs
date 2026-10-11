@@ -59,6 +59,7 @@ error_codes! {
     HistoryUnreadable = "history_unreadable": "The Root's history could not be read.",
     BodyInvalid = "body_invalid": "The request body is not the JSON this endpoint takes.",
     PurgeInvalid = "purge_invalid": "`purge` is neither `true` nor `false`.",
+    ConfigInvalid = "config_invalid": "The Root's configuration cannot be read, so nothing is captured on terms it does not state.",
 }
 
 impl ErrorCode {

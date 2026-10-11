@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::{RootId, RootPath, SnapshotId, Trigger};
+use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId, Trigger};
 use keepster_store::{
     CapturedSnapshot, Depth, Entry, HistoryStore, RegistryError, RootRecord, StoreError,
     TimelinePage, TimelineQuery,
@@ -83,6 +83,7 @@ pub fn location(root_dir: &Path) -> StoreLocation {
 pub fn capture(
     root: &RootRecord,
     location: &StoreLocation,
+    policy: &CapturePolicy,
     trigger: Trigger,
     now: SystemTime,
 ) -> Result<CapturedSnapshot, CaptureError> {
@@ -94,7 +95,7 @@ pub fn capture(
 
     let store = HistoryStore::open(&location.store, &location.index)?;
 
-    Ok(store.capture(root.id, &root.path, trigger, now)?)
+    Ok(store.capture(root.id, &root.path, policy, trigger, now)?)
 }
 
 /// Bring a Root's derived index up to date, rebuilding it if it is damaged or missing.

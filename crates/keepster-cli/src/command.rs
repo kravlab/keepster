@@ -50,6 +50,25 @@ pub enum Command {
 
     /// Write one captured version of a file to standard output.
     Cat(CatArgs),
+
+    /// Say whether a path is captured, and which rule at which level decided it.
+    Explain(ExplainArgs),
+}
+
+/// Options of `keepster explain`.
+#[derive(Debug, Args)]
+pub struct ExplainArgs {
+    /// The path, as a path on this machine; it need not exist.
+    pub path: PathBuf,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the path.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print the daemon's answer as JSON, verbatim.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster log`.

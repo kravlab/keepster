@@ -67,6 +67,15 @@ impl RootPath {
         &self.0
     }
 
+    /// Every directory above this path, from the top down, excluding the Root itself and the path.
+    ///
+    /// The order a walk enters them in, which is the order in which an excluded one prunes the rest.
+    pub fn ancestors(&self) -> impl Iterator<Item = RootPath> + '_ {
+        self.0
+            .match_indices('/')
+            .map(|(end, _)| Self(self.0[..end].to_owned()))
+    }
+
     /// The path one component deeper.
     pub fn child(&self, name: &str) -> Self {
         if self.0.is_empty() {

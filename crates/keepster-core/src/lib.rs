@@ -6,12 +6,22 @@
 
 mod identity;
 mod path;
+mod policy;
 mod root;
+mod rules;
 mod segment;
 mod snapshot;
 
 pub use identity::NotAnIdentity;
 pub use path::{InvalidPath, RootPath};
+pub use policy::{
+    CapturePolicy, DEFAULT_MAX_SIZE, Explanation, InvalidSize, SizeRule, Verdict, is_reserved,
+    parse_size,
+};
 pub use root::{RootId, containing, overlapping};
+pub use rules::{
+    Classification, IGNORE_FILE, InvalidPattern, Kind, Level, Rule, RuleOrigin, RuleSet,
+    UnreachableNegation, ignore_file_rules,
+};
 pub use segment::{SegmentName, UnnameableMoment};
 pub use snapshot::{ChangeKind, SnapshotId, Trigger};

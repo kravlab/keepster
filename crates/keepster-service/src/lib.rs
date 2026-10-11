@@ -88,3 +88,41 @@ pub fn default_store_base() -> Option<PathBuf> {
         None
     }
 }
+
+/// Where the user's global configuration lives: one TOML file, the user's own, which travels in nobody's
+/// clone (ticket 04).
+///
+/// The platform's per-user configuration directory, so it sits where the user looks for configuration
+/// and apart from the store, which is data. Returns `None` when that directory cannot be determined; the
+/// daemon then runs on defaults and the user's own `.keepster.toml` files.
+pub fn default_config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        // The XDG specification's directory for user-specific configuration.
+        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+            return Some(PathBuf::from(config_home).join("keepster/config.toml"));
+        }
+
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".config/keepster/config.toml"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home).join("Library/Application Support/Keepster/config.toml")
+        })
+    }
+
+    #[cfg(windows)]
+    {
+        // Roamed, unlike the store: configuration is small and the user's to carry between machines.
+        std::env::var_os("APPDATA")
+            .map(|roaming| PathBuf::from(roaming).join("Keepster/config.toml"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}

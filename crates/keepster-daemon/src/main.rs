@@ -31,7 +31,12 @@ async fn main() -> ExitCode {
                 return ExitCode::from(exit::OTHER);
             };
 
-            run_daemon(control_path, store_base).await
+            run_daemon(
+                control_path,
+                store_base,
+                keepster_service::default_config_path(),
+            )
+            .await
         }
         Command::Status(args) => keepster_cli::status(args, &control_path).await,
         Command::Watch(args) => keepster_cli::watch(args, &control_path).await,
@@ -41,6 +46,7 @@ async fn main() -> ExitCode {
         Command::Snapshot(args) => keepster_cli::snapshot(args, &control_path).await,
         Command::Log(args) => keepster_cli::log(args, &control_path, now()).await,
         Command::Cat(args) => keepster_cli::cat(args, &control_path, now()).await,
+        Command::Explain(args) => keepster_cli::explain(args, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -50,10 +56,15 @@ async fn main() -> ExitCode {
 ///
 /// Ticket 61 turns this into the full stop sequence — drain the capture in flight, then flush every
 /// pending debounce window — and makes the pid file's lock the single-instance authority.
-async fn run_daemon(control_path: PathBuf, store_base: PathBuf) -> u8 {
+async fn run_daemon(
+    control_path: PathBuf,
+    store_base: PathBuf,
+    config_path: Option<PathBuf>,
+) -> u8 {
     let daemon = match keepster_daemon::start(DaemonConfig {
         control_path,
         store_base,
+        config_path,
     })
     .await
     {

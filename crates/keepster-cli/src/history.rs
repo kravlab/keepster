@@ -220,7 +220,7 @@ async fn resolve_snapshot(
 ///
 /// An explicit `--root` wins; otherwise the path decides, and otherwise the working directory — the
 /// same order every Root-scoped command uses (ticket 07).
-async fn located(
+pub(crate) async fn located(
     client: &DaemonClient,
     root: Option<&str>,
     path: Option<&Path>,

@@ -10,6 +10,6 @@ mod registry;
 
 pub use history::{
     CapturedSnapshot, Content, Depth, Entry, EntryKind, HistoryStore, SnapshotSummary, StoreError,
-    TimelinePage, TimelineQuery,
+    TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
 };
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

@@ -150,6 +150,13 @@ pub struct Snapshot {
     /// 48 makes a record of the Snapshot itself and `entries` the place to read it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
+    /// Files present in the Working Tree whose content this Snapshot deliberately does not hold, and
+    /// why. Withholding is policy, not failure, so it does not make a Snapshot incomplete.
+    ///
+    /// Named by the answer to a capture. Ticket 48 makes each one a record of the Snapshot itself, which
+    /// `entries` will then list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withheld: Vec<Withheld>,
     /// How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.
     ///
     /// Absent only from the answer to a capture whose count failed after the Snapshot was already
@@ -159,6 +166,168 @@ pub struct Snapshot {
     /// With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
+}
+
+/// A path a Snapshot holds no content for, on purpose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Withheld {
+    /// Where it is, relative to the Root.
+    pub path: String,
+    /// Why its content was not held: `too_large` in this version.
+    ///
+    /// A string rather than a closed enum, for the reason ADR 0005 gives for error codes: ticket 48
+    /// adds `special_file`, `reserved_name`, `unrepresentable_path` and the rest inside `/v1`, so a
+    /// client must accept a reason it does not know.
+    pub reason: String,
+}
+
+/// Whether one path is captured, and which rule decided it — the answer of `GET …/explain`.
+///
+/// The analogue of `git check-ignore -v`, and the answer to "why wasn't my file saved": it names the
+/// rule a person wrote, at which level and on which line, rather than describing a computation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Explanation {
+    /// The path asked about, relative to the Root.
+    pub path: String,
+    /// Whether a Snapshot taken now would hold its content.
+    pub captured: bool,
+    /// What a capture does with it.
+    pub decision: Decision,
+    /// With `withheld`, why: `too_large`, `reserved_name` (the directory's own `.git`), `special_file`
+    /// (a FIFO, socket or device), or `symlink` (passed over until ticket 49 stores links). An open
+    /// set, as `Withheld::reason` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The rule behind the decision: the exclude rule, the pruning ancestor's exclude rule, the
+    /// denylist entry, the per-pattern cap — or, for a captured path, the include or opt-in that let it
+    /// in. Absent when no rule was involved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<RuleReference>,
+    /// With `pruned`, the excluded ancestor directory that is never entered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruned_by: Option<String>,
+    /// The last of the user's rules matching the path itself, reported even when an ancestor prunes it
+    /// or the denylist refuses it — so the answer can say what that rule would have done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_rule: Option<RuleReference>,
+    /// What is at the path in the Working Tree right now; absent when nothing is. A path need not exist
+    /// to be explained, and one that does not is explained as a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_disk: Option<OnDiskKind>,
+    /// Its size, when it is a file on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// The size cap that applies to it, in bytes.
+    pub max_size: u64,
+    /// Where the scalar cap was set — the built-in default, or a configuration file's `max_size`. A
+    /// per-pattern cap that applies instead is named in `rule`.
+    pub max_size_origin: Origin,
+    /// What the configuration defines but almost certainly does not mean — a negation an excluded
+    /// ancestor makes unreachable, a key a Root's own file may not set. None of them makes the Root
+    /// `Degraded`.
+    pub warnings: Vec<ConfigWarning>,
+}
+
+/// What a capture does with one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    /// It enters the Snapshot.
+    Captured,
+    /// A rule excludes it.
+    Excluded,
+    /// An excluded ancestor directory is never entered, so no rule beneath it is evaluated.
+    Pruned,
+    /// The built-in secret denylist refuses it, and no opt-in in the global configuration admits it.
+    Secret,
+    /// It is there, but its content is not held; `reason` says why.
+    Withheld,
+}
+
+/// What is at a path in the Working Tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OnDiskKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Dir,
+    /// A symbolic link.
+    Symlink,
+    /// A FIFO, socket or device.
+    Special,
+}
+
+/// One rule, named the way a person wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RuleReference {
+    /// The pattern as written, `!` included where it was written.
+    pub pattern: String,
+    /// Whether it excludes or re-includes what it matches.
+    pub effect: RuleEffect,
+    /// Where it was written.
+    #[serde(flatten)]
+    pub origin: Origin,
+}
+
+/// Where a rule or a value was set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Origin {
+    /// The level it was set at.
+    pub level: ConfigLevel,
+    /// The file it was written in, or a description of a built-in value.
+    pub source: String,
+    /// Its line in that file, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+/// The levels configuration is layered in, from the least specific to the most — the provenance enum
+/// of ticket 04, plus the watched directory's own ignore files, which sit beneath everything the user
+/// writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigLevel {
+    /// Built into Keepster.
+    Default,
+    /// A watched directory's own `.gitignore`, honoured only on request.
+    IgnoreFile,
+    /// The global configuration.
+    Global,
+    /// A pattern block of the global configuration.
+    GlobalPattern,
+    /// A Root's own block of the global configuration.
+    GlobalRoot,
+    /// The Root's own `.keepster.toml`.
+    Root,
+}
+
+/// What a rule does to the paths it matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RuleEffect {
+    /// It keeps them out of history.
+    Exclude,
+    /// It lets them back in.
+    Include,
+}
+
+/// Something about the configuration that is defined but almost certainly not what was meant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ConfigWarning {
+    /// What kind of warning: `negation_unreachable` or `key_ignored`. An open set.
+    pub code: String,
+    /// What it means here, for a person.
+    pub message: String,
 }
 
 /// How one path differs between a Snapshot and the Snapshot before it.

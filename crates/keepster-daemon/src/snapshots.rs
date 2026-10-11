@@ -4,13 +4,15 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{Change, Entries, Entry, EntryKind, ErrorCode, Problem, Snapshot, Timeline};
+use keepster_api::{
+    Change, Entries, Entry, EntryKind, ErrorCode, Problem, Snapshot, Timeline, Withheld,
+};
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
 use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
 use keepster_store::{CapturedSnapshot, Depth, SnapshotSummary, StoreError, TimelineQuery};
 
 use crate::DaemonState;
-use crate::problem::ProblemResponse;
+use crate::problem::{ProblemResponse, config_problem};
 use crate::roots::{self, RootAddress};
 
 /// The `{id}` and `{snapshot}` segments a Snapshot is addressed by.
@@ -42,7 +44,7 @@ const MAX_LIMIT: usize = 1_000;
     responses(
         (status = 201, description = "The Snapshot just taken. It may be incomplete: some files could not be read, and `omitted` names them.", body = Snapshot),
         (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "The Root is unavailable: its directory or its record is missing or unreadable.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules.", body = Problem, content_type = "application/problem+json"),
         (status = 500, description = "The Snapshot could not be written, or the clock cannot be recorded.", body = Problem, content_type = "application/problem+json"),
     ),
 )]
@@ -72,6 +74,14 @@ pub(crate) async fn create(
         (entry, snapshots::location(&registry.root_dir(id)))
     };
 
+    // Read before the store is locked, and never applied in part: a configuration that cannot be read
+    // refuses the capture rather than falling back to defaults, which would drop the user's exclude rules
+    // and pull into history exactly what they existed to keep out (ticket 04).
+    let loaded = state.policy(&root.path).map_err(config_problem)?;
+    for warning in &loaded.warnings {
+        tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
+    }
+
     // One capture at a time per store: git documents a corruption risk under concurrent access, and two
     // captures racing would leave one of them unreferenced whatever git did (ticket 06).
     let store = state.store_lock(id);
@@ -79,8 +89,8 @@ pub(crate) async fn create(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let captured =
-        snapshots::capture(&root, &location, Trigger::Manual, now).map_err(capture_problem)?;
+    let captured = snapshots::capture(&root, &location, &loaded.policy, Trigger::Manual, now)
+        .map_err(capture_problem)?;
     if let Err(reason) = &captured.changed_paths {
         tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
     }
@@ -371,7 +381,7 @@ fn parse_snapshot(segment: &str) -> Result<SnapshotId, ProblemResponse> {
 }
 
 /// A `path=` parameter in the one form every endpoint takes (ticket 07).
-fn parse_path(text: &str) -> Result<RootPath, ProblemResponse> {
+pub(crate) fn parse_path(text: &str) -> Result<RootPath, ProblemResponse> {
     RootPath::parse(text).map_err(|reason| {
         ProblemResponse::new(
             StatusCode::BAD_REQUEST,
@@ -419,6 +429,14 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
+        withheld: captured
+            .withheld
+            .iter()
+            .map(|withheld| Withheld {
+                path: withheld.path.as_str().to_owned(),
+                reason: withheld.reason.as_str().to_owned(),
+            })
+            .collect(),
         changed_paths: captured.changed_paths.clone().ok(),
         change: None,
     }
@@ -433,6 +451,7 @@ fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
         trigger: summary.trigger.clone(),
         incomplete: summary.omitted > 0,
         omitted: Vec::new(),
+        withheld: Vec::new(),
         changed_paths: Some(summary.changed_paths),
         change: summary.change.map(|kind| match kind {
             ChangeKind::Added => Change::Added,

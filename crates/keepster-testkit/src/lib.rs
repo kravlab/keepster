@@ -60,10 +60,12 @@ impl Harness {
     async fn start_in(directory: TempDir) -> Self {
         let control_path = directory.path().join("d.sock");
         let store_base = directory.path().join("store");
+        let config_path = directory.path().join("config.toml");
 
         let daemon = keepster_daemon::start(DaemonConfig {
             control_path: control_path.clone(),
             store_base,
+            config_path: Some(config_path),
         })
         .await
         .expect("the daemon binds its control channel");
@@ -86,6 +88,14 @@ impl Harness {
     /// answer is a file on disk rather than an answer from the API.
     pub fn store_dir(&self, root_id: &str) -> PathBuf {
         self.directory.path().join("store").join(root_id)
+    }
+
+    /// Write the global configuration this daemon reads, replacing whatever it held.
+    ///
+    /// The daemon reads it at every capture and every `explain`, so the next request sees it.
+    pub fn write_global_config(&self, content: &[u8]) {
+        std::fs::write(self.directory.path().join("config.toml"), content)
+            .expect("the global configuration");
     }
 
     /// Create a directory beside the daemon's own state, for use as a Watched Root.

@@ -110,6 +110,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/openapi.json",
             "GET /v1/roots",
             "GET /v1/roots/{id}",
+            "GET /v1/roots/{id}/explain",
             "GET /v1/roots/{id}/snapshots",
             "GET /v1/roots/{id}/snapshots/{snapshot}/content",
             "GET /v1/roots/{id}/snapshots/{snapshot}/entries",
@@ -142,6 +143,15 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "Entries",
         "Entry",
         "EntryKind",
+        "Withheld",
+        "Explanation",
+        "Decision",
+        "OnDiskKind",
+        "RuleReference",
+        "RuleEffect",
+        "Origin",
+        "ConfigLevel",
+        "ConfigWarning",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -260,6 +270,7 @@ fn every_operation_has_its_own_stable_name() {
     assert_eq!(
         names,
         [
+            "explain_path",
             "get_openapi_document",
             "get_root",
             "get_status",

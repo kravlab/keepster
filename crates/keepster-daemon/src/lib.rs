@@ -10,6 +10,7 @@
 #![deny(dead_code)]
 
 mod content;
+mod explain;
 mod openapi;
 mod problem;
 mod roots;
@@ -43,6 +44,9 @@ pub struct DaemonConfig {
     /// The directory that holds one subdirectory per Watched Root: its Registry record and, from
     /// ticket 38, its History Store.
     pub store_base: PathBuf,
+    /// The global configuration file, or `None` to run without one. It need not exist: a user who
+    /// configures nothing gets the documented defaults.
+    pub config_path: Option<PathBuf>,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -97,7 +101,11 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     .map_err(io::Error::other)?;
     let listener = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
-    let task = tokio::spawn(serve(listener, router(DaemonState::new(registry)), stop));
+    let task = tokio::spawn(serve(
+        listener,
+        router(DaemonState::new(registry, config.config_path)),
+        stop,
+    ));
 
     Ok(RunningDaemon {
         control_path: config.control_path,
@@ -165,15 +173,30 @@ struct DaemonState {
     /// One lock per History Store, so that a capture and — from ticket 52 — a maintenance pass are
     /// never in the same store at once.
     store_locks: Arc<Mutex<HashMap<RootId, Arc<Mutex<()>>>>>,
+    /// The global configuration file, read at every capture and every `explain` (ticket 42 adds the
+    /// reload that replaces this).
+    config_path: Option<Arc<PathBuf>>,
 }
 
 impl DaemonState {
-    fn new(registry: Registry) -> Self {
+    fn new(registry: Registry, config_path: Option<PathBuf>) -> Self {
         Self {
             started: Instant::now(),
             registry: Arc::new(Mutex::new(registry)),
             store_locks: Arc::new(Mutex::new(HashMap::new())),
+            config_path: config_path.map(Arc::new),
         }
+    }
+
+    /// The capture policy of the Root at `root_path`, read from both configuration levels now.
+    fn policy(
+        &self,
+        root_path: &Path,
+    ) -> Result<keepster_app::config::LoadedPolicy, keepster_app::config::ConfigError> {
+        keepster_app::config::load_policy(
+            self.config_path.as_deref().map(PathBuf::as_path),
+            root_path,
+        )
     }
 
     /// The exclusive lock on one Root's History Store.
@@ -229,6 +252,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::list, snapshots::create))
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
+        .routes(routes!(explain::explain))
 }
 
 /// Which build and which API this daemon is.

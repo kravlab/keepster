@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
+use keepster_core::{CapturePolicy, ChangeKind, RootId, RootPath, SnapshotId, Trigger};
 use keepster_store::{
     CapturedSnapshot, Depth, EntryKind, HistoryStore, StoreError, TimelinePage, TimelineQuery,
 };
@@ -58,7 +58,13 @@ impl Fixture {
     fn capture(&self, epoch_seconds: u64) -> CapturedSnapshot {
         let captured = self
             .store()
-            .capture(self.id, &self.root, Trigger::Manual, at(epoch_seconds))
+            .capture(
+                self.id,
+                &self.root,
+                &CapturePolicy::default(),
+                Trigger::Manual,
+                at(epoch_seconds),
+            )
             .expect("a Snapshot");
         assert_eq!(captured.index_lag, None, "the index kept up");
         captured
@@ -601,7 +607,13 @@ fn an_index_that_cannot_be_opened_costs_the_capture_nothing() {
 
     let captured = fixture
         .store()
-        .capture(fixture.id, &fixture.root, Trigger::Manual, at(MOMENT))
+        .capture(
+            fixture.id,
+            &fixture.root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("the Snapshot is taken anyway");
 
     assert!(captured.index_lag.is_some(), "and the lag is reported");

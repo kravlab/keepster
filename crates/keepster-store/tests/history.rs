@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{RootId, Trigger};
+use keepster_core::{CapturePolicy, RootId, Trigger};
 use keepster_store::HistoryStore;
 
 #[test]
@@ -111,7 +111,13 @@ fn the_first_snapshot_of_a_segment_is_a_parentless_commit_carrying_its_identity(
     let root_id = RootId::generate(at(MOMENT));
 
     let captured = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("a Snapshot");
 
     assert_eq!(
@@ -182,6 +188,7 @@ fn the_roots_own_git_directory_never_enters_history() {
         .capture(
             RootId::generate(at(MOMENT)),
             &root,
+            &CapturePolicy::default(),
             Trigger::Manual,
             at(MOMENT),
         )
@@ -210,11 +217,23 @@ fn a_later_snapshot_in_the_same_hour_chains_onto_the_first() {
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("the first");
     fs::write(root.join("a.txt"), "changed").expect("an edit");
     let second = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT + 60),
+        )
         .expect("the second");
 
     assert_eq!(
@@ -258,10 +277,22 @@ fn capturing_an_unchanged_working_tree_repeats_the_previous_tree() {
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("the first");
     let second = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT + 60),
+        )
         .expect("the second");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -301,6 +332,7 @@ fn an_executable_file_is_recorded_as_one() {
         .capture(
             RootId::generate(at(MOMENT)),
             &root,
+            &CapturePolicy::default(),
             Trigger::Manual,
             at(MOMENT),
         )
@@ -332,11 +364,23 @@ fn a_file_removed_from_the_working_tree_leaves_the_next_snapshot() {
     let root_id = RootId::generate(at(MOMENT));
 
     store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("the first");
     fs::remove_file(root.join("a.txt")).expect("a deletion");
     let second = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT + 60))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT + 60),
+        )
         .expect("the second");
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -371,6 +415,7 @@ fn a_file_beside_a_directory_of_the_same_stem_is_captured() {
         .capture(
             RootId::generate(at(MOMENT)),
             &root,
+            &CapturePolicy::default(),
             Trigger::Manual,
             at(MOMENT),
         )
@@ -406,6 +451,7 @@ fn an_unreadable_file_does_not_cost_the_whole_snapshot() {
         .capture(
             RootId::generate(at(MOMENT)),
             &root,
+            &CapturePolicy::default(),
             Trigger::Manual,
             at(MOMENT),
         )
@@ -447,14 +493,26 @@ fn the_first_snapshot_of_a_new_hour_is_still_based_on_the_previous_one() {
     let root_id = RootId::generate(at(MOMENT));
 
     let first = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT),
+        )
         .expect("the first");
     fs::set_permissions(root.join("a.txt"), fs::Permissions::from_mode(0o000))
         .expect("the file becomes unreadable");
 
     const AN_HOUR: u64 = 3_600;
     let second = store
-        .capture(root_id, &root, Trigger::Manual, at(MOMENT + AN_HOUR))
+        .capture(
+            root_id,
+            &root,
+            &CapturePolicy::default(),
+            Trigger::Manual,
+            at(MOMENT + AN_HOUR),
+        )
         .expect("the second");
 
     assert_ne!(

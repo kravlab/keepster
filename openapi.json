@@ -372,6 +372,78 @@
         }
       }
     },
+    "/v1/roots/{id}/explain": {
+      "get": {
+        "tags": [
+          "rules"
+        ],
+        "summary": "Whether a path is captured, and which rule at which level decided it.",
+        "description": "The answer is computed from the configuration and the Working Tree as they are now — the same\ninputs the next capture reads — so it is the answer to \"would the next Snapshot hold this file\". An\nexcluded ancestor is named as such, because pruning wins over negation and a person reading only\nthe path's own rule would conclude the opposite (ADR 0007).",
+        "operationId": "explain_path",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The path, relative to the Root and `/`-separated. It need not exist.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether the path is captured, and why.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Explanation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The path is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or its configuration cannot be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/snapshots": {
       "get": {
         "tags": [
@@ -533,7 +605,7 @@
             }
           },
           "409": {
-            "description": "The Root is unavailable: its directory or its record is missing or unreadable.",
+            "description": "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -907,6 +979,36 @@
           "deleted"
         ]
       },
+      "ConfigLevel": {
+        "type": "string",
+        "description": "The levels configuration is layered in, from the least specific to the most — the provenance enum\nof ticket 04, plus the watched directory's own ignore files, which sit beneath everything the user\nwrites.",
+        "enum": [
+          "default",
+          "ignore-file",
+          "global",
+          "global-pattern",
+          "global-root",
+          "root"
+        ]
+      },
+      "ConfigWarning": {
+        "type": "object",
+        "description": "Something about the configuration that is defined but almost certainly not what was meant.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "What kind of warning: `negation_unreachable` or `key_ignored`. An open set."
+          },
+          "message": {
+            "type": "string",
+            "description": "What it means here, for a person."
+          }
+        }
+      },
       "DaemonStatus": {
         "allOf": [
           {
@@ -951,6 +1053,17 @@
           }
         ],
         "description": "The daemon's own rows."
+      },
+      "Decision": {
+        "type": "string",
+        "description": "What a capture does with one path.",
+        "enum": [
+          "captured",
+          "excluded",
+          "pruned",
+          "secret",
+          "withheld"
+        ]
       },
       "Entries": {
         "type": "object",
@@ -1020,6 +1133,142 @@
           "symlink"
         ]
       },
+      "Explanation": {
+        "type": "object",
+        "description": "Whether one path is captured, and which rule decided it — the answer of `GET …/explain`.\n\nThe analogue of `git check-ignore -v`, and the answer to \"why wasn't my file saved\": it names the\nrule a person wrote, at which level and on which line, rather than describing a computation.",
+        "required": [
+          "path",
+          "captured",
+          "decision",
+          "max_size",
+          "max_size_origin",
+          "warnings"
+        ],
+        "properties": {
+          "captured": {
+            "type": "boolean",
+            "description": "Whether a Snapshot taken now would hold its content."
+          },
+          "decision": {
+            "$ref": "#/components/schemas/Decision",
+            "description": "What a capture does with it."
+          },
+          "max_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The size cap that applies to it, in bytes.",
+            "minimum": 0
+          },
+          "max_size_origin": {
+            "$ref": "#/components/schemas/Origin",
+            "description": "Where the scalar cap was set — the built-in default, or a configuration file's `max_size`. A\nper-pattern cap that applies instead is named in `rule`."
+          },
+          "on_disk": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OnDiskKind",
+                "description": "What is at the path in the Working Tree right now; absent when nothing is. A path need not exist\nto be explained, and one that does not is explained as a file."
+              }
+            ]
+          },
+          "own_rule": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleReference",
+                "description": "The last of the user's rules matching the path itself, reported even when an ancestor prunes it\nor the denylist refuses it — so the answer can say what that rule would have done."
+              }
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "The path asked about, relative to the Root."
+          },
+          "pruned_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `pruned`, the excluded ancestor directory that is never entered."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `withheld`, why: `too_large`, `reserved_name` (the directory's own `.git`), `special_file`\n(a FIFO, socket or device), or `symlink` (passed over until ticket 49 stores links). An open\nset, as `Withheld::reason` is."
+          },
+          "rule": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuleReference",
+                "description": "The rule behind the decision: the exclude rule, the pruning ancestor's exclude rule, the\ndenylist entry, the per-pattern cap — or, for a captured path, the include or opt-in that let it\nin. Absent when no rule was involved."
+              }
+            ]
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Its size, when it is a file on disk.",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigWarning"
+            },
+            "description": "What the configuration defines but almost certainly does not mean — a negation an excluded\nancestor makes unreachable, a key a Root's own file may not set. None of them makes the Root\n`Degraded`."
+          }
+        }
+      },
+      "OnDiskKind": {
+        "type": "string",
+        "description": "What is at a path in the Working Tree.",
+        "enum": [
+          "file",
+          "dir",
+          "symlink",
+          "special"
+        ]
+      },
+      "Origin": {
+        "type": "object",
+        "description": "Where a rule or a value was set.",
+        "required": [
+          "level",
+          "source"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/ConfigLevel",
+            "description": "The level it was set at."
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its line in that file, where it has one.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "The file it was written in, or a description of a built-in value."
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "A failure, in the one shape every endpoint uses.\n\nRFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's\nlibrary already parses, and `code` — not the prose of `title` or `detail` — is the stable part\nclients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it\ndoes not know as its HTTP status.",
@@ -1032,7 +1281,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state."
           },
           "detail": {
             "type": "string",
@@ -1119,6 +1368,40 @@
           "unavailable"
         ]
       },
+      "RuleEffect": {
+        "type": "string",
+        "description": "What a rule does to the paths it matches.",
+        "enum": [
+          "exclude",
+          "include"
+        ]
+      },
+      "RuleReference": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Origin",
+            "description": "Where it was written."
+          },
+          {
+            "type": "object",
+            "required": [
+              "pattern",
+              "effect"
+            ],
+            "properties": {
+              "effect": {
+                "$ref": "#/components/schemas/RuleEffect",
+                "description": "Whether it excludes or re-includes what it matches."
+              },
+              "pattern": {
+                "type": "string",
+                "description": "The pattern as written, `!` included where it was written."
+              }
+            }
+          }
+        ],
+        "description": "One rule, named the way a person wrote it."
+      },
       "Snapshot": {
         "type": "object",
         "description": "A Snapshot, as the API serves it — from a capture and from the timeline alike.\n\nOne shape for both, so a client renders the Snapshot it just took with the same code as the ones it\npages through. Adding a field is an additive change inside `/v1`.",
@@ -1176,6 +1459,13 @@
           "trigger": {
             "type": "string",
             "description": "The Trigger that caused it: `manual` for one a person or a script asked for. The set grows\ninside `/v1` as Triggers are added, so a client must accept a name it does not know."
+          },
+          "withheld": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Withheld"
+            },
+            "description": "Files present in the Working Tree whose content this Snapshot deliberately does not hold, and\nwhy. Withholding is policy, not failure, so it does not make a Snapshot incomplete.\n\nNamed by the answer to a capture. Ticket 48 makes each one a record of the Snapshot itself, which\n`entries` will then list."
           }
         }
       },
@@ -1243,6 +1533,24 @@
           "build_version": {
             "type": "string",
             "description": "The product version of this build. The only version a user cites; it implies nothing about\nthe API version or the store format, which move independently (ticket 27)."
+          }
+        }
+      },
+      "Withheld": {
+        "type": "object",
+        "description": "A path a Snapshot holds no content for, on purpose.",
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where it is, relative to the Root."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why its content was not held: `too_large` in this version.\n\nA string rather than a closed enum, for the reason ADR 0005 gives for error codes: ticket 48\nadds `special_file`, `reserved_name`, `unrepresentable_path` and the rest inside `/v1`, so a\nclient must accept a reason it does not know."
           }
         }
       }

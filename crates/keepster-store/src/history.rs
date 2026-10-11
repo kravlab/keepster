@@ -16,7 +16,10 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use keepster_core::{ChangeKind, RootId, RootPath, SegmentName, SnapshotId, Trigger};
+use keepster_core::{
+    CapturePolicy, ChangeKind, IGNORE_FILE, RootId, RootPath, SegmentName, SnapshotId, Trigger,
+    Verdict, ignore_file_rules,
+};
 
 use crate::index::{self, Index};
 
@@ -158,6 +161,12 @@ pub struct CapturedSnapshot {
     /// carried-forward entry; the commit records how many there were, and ticket 48 is where each one
     /// becomes a record of the Snapshot itself.
     pub unreadable: Vec<PathBuf>,
+    /// Files present in the Working Tree whose content the Snapshot deliberately does not hold.
+    ///
+    /// Withholding is policy, not failure, so it does not make the Snapshot incomplete; and the path has
+    /// no tree entry at all (ADR 0009). Ticket 48 makes this a record of the Snapshot itself, in the
+    /// sidecar; until then the capture's own answer is where it is named.
+    pub withheld: Vec<WithheldPath>,
     /// How many paths differ from the Snapshot before it, counted exactly as the index counts them —
     /// or why they could not be counted.
     ///
@@ -170,6 +179,31 @@ pub struct CapturedSnapshot {
     /// index fails nothing: it lags, and the next catch-up repairs it. This says so rather than hiding
     /// it, so the caller can report it.
     pub index_lag: Option<String>,
+}
+
+/// A path a Snapshot holds no content for, on purpose, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldPath {
+    /// Where it is, relative to the Root.
+    pub path: RootPath,
+    /// Why its content was not held.
+    pub reason: WithheldReason,
+}
+
+/// Why a Snapshot holds no content for a path that is there (ticket 10). Ticket 48 adds the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithheldReason {
+    /// Over its size cap.
+    TooLarge,
+}
+
+impl WithheldReason {
+    /// The reason as the wire spells it (ticket 10).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TooLarge => "too_large",
+        }
+    }
 }
 
 /// A Snapshot as the timeline lists it.
@@ -461,13 +495,16 @@ impl HistoryStore {
     /// The commit and the ref update come first and the derived index after, in this one function, so
     /// the index can only ever lag git and never name a commit that does not exist (ticket 03).
     ///
-    /// This build captures every regular file it can reach. Include Rules arrive with ticket 41, the
-    /// records that name what a Snapshot deliberately does not hold with ticket 48, and symlinks and
-    /// special files with ticket 49; until then a path that is not a regular file is passed over.
+    /// What enters the Snapshot is what `policy` admits: the user's Include Rules, the secret denylist
+    /// and the size cap, applied during the walk so an excluded directory is never entered (ADR 0007).
+    /// The records that name what a Snapshot deliberately does not hold arrive with ticket 48, and
+    /// symlinks and special files with ticket 49; until then a path that is not a regular file is
+    /// passed over.
     pub fn capture(
         &self,
         root_id: RootId,
         root_path: &Path,
+        policy: &CapturePolicy,
         trigger: Trigger,
         now: SystemTime,
     ) -> Result<CapturedSnapshot, StoreError> {
@@ -497,7 +534,8 @@ impl HistoryStore {
             index.read_tree(tree).map_err(self.failed("read"))?;
         }
 
-        let walked = self.add_working_tree(&mut index, baseline_tree.as_ref(), root_path)?;
+        let walked =
+            self.add_working_tree(&mut index, baseline_tree.as_ref(), root_path, policy)?;
         remove_vanished(&mut index, &walked)?;
 
         let tree_id = index
@@ -550,6 +588,7 @@ impl HistoryStore {
             segment,
             trigger,
             unreadable: walked.unreadable,
+            withheld: walked.withheld,
             changed_paths,
             index_lag: self.catch_up().err().map(|error| error.to_string()),
         })
@@ -788,9 +827,10 @@ impl HistoryStore {
         index: &mut git2::Index,
         baseline: Option<&git2::Tree<'_>>,
         root_path: &Path,
+        policy: &CapturePolicy,
     ) -> Result<Walked, StoreError> {
         let mut walked = Walked::default();
-        collect_files(root_path, &WirePath(String::new()), &mut walked)?;
+        collect_files(root_path, &RootPath::root(), policy, &mut walked)?;
 
         // Entries are applied in the index's own order, which is the byte order of the `/`-joined path —
         // not the component order `Path` compares by, where `sub/b.txt` would precede `sub.txt` while
@@ -960,15 +1000,6 @@ impl HistoryStore {
 struct WirePath(String);
 
 impl WirePath {
-    /// Extend a wire path with one more component.
-    fn child(&self, name: &str) -> Self {
-        if self.0.is_empty() {
-            Self(name.to_owned())
-        } else {
-            Self(format!("{}/{name}", self.0))
-        }
-    }
-
     /// The same path as this platform spells it, for reaching the file itself.
     fn as_filesystem_path(&self) -> PathBuf {
         PathBuf::from(self.0.replace('/', std::path::MAIN_SEPARATOR_STR))
@@ -989,6 +1020,8 @@ struct Walked {
     /// Directories whose contents could not be listed, so whatever the baseline holds beneath them must
     /// be carried forward rather than read as a deletion.
     opaque: Vec<WirePath>,
+    /// Files present but deliberately not held.
+    withheld: Vec<WithheldPath>,
 }
 
 impl Walked {
@@ -998,7 +1031,10 @@ impl Walked {
     /// not be listed survives because its absence was never observed. Everything else is gone, and a
     /// Snapshot that kept it would claim content the Working Tree no longer has.
     fn keeps(&self, path: &str) -> bool {
-        self.paths.iter().any(|walked| walked.as_str() == path)
+        // `paths` is sorted by the time the baseline is compared against it.
+        self.paths
+            .binary_search_by(|walked| walked.as_str().cmp(path))
+            .is_ok()
             || self
                 .opaque
                 .iter()
@@ -1052,27 +1088,25 @@ fn unchanged(
     }
 }
 
-/// The names a path component may not have, whatever the user's rules say.
+/// Collect every file the policy admits under `root`, as paths relative to it.
 ///
-/// `.git` and its platform aliases cannot be stored under their own names at all: libgit2's owner-less
-/// index refuses such a path on every platform. The map also rules out any interaction with a watched
-/// directory's own git, so the directory is not entered either — every git command would otherwise churn
-/// its index and objects into history. Ticket 48 adds the record that says a path was deliberately not
-/// held; this build simply does not hold it.
-fn is_reserved(name: &str) -> bool {
-    let folded = name.to_ascii_lowercase();
-    let trimmed = folded.trim_end_matches(['.', ' ']);
-
-    trimmed == ".git" || trimmed == "git~1"
-}
-
-/// Collect every regular file under `root`, as paths relative to it.
+/// The policy is applied *during* the walk rather than after it, which is what makes "an excluded
+/// directory is never entered" true (ADR 0007): a pruned directory is not listed, so it costs nothing to
+/// walk and nothing beneath it can come back. A reserved name — the directory's own `.git` — is passed
+/// over the same way, whatever any rule says. With ignore files honoured, each directory's `.gitignore`
+/// joins the policy, beneath the user's own rules, for that directory and everything under it.
 ///
 /// A directory that cannot be listed is recorded rather than fatal: one unreadable artefact must not
 /// freeze a Root's history (ticket 05), and whatever the baseline holds beneath it is carried forward,
 /// because its absence was never observed. Only the Root itself being unreadable is an error, since then
 /// there is nothing to capture at all.
-fn collect_files(root: &Path, relative: &WirePath, walked: &mut Walked) -> Result<(), StoreError> {
+fn collect_files(
+    root: &Path,
+    here: &RootPath,
+    policy: &CapturePolicy,
+    walked: &mut Walked,
+) -> Result<(), StoreError> {
+    let relative = WirePath(here.as_str().to_owned());
     let directory = if relative.as_str().is_empty() {
         root.to_path_buf()
     } else {
@@ -1090,10 +1124,27 @@ fn collect_files(root: &Path, relative: &WirePath, walked: &mut Walked) -> Resul
             }
 
             walked.unreadable.push(directory);
-            walked.opaque.push(relative.clone());
+            walked.opaque.push(relative);
 
             return Ok(());
         }
+    };
+
+    let extended;
+    let policy = if policy.honours_ignore_files() {
+        match fs::read_to_string(directory.join(IGNORE_FILE)) {
+            Ok(text) => {
+                let source = here.child(IGNORE_FILE);
+                extended =
+                    policy.with_ignore_rules(ignore_file_rules(here, &text, source.as_str()));
+                &extended
+            }
+            // No ignore file, or one that cannot be read: it belongs to the directory's own tooling, and
+            // its absence changes nothing.
+            Err(_) => policy,
+        }
+    } else {
+        policy
     };
 
     for entry in entries {
@@ -1113,11 +1164,9 @@ fn collect_files(root: &Path, relative: &WirePath, walked: &mut Walked) -> Resul
             continue;
         };
 
-        if is_reserved(name) {
-            continue;
-        }
-
-        let path = relative.child(name);
+        // Built from the walk's own components rather than parsed: a name the filesystem handed over is
+        // one component, whatever characters it holds.
+        let rooted = here.child(name);
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => {
@@ -1127,9 +1176,23 @@ fn collect_files(root: &Path, relative: &WirePath, walked: &mut Walked) -> Resul
         };
 
         if metadata.is_dir() {
-            collect_files(root, &path, walked)?;
+            if policy.directory(&rooted) == Verdict::Captured {
+                collect_files(root, &rooted, policy, walked)?;
+            }
         } else if metadata.is_file() {
-            walked.paths.push(path);
+            match policy.file(&rooted, metadata.len()) {
+                Verdict::Captured => walked.paths.push(WirePath(rooted.as_str().to_owned())),
+                // Present, but without its content: no tree entry at all (ADR 0009), and the capture
+                // names it. Ticket 48 makes the record part of the Snapshot itself.
+                Verdict::TooLarge { .. } => walked.withheld.push(WithheldPath {
+                    path: rooted,
+                    reason: WithheldReason::TooLarge,
+                }),
+                Verdict::Reserved
+                | Verdict::Excluded(_)
+                | Verdict::Pruned { .. }
+                | Verdict::Secret(_) => {}
+            }
         }
         // Anything else — a symlink, a socket, a device — waits for tickets 48 and 49, which decide how
         // a Snapshot says that it holds no content for a path.

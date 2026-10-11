@@ -55,3 +55,13 @@ impl IntoResponse for ProblemResponse {
             .into_response()
     }
 }
+
+/// A configuration that cannot be read, as the one response shape every endpoint uses.
+pub(crate) fn config_problem(error: keepster_app::config::ConfigError) -> ProblemResponse {
+    ProblemResponse::new(
+        StatusCode::CONFLICT,
+        ErrorCode::ConfigInvalid,
+        error.to_string(),
+    )
+    .with_detail("path", error.path.to_string_lossy())
+}
