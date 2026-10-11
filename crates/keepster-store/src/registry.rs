@@ -270,7 +270,10 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
         fs::rename(&temporary, path)?;
 
         // The rename itself needs flushing, or a crash can leave the directory entry unwritten even
-        // though the file's contents reached the disk.
+        // though the file's contents reached the disk. That is a POSIX notion: Windows cannot open a
+        // directory as a file at all ("Access is denied"), and NTFS journals the rename itself, so
+        // there is no directory to flush there.
+        #[cfg(unix)]
         if let Some(parent) = path.parent() {
             File::open(parent)?.sync_all()?;
         }
