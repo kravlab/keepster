@@ -47,12 +47,15 @@ pub(crate) async fn explain(
 ) -> Result<Json<Explanation>, ProblemResponse> {
     let id = roots::parse_id(&id)?;
     let path = parse_path(parameters.path.as_deref().unwrap_or_default())?;
-    let root = {
+    // Resolved while the Registry is held, as everywhere: resolving may write into the Root's store
+    // directory, which an erasing deregistration must not be removing at the same moment.
+    let (root, loaded) = {
         let registry = state.registry();
-        roots::record(&registry, id)?
+        let root = roots::record(&registry, id)?;
+        let loaded = state.effective(id, &root.path)?;
+        (root, loaded)
     };
 
-    let loaded = state.effective(id, &root.path)?;
     let policy = config::policy_for_path(&loaded.policy, &root.path, &path);
     let on_disk = config::observe(&root.path, &path);
     let kind = match on_disk.kind {

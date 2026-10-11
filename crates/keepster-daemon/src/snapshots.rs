@@ -66,18 +66,19 @@ pub(crate) async fn create(
     })?;
 
     // The Registry is read and released before the walk begins: a capture can take seconds, and an
-    // unrelated Root has no reason to wait for it.
-    let (root, location) = {
+    // unrelated Root has no reason to wait for it. The configuration is resolved while it is held, as
+    // everywhere, because resolving may write into the Root's store directory.
+    //
+    // Resolved before the store is locked, and never applied in part: a configuration with no version
+    // to apply refuses the capture rather than falling back to defaults, which would drop the user's
+    // exclude rules and pull into history exactly what they existed to keep out (ticket 04).
+    let (root, location, loaded) = {
         let registry = state.registry();
         let entry = roots::record(&registry, id)?;
+        let loaded = state.effective(id, &entry.path)?;
 
-        (entry, snapshots::location(&registry.root_dir(id)))
+        (entry, snapshots::location(&registry.root_dir(id)), loaded)
     };
-
-    // Read before the store is locked, and never applied in part: a configuration that cannot be read
-    // refuses the capture rather than falling back to defaults, which would drop the user's exclude rules
-    // and pull into history exactly what they existed to keep out (ticket 04).
-    let loaded = state.effective(id, &root.path)?;
     for warning in &loaded.warnings {
         tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
     }

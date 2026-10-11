@@ -165,16 +165,15 @@ pub enum Setting {
 }
 
 impl Setting {
-    /// The level that decided this setting: a scalar's own, or the most specific level a list has an
-    /// entry from — the built-in default for an empty list.
-    pub fn level(&self) -> Level {
+    /// Where this setting was decided: a scalar's own origin, or a list's last entry's — the most
+    /// specific level it has an entry from — and the built-in default for an empty list.
+    pub fn origin(&self) -> RuleOrigin {
         match self {
-            Self::Scalar(entry) => entry.origin.level,
+            Self::Scalar(entry) => entry.origin.clone(),
             Self::List(entries) => entries
-                .iter()
-                .map(|entry| entry.origin.level)
-                .max()
-                .unwrap_or(Level::Default),
+                .last()
+                .map(|entry| entry.origin.clone())
+                .unwrap_or_else(default_origin),
         }
     }
 
@@ -230,6 +229,25 @@ struct Layer {
     max_size: Option<Entry>,
     max_size_by_pattern: Vec<SizeRule>,
     secret_opt_in: Vec<Rule>,
+}
+
+impl Layer {
+    /// Drop the key `name` from this layer, saying whether it had set it.
+    fn unset(&mut self, name: &str) -> bool {
+        fn emptied<T>(list: &mut Vec<T>) -> bool {
+            !std::mem::take(list).is_empty()
+        }
+
+        match name {
+            "files.exclude" => emptied(&mut self.exclude),
+            "files.include" => emptied(&mut self.include),
+            "files.respect_gitignore" => self.respect_gitignore.take().is_some(),
+            "files.max_size" => self.max_size.take().is_some(),
+            "files.max_size_by_pattern" => emptied(&mut self.max_size_by_pattern),
+            "files.secret_opt_in" => emptied(&mut self.secret_opt_in),
+            other => unreachable!("`{other}` is not a key of the schema"),
+        }
+    }
 }
 
 /// The global configuration: the user's own file, read by the daemon alone.
@@ -325,18 +343,18 @@ impl RootConfig {
 
         let mut layer = layer(&document.files, Level::Root, path, text, "files")?;
         let mut warnings = Vec::new();
-        let opt_in = spec("files.secret_opt_in");
-        if !opt_in.root_settable && !layer.secret_opt_in.is_empty() {
-            warnings.push(ConfigWarning {
-                code: WarningCode::KeyIgnored,
-                message: format!(
-                    "{}: {} is ignored in a Root's own file; set it in the global configuration \
-                     instead",
-                    path.display(),
-                    opt_in.name,
-                ),
-            });
-            layer.secret_opt_in.clear();
+        for spec in SCHEMA.iter().filter(|spec| !spec.root_settable) {
+            if layer.unset(spec.name) {
+                warnings.push(ConfigWarning {
+                    code: WarningCode::KeyIgnored,
+                    message: format!(
+                        "{}: {} is ignored in a Root's own file; set it in the global \
+                         configuration instead",
+                        path.display(),
+                        spec.name,
+                    ),
+                });
+            }
         }
 
         Ok(Self { layer, warnings })
@@ -344,11 +362,12 @@ impl RootConfig {
 }
 
 /// The effective configuration of the Root `id` at `root_path`: the defaults, then the global file,
-/// its matching pattern blocks in the order written, its block for this Root, and the Root's own file.
+/// the last pattern block matching the Root, its block for this Root, and the Root's own file.
 ///
 /// An id block outranks every pattern block, because the id is the Root's identity and a glob only
-/// describes where it happens to be; among pattern blocks the last match wins, by the same rule the
-/// pattern lists use.
+/// describes where it happens to be. A Root matching several pattern blocks takes the last one alone
+/// (ticket 04), so a narrower block written after a broader one replaces it rather than adding to it —
+/// which is what lets `~/code/android/*` say something other than `~/code/**`.
 pub fn effective(
     global: &GlobalConfig,
     id: RootId,
@@ -356,18 +375,27 @@ pub fn effective(
     own: Option<&RootConfig>,
 ) -> Effective {
     let path = glob_path(root_path);
+    let pattern = global
+        .patterns
+        .iter()
+        .rev()
+        .find(|(glob, _)| glob.matches(&path))
+        .map(|(_, layer)| layer);
     let layers: Vec<&Layer> = std::iter::once(&global.base)
-        .chain(
-            global
-                .patterns
-                .iter()
-                .filter(|(glob, _)| glob.matches(&path))
-                .map(|(_, layer)| layer),
-        )
+        .chain(pattern)
         .chain(global.by_id.get(&id))
         .chain(own.map(|own| &own.layer))
         .collect();
 
+    merge(
+        &layers,
+        own.map(|own| own.warnings.clone()).unwrap_or_default(),
+    )
+}
+
+/// `layers`, from the least specific to the most, merged by key class, with `warnings` from reading
+/// them ahead of the ones the merged rules raise.
+fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
     let scalar = |pick: fn(&Layer) -> Option<&Entry>, default: Value| {
         layers
             .iter()
@@ -467,7 +495,6 @@ pub fn effective(
         })
         .collect();
 
-    let mut warnings: Vec<ConfigWarning> = own.map(|own| own.warnings.clone()).unwrap_or_default();
     warnings.extend(unreachable_warnings(&policy));
 
     Effective {
@@ -688,9 +715,9 @@ pub struct Configuration {
     roots: HashMap<RootId, TrackedRoot>,
     /// Roots whose classification inputs changed, for ticket 44's Reconciliation to take.
     reconcile: BTreeSet<RootId>,
-    /// The values the keys that cannot change live had when the daemon started, which stay in force
-    /// until it restarts.
-    at_start: BTreeMap<&'static str, Setting>,
+    /// The values the keys that cannot change live had when the daemon started — taken from the first
+    /// version of the global file in force — which stay in force until it restarts.
+    at_start: Option<BTreeMap<&'static str, Setting>>,
 }
 
 /// One file as last read, and the version of it in force.
@@ -739,16 +766,22 @@ pub struct Resolved {
 impl Configuration {
     /// The configuration of a daemon whose global file is `global_path` (if any), whose user's home is
     /// `home`, and whose state — the Registry and the known-good copies — lives under `state_dir`.
+    ///
+    /// The global file is read here, so that what the daemon starts with is what a key that cannot
+    /// change live keeps until the next start.
     pub fn new(global_path: Option<PathBuf>, home: Option<PathBuf>, state_dir: PathBuf) -> Self {
-        Self {
+        let mut configuration = Self {
             global_path,
             home,
             state_dir,
             global: Tracked::default(),
             roots: HashMap::new(),
             reconcile: BTreeSet::new(),
-            at_start: BTreeMap::new(),
-        }
+            at_start: None,
+        };
+        configuration.refresh_global();
+
+        configuration
     }
 
     /// The configuration of the Root `id` at `root_path`, re-reading whichever of its files changed.
@@ -764,14 +797,14 @@ impl Configuration {
         };
         let mut effective = effective(global, id, root_path, own.as_ref());
 
-        for key in effective.keys.iter_mut().filter(|key| !key.spec.live) {
-            let started = self
-                .at_start
-                .entry(key.spec.name)
-                .or_insert_with(|| key.setting.clone());
-            if key.setting.values() != started.values() {
-                key.setting = started.clone();
-                key.restart_required = true;
+        if let Some(started) = &self.at_start {
+            let now = self.daemon_settings();
+            for key in effective.keys.iter_mut().filter(|key| !key.spec.live) {
+                if let Some(setting) = started.get(key.spec.name) {
+                    key.restart_required =
+                        now.get(key.spec.name).map(Setting::values) != Some(setting.values());
+                    key.setting = setting.clone();
+                }
             }
         }
 
@@ -808,6 +841,32 @@ impl Configuration {
         std::mem::take(&mut self.reconcile)
     }
 
+    /// The keys that cannot change live as the global file's own table sets them now. Such a key
+    /// describes the daemon, one value per process, so no per-Root block decides it.
+    fn daemon_settings(&self) -> BTreeMap<&'static str, Setting> {
+        let Some(global) = &self.global.in_force else {
+            return BTreeMap::new();
+        };
+        if SCHEMA.iter().all(|spec| spec.live) {
+            return BTreeMap::new();
+        }
+
+        merge(&[&global.base], Vec::new())
+            .keys
+            .into_iter()
+            .filter(|key| !key.spec.live)
+            .map(|key| (key.spec.name, key.setting))
+            .collect()
+    }
+
+    /// Re-read the global file if it changed, keeping its last known-good version in force.
+    pub fn refresh_global(&mut self) {
+        self.refresh_global_file();
+        if self.at_start.is_none() && self.global.in_force.is_some() {
+            self.at_start = Some(self.daemon_settings());
+        }
+    }
+
     fn unresolved(&self, id: RootId) -> Resolved {
         Resolved {
             effective: None,
@@ -828,7 +887,7 @@ impl Configuration {
             .collect()
     }
 
-    fn refresh_global(&mut self) {
+    fn refresh_global_file(&mut self) {
         let Some(path) = self.global_path.clone() else {
             self.global
                 .in_force
@@ -852,18 +911,22 @@ impl Configuration {
             root.path = root_path.to_path_buf();
             root.file.seen = None;
         }
+        let path = root_path.join(ROOT_CONFIG);
+        let known_good = self.state_dir.join(id.to_string()).join(ROOT_KNOWN_GOOD);
+        let parse =
+            |text: Option<&str>| text.map(|text| RootConfig::parse(&path, text)).transpose();
+
         // A Root whose directory is gone has a file that is absent for that reason alone, which says
         // nothing about its configuration: reading it as absent would replace the known-good with the
-        // defaults. What was in force stays in force until the directory is back.
+        // defaults. What was in force — or kept on disk — stays in force until the directory is back.
         if !root_path.is_dir() {
+            if root.file.in_force.is_none() {
+                root.file.in_force = recovered(&known_good, &parse);
+            }
             return;
         }
 
-        let path = root_path.join(ROOT_CONFIG);
-        let known_good = self.state_dir.join(id.to_string()).join(ROOT_KNOWN_GOOD);
-        refresh(&mut root.file, &path, &known_good, |text| {
-            text.map(|text| RootConfig::parse(&path, text)).transpose()
-        });
+        refresh(&mut root.file, &path, &known_good, parse);
     }
 }
 
@@ -879,10 +942,7 @@ fn refresh<T>(
         Ok(text) => text,
         Err(error) => {
             tracked.seen = None;
-            tracked.error = Some(error);
-            if tracked.in_force.is_none() {
-                tracked.in_force = recovered(known_good, &parse);
-            }
+            rejected(tracked, error, known_good, &parse);
             return;
         }
     };
@@ -895,20 +955,36 @@ fn refresh<T>(
             tracked.in_force = Some(parsed);
             tracked.error = None;
             // A lost copy costs only the fallback after a restart, never the configuration in force,
-            // so failing to keep one is not a reason to refuse a valid file.
-            let _ = match &text {
-                Some(text) => write_atomically(known_good, text),
-                None => remove_if_present(known_good),
-            };
-        }
-        Err(error) => {
-            tracked.error = Some(error);
-            if tracked.in_force.is_none() {
-                tracked.in_force = recovered(known_good, &parse);
+            // so failing to keep one is not a reason to refuse a valid file — but it is said.
+            // An absent file is kept as an empty one, which parses to the same nothing: the defaults
+            // were a valid version too, and a restart must find that out rather than find no copy.
+            let kept = write_atomically(known_good, text.as_deref().unwrap_or_default());
+            if let Err(error) = kept {
+                tracing::warn!(
+                    file = %path.display(),
+                    copy = %known_good.display(),
+                    %error,
+                    "the known-good copy of a configuration file could not be kept"
+                );
             }
         }
+        Err(error) => rejected(tracked, error, known_good, &parse),
     }
     tracked.seen = Some(text);
+}
+
+/// Record why the current version of a file is not applied, falling back to its copy on disk when no
+/// version is in force yet — which is the case after a restart.
+fn rejected<T>(
+    tracked: &mut Tracked<T>,
+    error: ConfigError,
+    known_good: &Path,
+    parse: &impl Fn(Option<&str>) -> Result<T, ConfigError>,
+) {
+    tracked.error = Some(error);
+    if tracked.in_force.is_none() {
+        tracked.in_force = recovered(known_good, parse);
+    }
 }
 
 /// The known-good copy at `known_good`, parsed as the file it is a copy of, if there is one and it
@@ -930,13 +1006,6 @@ fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     drop(file);
 
     fs::rename(&temporary, path)
-}
-
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
 }
 
 /// The text of the file at `path`, `None` when there is none.

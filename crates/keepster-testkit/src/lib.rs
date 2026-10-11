@@ -48,6 +48,15 @@ impl Harness {
         Self::start_in(directory).await
     }
 
+    /// Start a daemon whose global configuration already holds `content` when it first reads it.
+    pub async fn start_with_global_config(content: &[u8]) -> Self {
+        let directory = TempDir::new().expect("a temporary directory");
+        std::fs::write(resolved(directory.path()).join("config.toml"), content)
+            .expect("the global configuration");
+
+        Self::start_in(directory).await
+    }
+
     /// Stop this daemon and start a fresh one over the same control channel and the same store.
     ///
     /// What survives a restart is exactly what was written to disk, which is how the Registry's

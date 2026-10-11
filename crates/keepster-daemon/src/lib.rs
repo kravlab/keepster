@@ -200,10 +200,7 @@ impl DaemonState {
     /// The configuration of the Root `id` at `root_path` as it stands, re-reading whichever of its
     /// files changed since it was last asked for.
     fn configuration(&self, id: RootId, root_path: &Path) -> keepster_app::config::Resolved {
-        self.config
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resolve(id, root_path)
+        self.config().resolve(id, root_path)
     }
 
     /// The configuration in force for the Root `id` at `root_path`, or the problem that keeps it from
@@ -222,10 +219,19 @@ impl DaemonState {
 
     /// Let go of the configuration of every Root not among `registered`, once it is deregistered.
     fn forget_configuration_except(&self, registered: &[keepster_store::RootRecord]) {
+        self.config()
+            .retain(|id| registered.iter().any(|record| record.id == id));
+    }
+
+    /// The configuration, held for the length of one resolution.
+    ///
+    /// Taken after the Registry wherever both are held, never before, so the two locks cannot
+    /// deadlock. A panic while it is held loses nothing that matters: every file is compared with what
+    /// was read last, so the next resolution reads again whatever a panic left half-done.
+    fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|id| registered.iter().any(|record| record.id == id));
     }
 
     /// The exclusive lock on one Root's History Store.

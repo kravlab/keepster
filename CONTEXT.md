@@ -111,12 +111,13 @@ _Avoid_: purge, scrub, delete, redact
 
 **Degraded**:
 The state of a Root the daemon is still watching but cannot serve as promised — its configuration failed to
-load and an older one is in force, or its coverage guarantee has been switched off.
+load and the last known-good one is in force, or its coverage guarantee has been switched off.
 _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:
-The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, or its
-History Store was written by a version this one cannot open. Distinct from Degraded, where watching continues on
+The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, its
+History Store was written by a version this one cannot open, or its configuration has never had a valid version
+to fall back on. Distinct from Degraded, where watching continues on
 worse terms; an Unavailable Root is never deregistered and its History Store is kept, because the Root's identity
 does not depend on its path.
 _Avoid_: offline, missing, lost, disconnected

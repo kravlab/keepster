@@ -37,12 +37,14 @@ pub(crate) async fn show(
     Path(RootAddress { id }): Path<RootAddress>,
 ) -> Result<Json<RootConfiguration>, ProblemResponse> {
     let id = roots::parse_id(&id)?;
-    let root = {
+    // Resolved while the Registry is held, as everywhere: resolving may write into the Root's store
+    // directory, which an erasing deregistration must not be removing at the same moment.
+    let resolved = {
         let registry = state.registry();
-        roots::record(&registry, id)?
+        let root = roots::record(&registry, id)?;
+        state.configuration(id, &root.path)
     };
 
-    let resolved = state.configuration(id, &root.path);
     let Some(effective) = resolved.effective else {
         return Err(config_problem(&resolved.errors));
     };
@@ -53,14 +55,10 @@ pub(crate) async fn show(
             .keys
             .iter()
             .map(|key| {
-                let (value, origin, entries) = match &key.setting {
-                    Setting::Scalar(entry) => (wire(&entry.value), origin(&entry.origin), None),
+                let (value, entries) = match &key.setting {
+                    Setting::Scalar(entry) => (wire(&entry.value), None),
                     Setting::List(entries) => (
                         entries.iter().map(|entry| wire(&entry.value)).collect(),
-                        entries
-                            .last()
-                            .map(|entry| origin(&entry.origin))
-                            .unwrap_or_else(default_origin),
                         Some(
                             entries
                                 .iter()
@@ -76,7 +74,7 @@ pub(crate) async fn show(
                 ConfigKey {
                     key: key.spec.name.to_owned(),
                     value,
-                    origin,
+                    origin: origin(&key.setting.origin()),
                     entries,
                     restart_required: key.restart_required,
                 }
@@ -115,13 +113,19 @@ pub(crate) async fn reload_continually(state: DaemonState) {
     loop {
         ticks.tick().await;
         let state = state.clone();
-        // Reading files blocks, and the runtime's threads are for requests.
+        // A pass reads every Root's files, which is blocking work with no request waiting on it.
         let _ = tokio::task::spawn_blocking(move || reload(&state)).await;
     }
 }
 
+/// One pass over every registered Root.
+///
+/// The Registry is held for the whole pass, as every handler holds it while it reports a Root: a
+/// known-good copy is written into the Root's store directory, which an erasing deregistration must
+/// not be removing at the same moment. The order is always the Registry, then the configuration.
 fn reload(state: &DaemonState) {
-    let records = match state.registry().readable() {
+    let registry = state.registry();
+    let records = match registry.readable() {
         Ok(records) => records,
         Err(error) => {
             tracing::warn!(%error, "the Registry could not be read to reload configuration");
@@ -142,14 +146,5 @@ fn wire(value: &Value) -> serde_json::Value {
         Value::Bytes(bytes) => json!(bytes),
         Value::Pattern(pattern) => json!(pattern),
         Value::SizePattern { pattern, max } => json!({ "pattern": pattern, "max": max }),
-    }
-}
-
-/// Where an empty list's value comes from: the built-in default, which is no list at all.
-fn default_origin() -> keepster_api::Origin {
-    keepster_api::Origin {
-        level: keepster_api::ConfigLevel::Default,
-        source: "the built-in default".to_owned(),
-        line: None,
     }
 }

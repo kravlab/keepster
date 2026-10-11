@@ -213,8 +213,9 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
 
 #[tokio::test]
 async fn with_no_known_good_version_the_root_is_not_captured_at_all() {
-    let daemon = Harness::start().await;
-    daemon.write_global_config(b"[files]\nexclude = \"*.log\"\n");
+    // Broken from the first time the daemon reads it, so no version was ever valid — not even the
+    // defaults an absent file would have meant.
+    let daemon = Harness::start_with_global_config(b"[files]\nexclude = \"*.log\"\n").await;
     let (root, _) = registered(&daemon).await;
 
     assert_eq!(
@@ -292,4 +293,21 @@ async fn keepster_config_prints_the_effective_values_and_where_each_was_set() {
     assert_eq!(json.exit_code, Some(0), "{}", json.stderr);
     let parsed: Value = serde_json::from_slice(&json.stdout).expect("the daemon's JSON, verbatim");
     assert_eq!(parsed["root"], root.as_str());
+}
+
+#[tokio::test]
+async fn a_file_created_broken_falls_back_to_the_defaults_its_absence_meant() {
+    // No file was a valid configuration — the defaults — so a broken one replacing it leaves the Root
+    // Degraded on those defaults, before and after a restart alike.
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+    daemon.write_global_config(b"[files]\nexclude = \"*.log\"\n");
+    assert_eq!(state(&daemon, &root).await.0, "degraded");
+
+    let daemon = daemon.restart().await;
+
+    assert_eq!(
+        state(&daemon, &root).await,
+        ("degraded".to_owned(), "config_invalid".to_owned())
+    );
 }

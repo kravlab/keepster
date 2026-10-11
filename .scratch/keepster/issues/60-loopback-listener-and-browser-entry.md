@@ -25,3 +25,12 @@ the token never travels in a URL beyond a single-use bootstrap code, and every r
       existing file is never round-tripped
 - [ ] Embedding the SPA stays a separate build switch: a build without it keeps the listener on, because the API is
       public for third-party clients
+
+## Comments
+
+- Ticket 42 left the restart-required mechanism waiting for its first key, which is this ticket's listener
+  switch: declare it in `keepster_app::config::SCHEMA` with `live: false` and `root_settable: false`. Its value
+  is taken from the global file's own table when the daemon starts and kept until it restarts; an edit then
+  shows `restart_required: true` on `GET /v1/roots/{id}/config`. Two things remain to do here: a daemon key
+  must be ignored with a warning in `[root.…]` and `[[roots]]` blocks too, not only in a Root's own file, and
+  the end-to-end test for ticket 42's restart-required criterion.

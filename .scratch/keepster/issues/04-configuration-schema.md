@@ -132,3 +132,6 @@ sees that snapshotting is actually working.
   optional: it becomes the way to share rules through a repository rather than the way to configure a Root.
   Provenance grows from `default / global / root` to
   `default / global / global-pattern / global-root / root`, which ticket 13 owns as a wire-visible identifier.
+- Implemented by ticket 42 with one change of spelling: `[roots.<RootId>]` and `[[roots]]` cannot share one TOML
+  document, so per-Root blocks are written `[root.<RootId>]`. A Root matching several `[[roots]]` blocks takes
+  the last one alone, lists included.

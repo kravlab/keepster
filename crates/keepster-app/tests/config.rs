@@ -118,17 +118,22 @@ fn each_level_replaces_a_scalar_set_by_a_less_specific_one() {
 }
 
 #[test]
-fn among_pattern_blocks_the_last_match_wins_and_one_that_does_not_match_is_not_applied() {
+fn a_root_matching_several_pattern_blocks_takes_the_last_one_alone() {
     let config = global(concat!(
-        "[[roots]]\npath = \"~/code/*\"\n[roots.files]\nmax_size = \"1 MiB\"\n\n",
-        "[[roots]]\npath = \"~/code/**\"\n[roots.files]\nmax_size = \"2 MiB\"\n\n",
+        "[[roots]]\npath = \"~/code/**\"\n[roots.files]\nmax_size = \"1 MiB\"\nexclude = [\"*.log\"]\n\n",
+        "[[roots]]\npath = \"~/code/*\"\n[roots.files]\nmax_size = \"2 MiB\"\n\n",
         "[[roots]]\npath = \"/elsewhere/*\"\n[roots.files]\nmax_size = \"9 MiB\"\n",
     ));
 
-    let max_size = scalar(&merged(&config, None), "files.max_size").clone();
+    let effective = merged(&config, None);
 
+    let max_size = scalar(&effective, "files.max_size");
     assert_eq!(max_size.value, Value::Bytes(2 * 1024 * 1024));
-    assert_eq!(max_size.origin.line, Some(9));
+    assert_eq!(max_size.origin.line, Some(10));
+    assert!(
+        list(&effective, "files.exclude").is_empty(),
+        "the broader block written first contributes nothing, its lists included"
+    );
 }
 
 #[test]
@@ -150,7 +155,10 @@ fn pattern_lists_layer_so_a_more_specific_level_can_negate_a_rule() {
             ("!keep.log", Level::Root),
         ]
     );
-    assert_eq!(setting(&effective, "files.exclude").level(), Level::Root);
+    assert_eq!(
+        setting(&effective, "files.exclude").origin().level,
+        Level::Root
+    );
 
     let keep = keepster_core::RootPath::parse("keep.log").expect("a path");
     let other = keepster_core::RootPath::parse("other.log").expect("a path");

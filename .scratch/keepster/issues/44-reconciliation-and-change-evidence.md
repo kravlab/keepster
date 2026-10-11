@@ -29,3 +29,11 @@ index costs one full hashing pass. Git's racy rule applies to entries touched du
 - [ ] Exceeding the daemon-wide watch ceiling moves the next Root onto the periodic pass with the reason in `status`
 - [ ] Deleting the index and running one pass restores full coverage, and that pass is the only one that hashes
       everything
+
+## Comments
+
+- Ticket 42 built the queue this ticket drains: `keepster_app::config::Configuration::take_reconcile_queue()`
+  returns every Root whose classification inputs changed since it was last asked (values only, not where they
+  were written). Nothing takes it yet; the reload occasion here is "take the queue and walk each Root in it",
+  and the end-to-end test for ticket 42's last criterion — a reload changing the rules queues a full
+  comparison — belongs here.

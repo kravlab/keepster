@@ -24,3 +24,9 @@ the level is an operation with an expiry, which is the root-cause answer rather 
       key, one file either way
 - [ ] The format and the ceiling describe the daemon, so they are never settable per Root
 - [ ] On Linux only startup and fatal lines reach the journal, so the volume is not duplicated
+
+## Comments
+
+- The log format and ceiling describe the daemon, so they are global-only and — if they cannot change live —
+  `live: false` in `keepster_app::config::SCHEMA` (ticket 42); see ticket 60's Comments for what a daemon key
+  still needs in the per-Root blocks.
