@@ -12,6 +12,7 @@ use keepster_store::{RegistryEntry, RegistryError, RootRecord};
 use crate::DaemonState;
 use crate::configuration;
 use crate::problem::ProblemResponse;
+use crate::triggers;
 
 /// The `{id}` segment every Root endpoint is addressed by: the extractor and its description at once.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -340,20 +341,23 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 /// The state is the honest one this build can determine, the most serious reason first: a directory
 /// that is gone means nothing can be captured at all, which `CONTEXT.md` calls `Unavailable`, and so
 /// does a configuration with no version to apply; one whose current version is invalid leaves the last
-/// known-good in force, `Degraded`. Otherwise the Root is captured automatically but without the
-/// guarantee Reconciliation gives (ticket 44) — or not automatically at all, when every Trigger is off.
+/// known-good in force, `Degraded`. Past that, a Root is `Watching` only while the guarantee holds as
+/// promised — Reconciliation at the start, a watcher or a periodic pass, and a `stat` filter worth its
+/// name — and `Degraded` with the reason otherwise.
 fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
     let activity = daemon.runtimes.activity(record.id).unwrap_or_default();
-    let (state, state_code) = if !record.path.is_dir() {
-        (RootState::Unavailable, "root_missing")
+    let state = if !record.path.is_dir() {
+        Some((RootState::Unavailable, "root_missing"))
     } else if let Some(state) =
         configuration::state_of(&daemon.configuration(record.id, &record.path))
     {
-        state
-    } else if activity.automatic {
-        (RootState::Degraded, "coverage_not_guaranteed")
+        Some(state)
     } else {
-        (RootState::Degraded, "capture_unavailable")
+        coverage(&activity).map(|code| (RootState::Degraded, code))
+    };
+    let (state, state_code) = match state {
+        Some((state, code)) => (state, Some(code.to_owned())),
+        None => (RootState::Watching, None),
     };
 
     Root {
@@ -362,11 +366,31 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
         // only reaches the daemon as text, so nothing lossy can be registered in the first place.
         path: record.path.to_string_lossy().into_owned(),
         state,
-        state_code: Some(state_code.to_owned()),
+        state_code,
         pending_paths: activity.pending_paths,
         oldest_pending_seconds: activity
             .pending_since
             .map(|since| since.elapsed().as_secs()),
+    }
+}
+
+/// Why a Root that is captured automatically is not covered as promised, if it is not.
+fn coverage(activity: &triggers::Activity) -> Option<&'static str> {
+    if !activity.automatic {
+        // Every Trigger is off: only a capture someone asks for, or a Reconciliation, ever happens.
+        Some("capture_unavailable")
+    } else if !activity.at_start {
+        // Whatever changed while the daemon was down stays uncaptured until something else changes.
+        Some("coverage_not_guaranteed")
+    } else if activity.watch == triggers::Watch::Ceiling {
+        Some("watch_ceiling")
+    } else if activity.watch == triggers::Watch::Failed {
+        Some("watch_unavailable")
+    } else if activity.coarse_mtime && activity.verify == keepster_core::Verify::Stat {
+        // ADR 0014: the user decides whether to pay for hashing everything, so the weakness is said.
+        Some("mtime_coarse")
+    } else {
+        None
     }
 }
 

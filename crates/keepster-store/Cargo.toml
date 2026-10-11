@@ -18,4 +18,5 @@ thiserror = "2.0.21"
 toml = "1.1.6"
 
 [dev-dependencies]
+memmap2 = "0.9.11"
 tempfile = "3.27.0"

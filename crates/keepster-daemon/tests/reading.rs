@@ -59,7 +59,7 @@ async fn three(daemon: &Harness, root: &str, project: &Path) -> [Value; 3] {
 
 #[tokio::test]
 async fn the_timeline_lists_snapshots_newest_first_in_the_documented_shape() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let [first, second, third] = three(&daemon, &root, &project).await;
 
@@ -88,7 +88,7 @@ async fn the_timeline_lists_snapshots_newest_first_in_the_documented_shape() {
 
 #[tokio::test]
 async fn pages_follow_by_cursor_and_a_cursor_to_a_vanished_snapshot_is_not_an_error() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let [first, second, third] = three(&daemon, &root, &project).await;
 
@@ -117,7 +117,7 @@ async fn pages_follow_by_cursor_and_a_cursor_to_a_vanished_snapshot_is_not_an_er
 
 #[tokio::test]
 async fn filtering_by_a_path_returns_the_snapshots_that_changed_it_with_how() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let [first, second, third] = three(&daemon, &root, &project).await;
 
@@ -142,7 +142,7 @@ async fn filtering_by_a_path_returns_the_snapshots_that_changed_it_with_how() {
 
 #[tokio::test]
 async fn moments_bound_the_timeline_at_or_before_and_strictly_after() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let [first, second, third] = three(&daemon, &root, &project).await;
     let at = |snapshot: &Value| snapshot["taken_at"].as_str().expect("a moment").to_owned();
@@ -170,7 +170,7 @@ async fn moments_bound_the_timeline_at_or_before_and_strictly_after() {
 
 #[tokio::test]
 async fn malformed_timeline_parameters_are_refused_by_name() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, _) = registered(&daemon).await;
 
     for (query, code) in [
@@ -191,7 +191,7 @@ async fn malformed_timeline_parameters_are_refused_by_name() {
 
 #[tokio::test]
 async fn a_root_never_captured_has_an_empty_timeline_and_no_store() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, _) = registered(&daemon).await;
 
     let page = daemon
@@ -207,7 +207,7 @@ async fn a_root_never_captured_has_an_empty_timeline_and_no_store() {
 
 #[tokio::test]
 async fn entries_are_shallow_by_default_and_complete_with_depth_infinity() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     std::fs::write(project.join("src/data.bin"), [0u8, 1, 2, 3]).expect("a binary file");
     let snapshot = id(&take(&daemon, &root).await);
@@ -252,7 +252,7 @@ async fn entries_are_shallow_by_default_and_complete_with_depth_infinity() {
 
 #[tokio::test]
 async fn content_is_raw_bytes_with_a_length_a_tag_and_ranges() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let body: Vec<u8> = (0..300_000u32).map(|n| (n % 251) as u8).collect();
     std::fs::write(project.join("big.bin"), &body).expect("a large file");
@@ -306,7 +306,7 @@ async fn content_is_raw_bytes_with_a_length_a_tag_and_ranges() {
 
 #[tokio::test]
 async fn content_refuses_what_is_not_a_file_by_name() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, _) = registered(&daemon).await;
     let snapshot = id(&take(&daemon, &root).await);
     let base = format!("/v1/roots/{root}/snapshots/{snapshot}/content");
@@ -333,7 +333,7 @@ fn index_set(daemon: &Harness, root: &str) -> Vec<PathBuf> {
 
 #[tokio::test]
 async fn deleting_the_index_and_restarting_serves_the_same_timeline() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     three(&daemon, &root, &project).await;
     let url = format!("/v1/roots/{root}/snapshots");
@@ -365,7 +365,7 @@ async fn a_daemon_killed_between_ref_update_and_index_write_repairs_itself_at_st
     // The index write is a capture's last step, so a kill between the ref update and that write leaves
     // exactly the index as it was before the capture. Restoring a copy taken before it reproduces that
     // state without fabricating anything in git.
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;
     let kept = take(&daemon, &root).await;
 

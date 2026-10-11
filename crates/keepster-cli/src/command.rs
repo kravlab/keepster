@@ -56,6 +56,27 @@ pub enum Command {
 
     /// Show a Root's effective configuration, and the level that set each key.
     Config(ConfigArgs),
+
+    /// Compare a Root's Working Tree against its latest Snapshot now, and capture what differs.
+    Reconcile(ReconcileArgs),
+}
+
+/// Options of `keepster reconcile`.
+#[derive(Debug, Args)]
+pub struct ReconcileArgs {
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Read every file, whatever the last pass observed — for a filesystem whose mtimes cannot be
+    /// trusted.
+    #[arg(long)]
+    pub verify: bool,
+
+    /// Print the daemon's answer as JSON, verbatim.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster config`.

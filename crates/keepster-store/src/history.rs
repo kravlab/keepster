@@ -11,6 +11,7 @@
 //! here rather than of whichever caller sequences two calls.
 
 use std::cell::{RefCell, RefMut};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -18,10 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
     CapturePolicy, ChangeKind, IGNORE_FILE, RootId, RootPath, SegmentName, SnapshotId, Trigger,
-    Verdict, ignore_file_rules,
+    Verdict, Verify, ignore_file_rules,
 };
 
-use crate::index::{self, Index};
+use crate::index::{self, Index, Observation};
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///
@@ -222,6 +223,38 @@ pub struct SnapshotSummary {
     pub changed_paths: u64,
     /// With a timeline filtered by a path, how that path changed in this Snapshot.
     pub change: Option<ChangeKind>,
+}
+
+/// What a capture is for, beyond what it captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureRequest {
+    /// The Trigger the Snapshot is recorded as.
+    pub trigger: Trigger,
+    /// The moment of the capture, which dates the Snapshot and starts the pass (ADR 0012).
+    pub now: SystemTime,
+    /// How a file is judged unchanged without being read.
+    pub verify: Verify,
+    /// Whether a tree identical to its baseline is still written as a Snapshot — which only a capture
+    /// someone asked for is: a touched file or a quiet periodic floor is not a new version.
+    pub record_unchanged: bool,
+}
+
+/// What one pass did.
+#[derive(Debug)]
+pub struct Pass {
+    /// The Snapshot written, or `None` when nothing changed and none was asked for.
+    pub snapshot: Option<CapturedSnapshot>,
+    /// How many files were read and hashed — the rest were vouched for by the last pass's evidence.
+    pub hashed: u64,
+    /// How many files were compared.
+    pub observed: u64,
+    /// Whether every file's mtime fell on a whole second, which says the filesystem keeps no finer
+    /// mtimes and the `stat` filter is weaker than it looks (ADR 0014). `status` reports it; hashing
+    /// everything instead stays the user's choice.
+    pub coarse_mtime: bool,
+    /// Why the derived index — the timeline or this pass's evidence — could not be brought up to date.
+    /// The Snapshot, if one was written, is durable regardless.
+    pub index_lag: Option<String>,
 }
 
 /// Which part of a Root's chronology to list.
@@ -508,37 +541,43 @@ impl HistoryStore {
         trigger: Trigger,
         now: SystemTime,
     ) -> Result<CapturedSnapshot, StoreError> {
-        let captured = self.write_snapshot(root_id, root_path, policy, trigger, now, true)?;
+        let pass = self.pass(
+            root_id,
+            root_path,
+            policy,
+            &CaptureRequest {
+                trigger,
+                now,
+                verify: Verify::Stat,
+                record_unchanged: true,
+            },
+        )?;
 
-        Ok(captured.expect("a Snapshot is always written when asked to record an unchanged tree"))
+        Ok(pass
+            .snapshot
+            .expect("a Snapshot is always written when asked to record an unchanged tree"))
     }
 
-    /// Capture the Root as [`Self::capture`] does, but write nothing when the tree is the one its baseline
-    /// already holds.
+    /// One pass over the Root: walk it, read what the evidence of the last pass cannot vouch for, and
+    /// write a Snapshot unless the request says an unchanged tree needs none.
     ///
-    /// What an automatic Trigger uses: a touched file or a quiet periodic floor is not a new version,
-    /// and a history of identical Snapshots would bury the ones that matter. A Snapshot someone asked
-    /// for is always written, because asking is the point.
-    pub fn capture_if_changed(
+    /// Every capture is a pass — the watcher's, the periodic floor's, a Reconciliation's and one someone
+    /// asked for alike — because the walk is what makes a capture correct whatever the watcher missed,
+    /// and the `stat` filter is what makes the walk cheap (ADR 0014). The evidence is kept in the derived
+    /// index; an index that cannot be read only means everything is read.
+    pub fn pass(
         &self,
         root_id: RootId,
         root_path: &Path,
         policy: &CapturePolicy,
-        trigger: Trigger,
-        now: SystemTime,
-    ) -> Result<Option<CapturedSnapshot>, StoreError> {
-        self.write_snapshot(root_id, root_path, policy, trigger, now, false)
-    }
-
-    fn write_snapshot(
-        &self,
-        root_id: RootId,
-        root_path: &Path,
-        policy: &CapturePolicy,
-        trigger: Trigger,
-        now: SystemTime,
-        record_unchanged: bool,
-    ) -> Result<Option<CapturedSnapshot>, StoreError> {
+        request: &CaptureRequest,
+    ) -> Result<Pass, StoreError> {
+        let CaptureRequest {
+            trigger,
+            now,
+            verify,
+            record_unchanged,
+        } = *request;
         let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
         let reference = format!("{SEGMENT_REFS}/{segment}");
 
@@ -565,15 +604,31 @@ impl HistoryStore {
             index.read_tree(tree).map_err(self.failed("read"))?;
         }
 
-        let walked =
-            self.add_working_tree(&mut index, baseline_tree.as_ref(), root_path, policy)?;
+        // Evidence that cannot be read is no evidence: everything is read instead, which is the cost of
+        // a lost index and never a wrong Snapshot.
+        let observations = match verify {
+            Verify::Stat => self
+                .index()
+                .and_then(|index| index.observations())
+                .unwrap_or_default(),
+            Verify::Hash => HashMap::new(),
+        };
+        let walked = self.add_working_tree(
+            &mut index,
+            baseline_tree.as_ref(),
+            root_path,
+            policy,
+            &observations,
+            now,
+        )?;
         remove_vanished(&mut index, &walked)?;
 
         let tree_id = index
             .write_tree_to(&self.repository)
             .map_err(self.failed("written"))?;
         if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
-            return Ok(None);
+            let index_lag = self.keep_observations(&walked);
+            return Ok(walked.pass(None, index_lag));
         }
         let tree = self
             .repository
@@ -617,15 +672,22 @@ impl HistoryStore {
         .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
         .map_err(|source| self.failed("read")(source).to_string());
 
-        Ok(Some(CapturedSnapshot {
+        let index_lag = self
+            .catch_up()
+            .err()
+            .map(|error| error.to_string())
+            .or_else(|| self.keep_observations(&walked));
+        let snapshot = CapturedSnapshot {
             id,
             segment,
             trigger,
-            unreadable: walked.unreadable,
-            withheld: walked.withheld,
+            unreadable: walked.unreadable.clone(),
+            withheld: walked.withheld.clone(),
             changed_paths,
-            index_lag: self.catch_up().err().map(|error| error.to_string()),
-        }))
+            index_lag: index_lag.clone(),
+        };
+
+        Ok(walked.pass(Some(snapshot), index_lag))
     }
 
     /// One page of the Root's chronology, newest first.
@@ -862,6 +924,8 @@ impl HistoryStore {
         baseline: Option<&git2::Tree<'_>>,
         root_path: &Path,
         policy: &CapturePolicy,
+        observations: &HashMap<String, Observation>,
+        now: SystemTime,
     ) -> Result<Walked, StoreError> {
         let mut walked = Walked::default();
         collect_files(root_path, &RootPath::root(), policy, &mut walked)?;
@@ -871,7 +935,10 @@ impl HistoryStore {
         // the index expects the opposite. Ticket 12 measured 0.86 s in order against 22.74 s out of it.
         walked.paths.sort();
 
-        for path in &walked.paths {
+        let started = nanos_since_epoch(now);
+        let mut sub_second = false;
+        let paths = std::mem::take(&mut walked.paths);
+        for path in &paths {
             let absolute = root_path.join(path.as_filesystem_path());
 
             let metadata = match fs::symlink_metadata(&absolute) {
@@ -883,17 +950,47 @@ impl HistoryStore {
                     continue;
                 }
             };
-
-            let oid = match self.repository.blob_path(&absolute) {
-                Ok(oid) => oid,
-                Err(_) => {
-                    walked.unreadable.push(absolute);
-                    continue;
-                }
-            };
             let mode = mode_for(&metadata);
+            let size = metadata.len();
+            let mtime = metadata.modified().ok().map(nanos_since_epoch);
+            sub_second |= mtime.is_some_and(|mtime| mtime % 1_000_000_000 != 0);
+            let recorded = baseline_entry(baseline, path);
 
-            if unchanged(baseline, path, oid, mode) {
+            // The filter: the last pass read this very size and mtime and found the content the baseline
+            // holds. Any doubt — no row, a different size or mtime, a baseline that disagrees — reads.
+            let vouched = match (observations.get(&path.0), mtime, recorded) {
+                (Some(seen), Some(mtime), Some((oid, _)))
+                    if seen.size == size && seen.mtime == mtime && seen.oid == oid =>
+                {
+                    Some(oid)
+                }
+                _ => None,
+            };
+            let oid = match vouched {
+                Some(oid) => oid,
+                None => match self.repository.blob_path(&absolute) {
+                    Ok(oid) => {
+                        walked.hashed += 1;
+                        oid
+                    }
+                    Err(_) => {
+                        walked.unreadable.push(absolute);
+                        continue;
+                    }
+                },
+            };
+
+            // Git's racy rule: a file whose mtime is not strictly older than the pass's start may change
+            // again within the same tick and look identical, so it is not vouched for next time.
+            if let Some(mtime) = mtime.filter(|mtime| *mtime < started) {
+                walked
+                    .observed
+                    .push((path.0.clone(), Observation { size, mtime, oid }));
+            }
+            walked.seen += 1;
+
+            // A permission-only change differs here, from the `stat` alone, with nothing read.
+            if recorded == Some((oid, mode)) {
                 continue;
             }
 
@@ -901,8 +998,19 @@ impl HistoryStore {
                 .add(&entry_for(path, oid, mode))
                 .map_err(self.failed("written"))?;
         }
+        walked.paths = paths;
+        walked.coarse_mtime = walked.seen > 0 && !sub_second;
 
         Ok(walked)
+    }
+
+    /// Replace the evidence the next pass compares against with what this one saw. A failure costs the
+    /// next pass some reading, never this one's Snapshot, so it is reported rather than raised.
+    fn keep_observations(&self, walked: &Walked) -> Option<String> {
+        self.index()
+            .and_then(|mut index| index.replace_observations(&walked.observed))
+            .err()
+            .map(|error| error.to_string())
     }
 
     /// The newest Snapshot in any Segment at or before `segment`.
@@ -1056,9 +1164,27 @@ struct Walked {
     opaque: Vec<WirePath>,
     /// Files present but deliberately not held.
     withheld: Vec<WithheldPath>,
+    /// What this pass observed of each file it read or vouched for, for the next pass to compare with.
+    observed: Vec<(String, Observation)>,
+    /// How many files were read and hashed.
+    hashed: u64,
+    /// How many files were compared at all.
+    seen: u64,
+    /// Whether every mtime observed fell on a whole second.
+    coarse_mtime: bool,
 }
 
 impl Walked {
+    fn pass(&self, snapshot: Option<CapturedSnapshot>, index_lag: Option<String>) -> Pass {
+        Pass {
+            snapshot,
+            hashed: self.hashed,
+            observed: self.seen,
+            coarse_mtime: self.coarse_mtime,
+            index_lag,
+        }
+    }
+
     /// Whether an index path from the baseline should survive this capture.
     ///
     /// A path that was walked survives because it is still there; a path beneath a directory that could
@@ -1106,19 +1232,17 @@ fn remove_vanished(index: &mut git2::Index, walked: &Walked) -> Result<(), Store
 /// entry alone is what lets `write_tree` reuse every still-valid subtree (ADR 0004). Until ticket 44
 /// brings the stat cache, the file is still hashed to find this out; what is saved is the tree rewrite,
 /// which is the part measured in seconds.
-fn unchanged(
-    baseline: Option<&git2::Tree<'_>>,
-    path: &WirePath,
-    oid: git2::Oid,
-    mode: u32,
-) -> bool {
-    let Some(tree) = baseline else {
-        return false;
-    };
+fn baseline_entry(baseline: Option<&git2::Tree<'_>>, path: &WirePath) -> Option<(git2::Oid, u32)> {
+    let entry = baseline?.get_path(&path.as_filesystem_path()).ok()?;
 
-    match tree.get_path(&path.as_filesystem_path()) {
-        Ok(entry) => entry.id() == oid && entry.filemode() == mode as i32,
-        Err(_) => false,
+    Some((entry.id(), u32::try_from(entry.filemode()).ok()?))
+}
+
+/// A moment as nanoseconds since the epoch, before it as a negative count.
+fn nanos_since_epoch(moment: SystemTime) -> i128 {
+    match moment.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
+        Err(before) => -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX),
     }
 }
 

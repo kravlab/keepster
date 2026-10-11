@@ -524,3 +524,76 @@ fn a_flush_that_fails_while_stopping_is_not_retried() {
     );
     assert!(state.stopped());
 }
+
+#[test]
+fn a_reconciliation_is_captured_as_one_and_takes_any_pending_change_with_it() {
+    let run = run(
+        defaults(),
+        &[(10, changed("a.txt")), (11, PolicyEvent::Reconcile)],
+        100,
+    );
+
+    assert_eq!(
+        run.captures,
+        vec![(secs(11), Trigger::Reconcile, vec!["a.txt".to_owned()])],
+        "a pass walks everything, so the change waiting for its window rides along"
+    );
+}
+
+#[test]
+fn a_reconciliation_waits_for_the_rate_limit_like_any_other_snapshot() {
+    let run = run(
+        defaults(),
+        &[(10, changed("a.txt")), (20, PolicyEvent::Reconcile)],
+        200,
+    );
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|capture| (capture.0, capture.1))
+            .collect::<Vec<_>>(),
+        vec![(secs(13), Trigger::Watcher), (secs(73), Trigger::Reconcile)]
+    );
+}
+
+#[test]
+fn a_reconciliation_is_owed_even_with_every_trigger_switched_off() {
+    let run = run(
+        Triggers {
+            watcher: false,
+            ..defaults()
+        },
+        &[(5, PolicyEvent::Reconcile)],
+        100,
+    );
+
+    assert_eq!(run.captures.len(), 1);
+    assert_eq!(run.captures[0].1, Trigger::Reconcile);
+}
+
+#[test]
+fn a_reconciliation_that_could_not_happen_is_retried_as_one() {
+    let run = run_with(
+        defaults(),
+        &[
+            (5, PolicyEvent::Reconcile),
+            (6, PolicyEvent::LockBusy),
+            (50, PolicyEvent::LockReleased),
+            (51, PolicyEvent::CaptureFinished),
+        ],
+        200,
+        false,
+    );
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|capture| (capture.0, capture.1))
+            .collect::<Vec<_>>(),
+        vec![
+            (secs(5), Trigger::Reconcile),
+            (secs(50), Trigger::Reconcile)
+        ]
+    );
+}

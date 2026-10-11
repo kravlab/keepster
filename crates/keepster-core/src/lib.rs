@@ -25,7 +25,7 @@ pub use rules::{
     UnreachableNegation, ignore_file_rules,
 };
 pub use segment::{SegmentName, UnnameableMoment};
-pub use snapshot::{ChangeKind, SnapshotId, Trigger};
+pub use snapshot::{ChangeKind, SnapshotId, Trigger, Verify};
 pub use trigger::{
     Action, InvalidDuration, PolicyEvent, PolicyState, Triggers, decide, format_duration,
     parse_duration,

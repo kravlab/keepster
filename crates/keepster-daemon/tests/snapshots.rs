@@ -6,7 +6,7 @@ const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");
 
 #[tokio::test]
 async fn a_snapshot_can_be_taken_on_demand() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     std::fs::write(project.join("notes.md"), "something worth keeping").expect("a file");
 
@@ -57,7 +57,7 @@ async fn a_snapshot_can_be_taken_on_demand() {
 
 #[tokio::test]
 async fn snapshots_of_one_root_accumulate_in_one_segment() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     std::fs::write(project.join("notes.md"), "first").expect("a file");
 
@@ -80,7 +80,7 @@ async fn snapshots_of_one_root_accumulate_in_one_segment() {
 
 #[tokio::test]
 async fn taking_a_snapshot_of_an_unknown_root_is_not_found() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
 
     let answer = daemon
         .post(
@@ -97,7 +97,7 @@ async fn taking_a_snapshot_of_an_unknown_root_is_not_found() {
 
 #[tokio::test]
 async fn the_cli_takes_a_snapshot_of_the_root_it_is_standing_in() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let inside = daemon.scratch("project/src");
     std::fs::write(project.join("notes.md"), "something").expect("a file");
@@ -145,7 +145,7 @@ async fn a_snapshot_that_could_not_read_a_file_says_so() {
     use std::os::unix::fs::PermissionsExt;
 
     // Ticket 05: an honest partial Snapshot beats no Snapshot, as long as it never claims to be whole.
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     std::fs::write(project.join("notes.md"), "readable").expect("a file");
     let locked = project.join("locked.md");

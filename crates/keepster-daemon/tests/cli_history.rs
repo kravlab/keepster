@@ -40,7 +40,7 @@ fn text(bytes: Vec<u8>) -> String {
 
 #[tokio::test]
 async fn log_lists_the_roots_snapshots_newest_first() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, taken) = history(&daemon).await;
 
     let run = daemon.run_cli_in(&project, KEEPSTER, &["log"]).await;
@@ -59,7 +59,7 @@ async fn log_lists_the_roots_snapshots_newest_first() {
 
 #[tokio::test]
 async fn log_of_a_path_shows_how_each_snapshot_changed_it() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, taken) = history(&daemon).await;
 
     let run = daemon
@@ -77,7 +77,7 @@ async fn log_of_a_path_shows_how_each_snapshot_changed_it() {
 
 #[tokio::test]
 async fn log_json_is_the_daemons_own_items() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project, _) = history(&daemon).await;
 
     let run = daemon
@@ -94,7 +94,7 @@ async fn log_json_is_the_daemons_own_items() {
 
 #[tokio::test]
 async fn log_bounds_by_moments_as_the_timeline_does() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, taken) = history(&daemon).await;
     let second_at = taken[1]["taken_at"].as_str().expect("a moment");
 
@@ -127,7 +127,7 @@ async fn log_bounds_by_moments_as_the_timeline_does() {
 
 #[tokio::test]
 async fn cat_prints_the_latest_version_by_default_and_older_ones_by_selector() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, taken) = history(&daemon).await;
     let cat = |selector: String| {
         let project = project.clone();
@@ -172,7 +172,7 @@ async fn cat_prints_the_latest_version_by_default_and_older_ones_by_selector() {
 
 #[tokio::test]
 async fn cat_reads_a_file_that_no_longer_exists() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, _) = history(&daemon).await;
 
     let run = daemon
@@ -199,7 +199,7 @@ async fn cat_reads_a_file_that_no_longer_exists() {
 
 #[tokio::test]
 async fn cat_of_something_that_is_not_a_file_is_a_usage_error() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, _) = history(&daemon).await;
 
     let root = daemon.run_cli_in(&project, KEEPSTER, &["cat", "."]).await;
@@ -213,7 +213,7 @@ async fn cat_of_something_that_is_not_a_file_is_a_usage_error() {
 
 #[tokio::test]
 async fn a_path_that_climbs_out_of_a_subdirectory_is_still_inside_the_root() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (_, project, _) = history(&daemon).await;
     let inside = daemon.scratch("project/sub");
 

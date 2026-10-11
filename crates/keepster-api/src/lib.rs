@@ -338,6 +338,22 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
+/// What a Reconciliation asked for on demand did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Reconciled {
+    /// The Snapshot the pass wrote; absent when the Working Tree matched the latest Snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
+    /// How many files the pass read and hashed; the rest were vouched for by what the last pass saw.
+    pub hashed: u64,
+    /// How many files the pass compared.
+    pub observed: u64,
+    /// Whether every mtime the pass saw fell on a whole second — a sign the filesystem keeps none finer,
+    /// which makes the size-and-mtime filter weaker than it looks.
+    pub coarse_mtime: bool,
+}
+
 /// One Root's effective configuration: every key of the schema, the value in force, and the level
 /// that set it.
 ///

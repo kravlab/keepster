@@ -1,17 +1,18 @@
 //! Snapshots: taking one on demand, and reading history back — the timeline, a Snapshot's entries and
 //! one version's bytes.
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
 use keepster_api::{
-    Change, Entries, Entry, EntryKind, ErrorCode, Problem, Snapshot, Timeline, Withheld,
+    Change, Entries, Entry, EntryKind, ErrorCode, Problem, Reconciled, Snapshot, Timeline, Withheld,
 };
 use keepster_app::config::Effective;
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
-use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger};
+use keepster_core::{ChangeKind, RootId, RootPath, SnapshotId, Trigger, Verify};
 use keepster_store::{
-    CapturedSnapshot, Depth, RootRecord, SnapshotSummary, StoreError, TimelineQuery,
+    CaptureRequest, CapturedSnapshot, Depth, RootRecord, SnapshotSummary, StoreError, TimelineQuery,
 };
 
 use crate::DaemonState;
@@ -56,6 +57,91 @@ pub(crate) async fn create(
     Path(RootAddress { id }): Path<RootAddress>,
 ) -> Result<impl IntoResponse, ProblemResponse> {
     let id = roots::parse_id(&id)?;
+    let pass = run_pass(&state, id, Trigger::Manual, None, true)?;
+    let captured = pass
+        .snapshot
+        .expect("a capture someone asked for writes a Snapshot even of an unchanged tree");
+
+    Ok((StatusCode::CREATED, Json(describe_captured(&captured))))
+}
+
+/// What a client sends to reconcile a Root on demand.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub(crate) struct ReconcileRequest {
+    /// `hash` reads every file, whatever the last pass observed — the one-off answer to a filesystem
+    /// whose mtimes cannot be trusted. `stat`, or nothing, uses the Root's configured mode.
+    #[serde(default)]
+    verify: Option<VerifyMode>,
+}
+
+/// How a pass judges a file it does not read.
+#[derive(Debug, Clone, Copy, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum VerifyMode {
+    /// Read only what size, mtime or mode says changed.
+    Stat,
+    /// Read everything.
+    Hash,
+}
+
+/// Compare the Root's Working Tree against its latest Snapshot now, and capture what differs.
+///
+/// The same pass the daemon runs at its start and after the platform loses events, run on request —
+/// with `verify: hash`, reading every file. Nothing is written when nothing changed.
+#[utoipa::path(
+    post,
+    path = "/v1/roots/{id}/reconcile",
+    operation_id = "reconcile_root",
+    tag = "snapshots",
+    params(RootAddress),
+    request_body = ReconcileRequest,
+    responses(
+        (status = 200, description = "The pass ran; `snapshot` is the one it wrote, absent when nothing had changed.", body = Reconciled),
+        (status = 400, description = "The body is not JSON.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or its configuration has no valid version.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "The body is JSON of the wrong shape, such as an unknown `verify`.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Snapshot could not be written, or the clock cannot be recorded.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(crate) async fn reconcile(
+    State(state): State<DaemonState>,
+    Path(RootAddress { id }): Path<RootAddress>,
+    body: Result<Json<ReconcileRequest>, JsonRejection>,
+) -> Result<Json<Reconciled>, ProblemResponse> {
+    let Json(request) = body.map_err(|rejection| {
+        ProblemResponse::new(
+            rejection.status(),
+            ErrorCode::BodyInvalid,
+            rejection.body_text(),
+        )
+    })?;
+    let id = roots::parse_id(&id)?;
+    let verify = request.verify.map(|mode| match mode {
+        VerifyMode::Stat => Verify::Stat,
+        VerifyMode::Hash => Verify::Hash,
+    });
+
+    let pass = run_pass(&state, id, Trigger::Reconcile, verify, false)?;
+
+    Ok(Json(Reconciled {
+        snapshot: pass.snapshot.as_ref().map(describe_captured),
+        hashed: pass.hashed,
+        observed: pass.observed,
+        coarse_mtime: pass.coarse_mtime,
+    }))
+}
+
+/// One pass over the Root `id`, asked for by a client: under the store's lock, waiting for it if a
+/// capture holds it, with `verify` overriding the configured mode.
+fn run_pass(
+    state: &DaemonState,
+    id: RootId,
+    trigger: Trigger,
+    verify: Option<Verify>,
+    record_unchanged: bool,
+) -> Result<keepster_store::Pass, ProblemResponse> {
     let now = roots::now();
 
     // Converted before anything is written, so a clock outside the representable range is refused with a
@@ -68,7 +154,7 @@ pub(crate) async fn create(
         )
     })?;
 
-    let (root, location, loaded) = prepare(&state, id)?;
+    let (root, location, loaded) = prepare(state, id)?;
 
     // One capture at a time per store: git documents a corruption risk under concurrent access, and two
     // captures racing would leave one of them unreferenced whatever git did (ticket 06).
@@ -82,18 +168,26 @@ pub(crate) async fn create(
         return Err(roots::not_found(&id.to_string()));
     }
 
-    let captured = snapshots::capture(&root, &location, &loaded.policy, Trigger::Manual, now)
-        .map_err(capture_problem)?;
-    if let Err(reason) = &captured.changed_paths {
-        tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
+    let request = CaptureRequest {
+        trigger,
+        now,
+        verify: verify.unwrap_or(loaded.reconcile.verify),
+        record_unchanged,
+    };
+    let pass =
+        snapshots::pass(&root, &location, &loaded.policy, &request).map_err(capture_problem)?;
+    if let Some(captured) = &pass.snapshot {
+        if let Err(reason) = &captured.changed_paths {
+            tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
+        }
     }
-    if let Some(reason) = &captured.index_lag {
+    if let Some(reason) = &pass.index_lag {
         // The Snapshot is durable — git came first — so this is not the request's failure. The index
         // lags, every read catches it up, and so does the next start.
-        tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the history index lags");
+        tracing::warn!(root = %id, %reason, "the history index lags");
     }
 
-    Ok((StatusCode::CREATED, Json(describe_captured(&captured))))
+    Ok(pass)
 }
 
 /// What a capture of the Root `id` needs: its record, its store and the configuration in force.

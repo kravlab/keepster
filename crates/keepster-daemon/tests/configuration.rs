@@ -8,10 +8,15 @@ use serde_json::Value;
 
 const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");
 
+/// Write `content` at `path` as an editor saves: beside it, then renamed over it. A plain write truncates
+/// first, and the daemon — which re-reads its files every second — could read the empty file in between
+/// and take it, validly, for the configuration of the moment.
 fn write(root: &Path, path: &str, content: &[u8]) {
     let file = root.join(path);
     std::fs::create_dir_all(file.parent().expect("a parent")).expect("its directory");
-    std::fs::write(file, content).expect("a file");
+    let temporary = file.with_extension("saving");
+    std::fs::write(&temporary, content).expect("a file");
+    std::fs::rename(temporary, file).expect("saved");
 }
 
 async fn registered(daemon: &Harness) -> (String, PathBuf) {
@@ -154,7 +159,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
+    assert_eq!(state(&daemon, &root).await.0, "watching");
 
     write(
         &project,
@@ -208,7 +213,7 @@ async fn an_invalid_edit_leaves_the_last_known_good_in_force_and_the_root_degrad
         ".keepster.toml",
         b"[files]\nexclude = [\"*.log\"]\n",
     );
-    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
+    assert_eq!(state(&daemon, &root).await.0, "watching");
 }
 
 #[tokio::test]
@@ -266,7 +271,7 @@ async fn a_root_file_setting_a_global_only_key_is_ignored_and_the_root_not_degra
         serde_json::json!([])
     );
     assert_eq!(configuration["warnings"][0]["code"], "key_ignored");
-    assert_eq!(state(&daemon, &root).await.1, "coverage_not_guaranteed");
+    assert_eq!(state(&daemon, &root).await.0, "watching");
 }
 
 #[tokio::test]

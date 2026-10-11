@@ -119,6 +119,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/version",
             "PATCH /v1/roots/{id}",
             "POST /v1/roots",
+            "POST /v1/roots/{id}/reconcile",
             "POST /v1/roots/{id}/snapshots",
         ]
     );
@@ -154,6 +155,8 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "ConfigLevel",
         "ConfigWarning",
         "RootConfiguration",
+        "Reconciled",
+        "ReconcileRequest",
         "ConfigKey",
         "ConfigEntry",
         "Problem",
@@ -285,6 +288,7 @@ fn every_operation_has_its_own_stable_name() {
             "list_snapshots",
             "move_root",
             "read_content",
+            "reconcile_root",
             "register_root",
             "take_snapshot",
             "unwatch_root",

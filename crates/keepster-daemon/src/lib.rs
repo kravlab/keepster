@@ -49,6 +49,9 @@ pub struct DaemonConfig {
     /// The global configuration file, or `None` to run without one. It need not exist: a user who
     /// configures nothing gets the documented defaults.
     pub config_path: Option<PathBuf>,
+    /// How many directory watches all Roots together may hold, or `None` for the platform's own ceiling.
+    /// A Root that would exceed it is reconciled periodically instead of watched (ticket 44).
+    pub watch_ceiling: Option<usize>,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -103,7 +106,10 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     .map_err(io::Error::other)?;
     let listener = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
-    let state = DaemonState::new(registry, config.config_path, config.store_base);
+    let ceiling = config
+        .watch_ceiling
+        .or_else(keepster_watch::default_ceiling);
+    let state = DaemonState::new(registry, config.config_path, config.store_base, ceiling);
     // Every file is read again whenever a request needs it; the tick is what makes a reload happen
     // when nothing asks, so that what follows from one — a Root queued for a full comparison, a
     // `Degraded` state — does not wait for a client.
@@ -190,7 +196,12 @@ struct DaemonState {
 }
 
 impl DaemonState {
-    fn new(registry: Registry, config_path: Option<PathBuf>, store_base: PathBuf) -> Self {
+    fn new(
+        registry: Registry,
+        config_path: Option<PathBuf>,
+        store_base: PathBuf,
+        watch_ceiling: Option<usize>,
+    ) -> Self {
         Self {
             started: Instant::now(),
             registry: Arc::new(Mutex::new(registry)),
@@ -200,7 +211,7 @@ impl DaemonState {
                 std::env::home_dir(),
                 store_base,
             ))),
-            runtimes: Arc::default(),
+            runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling)),
         }
     }
 
@@ -228,6 +239,11 @@ impl DaemonState {
     fn forget_configuration_except(&self, registered: &[keepster_store::RootRecord]) {
         self.config()
             .retain(|id| registered.iter().any(|record| record.id == id));
+    }
+
+    /// The Roots whose classification inputs changed since this was last asked.
+    fn take_reconcile_queue(&self) -> std::collections::BTreeSet<RootId> {
+        self.config().take_reconcile_queue()
     }
 
     /// The configuration, held for the length of one resolution.
@@ -292,6 +308,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(roots::list, roots::register))
         .routes(routes!(roots::show, roots::deregister, roots::move_root))
         .routes(routes!(snapshots::list, snapshots::create))
+        .routes(routes!(snapshots::reconcile))
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
         .routes(routes!(explain::explain))

@@ -1,5 +1,5 @@
-//! Automatic capture (ticket 43): one runtime per Root, folding the watcher's events and its own timers
-//! through the policy kernel and doing what it decides.
+//! Automatic capture and Reconciliation (tickets 43 and 44): one runtime per Root, folding the
+//! watcher's events and its own timers through the policy kernel and doing what it decides.
 //!
 //! The policy is `keepster_core::decide`, a pure function; this module owns its state and is the only
 //! place that turns an [`Action`] into a capture or a timer. Everything that can happen to a Root — a
@@ -8,15 +8,17 @@
 //! were handled in, and shutdown is one more event rather than a second code path.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use keepster_app::config::Effective;
 use keepster_app::snapshots;
-use keepster_core::{Action, CapturePolicy, PolicyEvent, PolicyState, RootId, Trigger, decide};
-use keepster_store::RootRecord;
+use keepster_core::{
+    Action, CapturePolicy, PolicyEvent, PolicyState, RootId, Trigger, Triggers, Verify, decide,
+};
+use keepster_store::{CaptureRequest, RootRecord};
 use keepster_watch::{WatchEvent, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -33,11 +35,13 @@ const LOCK_POLL: Duration = Duration::from_millis(500);
 const STOP_DRAIN: Duration = Duration::from_secs(8);
 
 /// Every Root's runtime.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Runtimes {
     runtimes: Mutex<HashMap<RootId, Runtime>>,
     /// Set once the daemon is stopping, after which no runtime is started.
     closed: AtomicBool,
+    /// How many directory watches all Roots together may hold, where the platform has such a budget.
+    ceiling: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -53,10 +57,33 @@ struct Runtime {
 pub(crate) struct Activity {
     /// Whether some Trigger captures this Root without being asked.
     pub(crate) automatic: bool,
+    /// Whether a Reconciliation runs when the daemon starts.
+    pub(crate) at_start: bool,
+    /// How a pass judges a file it does not read.
+    pub(crate) verify: Verify,
+    /// How the watcher stands.
+    pub(crate) watch: Watch,
+    /// Whether the last pass found every mtime on a whole second — a filter weaker than it looks.
+    pub(crate) coarse_mtime: bool,
     /// How many paths wait to be captured.
     pub(crate) pending_paths: u64,
     /// When the oldest of them changed.
     pub(crate) pending_since: Option<Instant>,
+}
+
+/// How a Root's watcher stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Watch {
+    /// The watcher Trigger is off, or the watcher is still being armed.
+    #[default]
+    Off,
+    /// Watching, with this many directory watches.
+    Armed(usize),
+    /// Not watched, because arming it would exceed the daemon-wide ceiling: reconciled periodically
+    /// instead.
+    Ceiling,
+    /// Not watched, because the platform refused: reconciled periodically instead.
+    Failed,
 }
 
 #[derive(Debug)]
@@ -71,6 +98,15 @@ enum Message {
 }
 
 impl Runtimes {
+    /// No runtimes yet, under a daemon-wide watch ceiling where the platform has one.
+    pub(crate) fn new(ceiling: Option<usize>) -> Self {
+        Self {
+            runtimes: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            ceiling,
+        }
+    }
+
     /// Bring the runtimes in line with the Registry: start one for every Root that can be captured
     /// automatically, hand every running one its current configuration, and stop the rest.
     ///
@@ -98,6 +134,8 @@ impl Runtimes {
                 (Some(runtime), Some(effective)) if capturable && runtime.path == record.path => {
                     let _ = runtime.inbox.send(Message::Refresh(Box::new(effective)));
                 }
+                // A Root registered, moved or back from being gone: a runtime of its own, whose first
+                // act is the Reconciliation a Registry change owes (ADR 0009).
                 (_, Some(effective)) if capturable => {
                     if let Some(old) = runtimes.remove(&record.id) {
                         let _ = old.inbox.send(Message::Stop);
@@ -115,11 +153,37 @@ impl Runtimes {
         }
     }
 
+    /// Owe the Root `id` a Reconciliation, as a reload that changed what classifies its paths does.
+    pub(crate) fn reconcile(&self, id: RootId) {
+        if let Some(runtime) = self.runtimes().get(&id) {
+            let _ = runtime.inbox.send(Message::Event(PolicyEvent::Reconcile));
+        }
+    }
+
     /// What the runtime of the Root `id` reports, if one runs.
     pub(crate) fn activity(&self, id: RootId) -> Option<Activity> {
         self.runtimes()
             .get(&id)
             .map(|runtime| *lock(&runtime.activity))
+    }
+
+    /// Whether `watches` more directory watches for the Root `id` fit under the ceiling beside every
+    /// other Root's.
+    fn fits(&self, id: RootId, watches: usize) -> bool {
+        let Some(ceiling) = self.ceiling else {
+            return true;
+        };
+        let used: usize = self
+            .runtimes()
+            .iter()
+            .filter(|(other, _)| **other != id)
+            .map(|(_, runtime)| match lock(&runtime.activity).watch {
+                Watch::Armed(count) => count,
+                _ => 0,
+            })
+            .sum();
+
+        used + watches <= ceiling
     }
 
     /// Stop every runtime as a stopping daemon must: no further Trigger is accepted, the capture in
@@ -158,10 +222,8 @@ impl Runtimes {
 
 fn start(state: &DaemonState, record: RootRecord, effective: Effective) -> Runtime {
     let (inbox, messages) = mpsc::unbounded_channel();
-    let activity = Arc::new(Mutex::new(Activity {
-        automatic: automatic(&effective),
-        ..Activity::default()
-    }));
+    let activity = Arc::new(Mutex::new(Activity::default()));
+    describe(&mut lock(&activity), &effective);
     let path = record.path.clone();
     let task = tokio::spawn(run(
         state.clone(),
@@ -180,9 +242,28 @@ fn start(state: &DaemonState, record: RootRecord, effective: Effective) -> Runti
     }
 }
 
-/// Whether any Trigger captures the Root without being asked.
-fn automatic(effective: &Effective) -> bool {
-    effective.triggers.watcher || effective.triggers.periodic.is_some()
+/// Record in `activity` what the configuration says about how the Root is captured.
+fn describe(activity: &mut Activity, effective: &Effective) {
+    activity.automatic = effective.triggers.watcher || effective.triggers.periodic.is_some();
+    activity.at_start = effective.reconcile.at_start;
+    activity.verify = effective.reconcile.verify;
+}
+
+/// The policy's settings for a Root under `effective`, watched or not: a Root whose watcher Trigger is on
+/// but which cannot be watched is reconciled periodically instead, so its coverage does not quietly stop
+/// at the last event it saw (ticket 30).
+fn settings_for(effective: &Effective, watch: Watch) -> Triggers {
+    let mut settings = effective.triggers;
+    if settings.watcher && matches!(watch, Watch::Ceiling | Watch::Failed) {
+        settings.watcher = false;
+        settings.periodic = Some(
+            settings
+                .periodic
+                .unwrap_or(effective.reconcile.fallback_every),
+        );
+    }
+
+    settings
 }
 
 /// One Root's runtime: until it is stopped, take the next event — a message, or the timer the policy
@@ -197,12 +278,19 @@ async fn run(
 ) {
     let origin = state.started;
     let mut rules = effective.policy.clone();
-    let mut settings = effective.triggers;
-    let mut watcher = watch(&record.path, &rules, settings.watcher, &outbox).await;
+    let mut watching = effective.triggers.watcher;
+    let mut watcher = watch(&state, &record, &rules, watching, &outbox, &activity).await;
+    let mut settings = settings_for(&effective, lock(&activity).watch);
     let mut policy = PolicyState::new(settings, origin.elapsed());
     let mut deadline: Option<Instant> = None;
-    // Asked once at the start, which is how a periodic floor arms its first timer.
-    let mut next = Some(PolicyEvent::Timer);
+    // A daemon that was down saw nothing of what happened meanwhile, so the first act is a pass over the
+    // whole Root (ticket 02) — unless the user switched that walk off, which the Root's state then says.
+    // Either way the policy is asked what is due, which is how a periodic floor arms its first timer.
+    let mut next = Some(if effective.reconcile.at_start {
+        PolicyEvent::Reconcile
+    } else {
+        PolicyEvent::Timer
+    });
 
     loop {
         let event = match next.take() {
@@ -220,16 +308,18 @@ async fn run(
                         Some(Message::Refresh(effective)) => {
                             // A change to what classifies paths, or to whether the watcher is on, means
                             // different watches; the policy only needs the intervals.
-                            if effective.policy != rules || effective.triggers.watcher != settings.watcher {
+                            if effective.policy != rules || effective.triggers.watcher != watching {
                                 release(watcher.take()).await;
                                 rules = effective.policy.clone();
-                                watcher = watch(&record.path, &rules, effective.triggers.watcher, &outbox).await;
+                                watching = effective.triggers.watcher;
+                                watcher = watch(&state, &record, &rules, watching, &outbox, &activity).await;
                             }
-                            lock(&activity).automatic = automatic(&effective);
-                            if effective.triggers == settings {
+                            describe(&mut lock(&activity), &effective);
+                            let refreshed = settings_for(&effective, lock(&activity).watch);
+                            if refreshed == settings {
                                 continue;
                             }
-                            settings = effective.triggers;
+                            settings = refreshed;
                             PolicyEvent::Settings(settings)
                         }
                     },
@@ -247,7 +337,13 @@ async fn run(
             match action {
                 Action::Capture { trigger, paths } => {
                     tracing::debug!(root = %record.id, %trigger, changed = paths.len(), "capturing");
-                    capture(state.clone(), record.id, trigger, outbox.clone());
+                    capture(
+                        state.clone(),
+                        record.id,
+                        trigger,
+                        outbox.clone(),
+                        Arc::clone(&activity),
+                    );
                 }
                 Action::ArmTimer { at } => deadline = Some(origin + at),
             }
@@ -273,47 +369,64 @@ async fn release(watcher: Option<Watcher>) {
     }
 }
 
-/// Start watching the Root at `path` under `rules`, its events going to `outbox`, when the watcher
-/// Trigger is on.
+/// Start watching the Root under `rules`, its events going to `outbox`, when the watcher Trigger is on,
+/// and record in `activity` how that went.
 ///
-/// A Root that cannot be watched is still captured by its other Triggers and by Reconciliation: the
-/// watcher is a latency optimisation, so failing to arm it is said, not fatal.
+/// A Root that cannot be watched — the platform refused, or its watches would exceed the daemon-wide
+/// ceiling — is reconciled periodically instead: the watcher is a latency optimisation, so failing to arm
+/// it is said, never fatal.
 async fn watch(
-    path: &Path,
+    state: &DaemonState,
+    record: &RootRecord,
     rules: &CapturePolicy,
     on: bool,
     outbox: &mpsc::UnboundedSender<Message>,
+    activity: &Mutex<Activity>,
 ) -> Option<Watcher> {
+    lock(activity).watch = Watch::Off;
     if !on {
         return None;
     }
-    let (path, rules, outbox) = (path.to_path_buf(), rules.clone(), outbox.clone());
+    let (path, rules, outbox) = (record.path.clone(), rules.clone(), outbox.clone());
 
     // Arming walks the tree, which blocks.
     let started = tokio::task::spawn_blocking(move || {
         Watcher::start(&path, &rules, move |event| {
-            let paths = match event {
-                WatchEvent::Changed(paths) => paths,
-                // Until Reconciliation exists (ticket 44), a lost event is a change somewhere: the
-                // capture it prompts walks the whole Root anyway.
-                WatchEvent::Rescan => Vec::new(),
+            let event = match event {
+                WatchEvent::Changed(paths) => PolicyEvent::Changed(paths),
+                // The platform lost events, and nothing says which: the guarantee is a pass over the
+                // whole Root (ticket 35).
+                WatchEvent::Rescan => PolicyEvent::Reconcile,
             };
-            let _ = outbox.send(Message::Event(PolicyEvent::Changed(paths)));
+            let _ = outbox.send(Message::Event(event));
         })
     })
     .await;
 
-    match started {
-        Ok(Ok(watcher)) => Some(watcher),
+    let watcher = match started {
+        Ok(Ok(watcher)) => watcher,
         Ok(Err(error)) => {
-            tracing::warn!(%error, "the Root could not be watched; its other Triggers still capture it");
-            None
+            tracing::warn!(root = %record.id, %error, "the Root could not be watched; it is reconciled periodically instead");
+            lock(activity).watch = Watch::Failed;
+            return None;
         }
         Err(error) => {
-            tracing::warn!(%error, "arming the watcher failed");
-            None
+            tracing::warn!(root = %record.id, %error, "arming the watcher failed; the Root is reconciled periodically instead");
+            lock(activity).watch = Watch::Failed;
+            return None;
         }
+    };
+
+    let watches = watcher.watched().len();
+    if !state.runtimes.fits(record.id, watches) {
+        tracing::warn!(root = %record.id, watches, "watching this Root would exceed the daemon-wide watch ceiling; it is reconciled periodically instead");
+        release(Some(watcher)).await;
+        lock(activity).watch = Watch::Ceiling;
+        return None;
     }
+    lock(activity).watch = Watch::Armed(watches);
+
+    Some(watcher)
 }
 
 /// Capture the Root `id` as the policy asked, reporting the outcome back to its runtime.
@@ -322,6 +435,7 @@ fn capture(
     id: RootId,
     trigger: Trigger,
     outbox: mpsc::UnboundedSender<Message>,
+    activity: Arc<Mutex<Activity>>,
 ) {
     let captured = tokio::task::spawn_blocking({
         let state = state.clone();
@@ -329,7 +443,10 @@ fn capture(
     });
 
     tokio::spawn(async move {
-        let outcome = captured.await.unwrap_or(PolicyEvent::CaptureFailed);
+        let (outcome, coarse_mtime) = captured.await.unwrap_or((PolicyEvent::CaptureFailed, None));
+        if let Some(coarse_mtime) = coarse_mtime {
+            lock(&activity).coarse_mtime = coarse_mtime;
+        }
         let busy = outcome == PolicyEvent::LockBusy;
         let _ = outbox.send(Message::Event(outcome));
 
@@ -349,14 +466,15 @@ fn capture(
     });
 }
 
-/// One automatic capture, as the event that reports how it went.
-fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> PolicyEvent {
+/// One automatic capture, as the event that reports how it went — with what the pass saw of the
+/// filesystem's mtimes, when a pass ran.
+fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEvent, Option<bool>) {
     let now = crate::roots::now();
     let (root, location, loaded) = match crate::snapshots::prepare(state, id) {
         Ok(prepared) => prepared,
         Err(problem) => {
             tracing::warn!(root = %id, %trigger, problem = ?problem, "an automatic capture could not start");
-            return PolicyEvent::CaptureFailed;
+            return (PolicyEvent::CaptureFailed, None);
         }
     };
 
@@ -364,26 +482,37 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> PolicyEvent
     let _held = match store.try_lock() {
         Ok(held) => held,
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        Err(TryLockError::WouldBlock) => return PolicyEvent::LockBusy,
+        Err(TryLockError::WouldBlock) => return (PolicyEvent::LockBusy, None),
     };
     if !state.registry().contains(id) {
         // Deregistered — and perhaps erased — since it was prepared: opening the store now would bring an
         // erased one back as an orphan.
-        return PolicyEvent::CaptureFailed;
+        return (PolicyEvent::CaptureFailed, None);
     }
 
-    match snapshots::capture_if_changed(&root, &location, &loaded.policy, trigger, now) {
-        Ok(Some(captured)) => {
-            tracing::info!(root = %id, snapshot = %captured.id, %trigger, "captured");
-            if let Some(reason) = &captured.index_lag {
-                tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the history index lags");
+    let request = CaptureRequest {
+        trigger,
+        now,
+        verify: loaded.reconcile.verify,
+        record_unchanged: false,
+    };
+    match snapshots::pass(&root, &location, &loaded.policy, &request) {
+        Ok(pass) => {
+            if let Some(reason) = &pass.index_lag {
+                tracing::warn!(root = %id, %reason, "the history index lags");
             }
-            PolicyEvent::CaptureFinished
+            let event = match &pass.snapshot {
+                Some(captured) => {
+                    tracing::info!(root = %id, snapshot = %captured.id, %trigger, hashed = pass.hashed, "captured");
+                    PolicyEvent::CaptureFinished
+                }
+                None => PolicyEvent::CaptureUnchanged,
+            };
+            (event, Some(pass.coarse_mtime))
         }
-        Ok(None) => PolicyEvent::CaptureUnchanged,
         Err(error) => {
             tracing::warn!(root = %id, %trigger, %error, "an automatic capture failed");
-            PolicyEvent::CaptureFailed
+            (PolicyEvent::CaptureFailed, None)
         }
     }
 }

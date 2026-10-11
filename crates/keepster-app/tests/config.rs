@@ -468,3 +468,31 @@ mod held {
         );
     }
 }
+
+#[test]
+fn reconciliation_runs_at_start_and_trusts_the_stat_filter_unless_told_otherwise() {
+    let defaults = merged(&global(""), None);
+    assert!(defaults.reconcile.at_start);
+    assert_eq!(defaults.reconcile.verify, keepster_core::Verify::Stat);
+    assert_eq!(
+        scalar(&defaults, "reconcile.verify").value,
+        Value::Name("stat".to_owned())
+    );
+
+    let file = own("[reconcile]\nat_start = false\nverify = \"hash\"\n");
+    let effective = merged(&global(""), Some(&file));
+    assert!(!effective.reconcile.at_start);
+    assert_eq!(effective.reconcile.verify, keepster_core::Verify::Hash);
+    assert_eq!(
+        scalar(&effective, "reconcile.at_start").origin.level,
+        Level::Root
+    );
+
+    let error = GlobalConfig::parse(Path::new(GLOBAL), "[reconcile]\nverify = \"mtime\"\n", None)
+        .expect_err("an unknown mode");
+    assert!(
+        error.message.contains("reconcile.verify"),
+        "{}",
+        error.message
+    );
+}

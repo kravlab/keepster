@@ -7,7 +7,7 @@ const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");
 
 #[tokio::test]
 async fn watch_names_the_root_it_registered_and_roots_lists_it() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("my-project");
 
     let watched = daemon
@@ -24,14 +24,14 @@ async fn watch_names_the_root_it_registered_and_roots_lists_it() {
     let listed = String::from_utf8(listed.stdout).expect("text");
     assert!(listed.contains("my-project"), "no Root in:\n{listed}");
     assert!(
-        listed.contains("coverage_not_guaranteed"),
-        "the listing must say why a Root is not watched as promised, in:\n{listed}"
+        listed.contains("capture_unavailable"),
+        "the listing must say why a Root is not captured by itself, in:\n{listed}"
     );
 }
 
 #[tokio::test]
 async fn status_lists_registered_roots_and_stops_claiming_success() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     daemon
         .post_json("/v1/roots", &serde_json::json!({ "path": project }))
@@ -51,7 +51,7 @@ async fn status_lists_registered_roots_and_stops_claiming_success() {
 
 #[tokio::test]
 async fn unwatch_from_inside_the_root_finds_it_without_being_told() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let inside = daemon.scratch("project/src/deep");
 
@@ -79,7 +79,7 @@ async fn unwatch_from_inside_the_root_finds_it_without_being_told() {
 
 #[tokio::test]
 async fn unwatch_accepts_an_unambiguous_prefix_of_the_identity() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let created = daemon
         .post_json("/v1/roots", &serde_json::json!({ "path": project }))
@@ -95,7 +95,7 @@ async fn unwatch_accepts_an_unambiguous_prefix_of_the_identity() {
 
 #[tokio::test]
 async fn unwatch_outside_every_root_says_what_to_do_instead() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let elsewhere = daemon.scratch("elsewhere");
 
     let run = daemon.run_cli_in(&elsewhere, KEEPSTER, &["unwatch"]).await;
@@ -114,7 +114,7 @@ async fn unwatch_outside_every_root_says_what_to_do_instead() {
 
 #[tokio::test]
 async fn purging_history_needs_consent_of_its_own() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let created = daemon
         .post_json("/v1/roots", &serde_json::json!({ "path": project }))
@@ -148,7 +148,7 @@ async fn purging_history_needs_consent_of_its_own() {
 
 #[tokio::test]
 async fn move_records_the_new_path() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let before = daemon.scratch("before");
     let after = daemon.scratch("after");
     let created = daemon

@@ -46,6 +46,18 @@ pub struct WatchError {
     pub source: notify::Error,
 }
 
+/// How many watches all Roots together may hold, where the platform spends one per directory: half the
+/// per-user inotify budget, read once, so other tools of the same user keep the rest (ticket 30). `None`
+/// where one watch covers a whole tree and there is no budget to share.
+pub fn default_ceiling() -> Option<usize> {
+    if !PER_DIRECTORY {
+        return None;
+    }
+    let budget = fs::read_to_string("/proc/sys/fs/inotify/max_user_watches").ok()?;
+
+    budget.trim().parse::<usize>().ok().map(|budget| budget / 2)
+}
+
 /// A Root being watched, until this is dropped.
 pub struct Watcher {
     shared: Arc<Mutex<Shared>>,

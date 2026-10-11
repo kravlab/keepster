@@ -25,7 +25,7 @@ use crate::history::StoreError;
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// The schema. `STRICT` so a value of the wrong type is an error rather than a silent coercion; no
 /// row ids, because every table already has a natural key.
@@ -52,7 +52,28 @@ const SCHEMA: &str = "
         segment TEXT NOT NULL PRIMARY KEY,
         tip     TEXT NOT NULL
     ) STRICT, WITHOUT ROWID;
+
+    CREATE TABLE observed (
+        path  TEXT    NOT NULL PRIMARY KEY,
+        size  INTEGER NOT NULL,
+        mtime TEXT    NOT NULL,
+        oid   TEXT    NOT NULL
+    ) STRICT, WITHOUT ROWID;
 ";
+
+/// What the last pass saw of one file, and the content it read for it: the evidence a pass compares
+/// against before deciding whether to read the file again (ADR 0014).
+///
+/// Derived from observation rather than from git, so a rebuild from the Segments cannot restore it —
+/// losing it costs one pass that reads everything, never a wrong Snapshot, because the object id is the
+/// verdict and this only decides whether to compute one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Observation {
+    pub(crate) size: u64,
+    /// Nanoseconds since the epoch, as the filesystem reported them.
+    pub(crate) mtime: i128,
+    pub(crate) oid: git2::Oid,
+}
 
 /// How long a connection waits for another one's write before giving up.
 ///
@@ -185,6 +206,78 @@ impl Index {
             connection,
             path: path.to_path_buf(),
         }))
+    }
+
+    /// Everything the last pass observed, by path.
+    pub(crate) fn observations(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Observation>, StoreError> {
+        let failed = index_failed(&self.path, "read");
+        let mut statement = self
+            .connection
+            .prepare("SELECT path, size, mtime, oid FROM observed")
+            .map_err(&failed)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(&failed)?;
+
+        let mut observations = std::collections::HashMap::new();
+        for row in rows {
+            let (path, size, mtime, oid) = row.map_err(&failed)?;
+            // A row this build cannot read back is evidence it cannot use, which only costs a read.
+            let (Ok(size), Ok(mtime), Ok(oid)) = (
+                u64::try_from(size),
+                mtime.parse::<i128>(),
+                git2::Oid::from_str(&oid),
+            ) else {
+                continue;
+            };
+            observations.insert(path, Observation { size, mtime, oid });
+        }
+
+        Ok(observations)
+    }
+
+    /// Replace everything observed with what one pass saw, so a path that vanished loses its row in the
+    /// same pass that noticed.
+    pub(crate) fn replace_observations(
+        &mut self,
+        observed: &[(String, Observation)],
+    ) -> Result<(), StoreError> {
+        let path = self.path.clone();
+        let failed = index_failed(&path, "written");
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(&failed)?;
+        transaction
+            .execute("DELETE FROM observed", [])
+            .map_err(&failed)?;
+        {
+            let mut insert = transaction
+                .prepare("INSERT INTO observed (path, size, mtime, oid) VALUES (?1, ?2, ?3, ?4)")
+                .map_err(&failed)?;
+            for (path, observation) in observed {
+                // An mtime is kept as text: SQLite's integers stop at 64 bits, and nanoseconds since the
+                // epoch need more on a filesystem that dates files far from now.
+                insert
+                    .execute(params![
+                        path,
+                        i64::try_from(observation.size).unwrap_or(i64::MAX),
+                        observation.mtime.to_string(),
+                        observation.oid.to_string(),
+                    ])
+                    .map_err(&failed)?;
+            }
+        }
+        transaction.commit().map_err(&failed)
     }
 
     /// Bring the index up to date with the Segment refs, rebuilding it where it cannot simply catch up.

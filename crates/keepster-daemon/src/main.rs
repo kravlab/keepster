@@ -48,6 +48,7 @@ async fn main() -> ExitCode {
         Command::Cat(args) => keepster_cli::cat(args, &control_path, now()).await,
         Command::Explain(args) => keepster_cli::explain(args, &control_path).await,
         Command::Config(args) => keepster_cli::config(args, &control_path).await,
+        Command::Reconcile(args) => keepster_cli::reconcile(args, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -66,6 +67,7 @@ async fn run_daemon(
         control_path,
         store_base,
         config_path,
+        watch_ceiling: None,
     })
     .await
     {

@@ -10,6 +10,13 @@ use keepster_cli::{DaemonClient, Response};
 use keepster_daemon::{DaemonConfig, RunningDaemon};
 use tempfile::TempDir;
 
+/// A global configuration under which a Root is captured only when a test asks: no Trigger is active and
+/// no Reconciliation runs at the start.
+///
+/// For tests about what one capture holds or how history reads back, where a Snapshot the daemon took
+/// by itself would race the one the test took. Tests about automatic capture configure it themselves.
+pub const MANUAL: &[u8] = b"[triggers]\nactive = []\n\n[reconcile]\nat_start = false\n";
+
 /// What a CLI invocation produced.
 ///
 /// `stdout` stays bytes so that a passthrough can be compared byte for byte; `stderr` is text because
@@ -33,8 +40,25 @@ pub struct Harness {
     /// directory a CLI reports name the same place: on macOS the temporary directory sits under
     /// `/var`, a link to `/private/var`, and a process started inside it reports the latter.
     base: PathBuf,
+    /// The daemon-wide watch ceiling this daemon runs under, kept across a restart.
+    watch_ceiling: Option<usize>,
     // Dropped last, after the daemon has been asked to stop and the socket file is gone.
     directory: TempDir,
+}
+
+/// A daemon that has stopped, with everything it wrote still on disk, waiting to be started again.
+///
+/// The window in between is the one a reboot leaves: whatever a test changes here, no watcher sees.
+pub struct Stopped {
+    watch_ceiling: Option<usize>,
+    directory: TempDir,
+}
+
+impl Stopped {
+    /// Start a fresh daemon over the same control channel and the same store.
+    pub async fn start(self) -> Harness {
+        Harness::start_in(self.directory, self.watch_ceiling).await
+    }
 }
 
 impl Harness {
@@ -45,7 +69,13 @@ impl Harness {
     /// base is temporary too, so no test can touch the machine's real Registry.
     pub async fn start() -> Self {
         let directory = TempDir::new().expect("a temporary directory");
-        Self::start_in(directory).await
+        Self::start_in(directory, None).await
+    }
+
+    /// Start a daemon whose Roots together may hold at most `ceiling` directory watches.
+    pub async fn start_with_watch_ceiling(ceiling: usize) -> Self {
+        let directory = TempDir::new().expect("a temporary directory");
+        Self::start_in(directory, Some(ceiling)).await
     }
 
     /// Start a daemon whose global configuration already holds `content` when it first reads it.
@@ -54,7 +84,25 @@ impl Harness {
         std::fs::write(resolved(directory.path()).join("config.toml"), content)
             .expect("the global configuration");
 
-        Self::start_in(directory).await
+        Self::start_in(directory, None).await
+    }
+
+    /// Stop this daemon, keeping everything it wrote, so that a test can change the Working Tree while
+    /// nothing watches it.
+    pub async fn stop(self) -> Stopped {
+        let Self {
+            daemon,
+            directory,
+            watch_ceiling,
+            ..
+        } = self;
+
+        daemon.shutdown().await.expect("the daemon stops cleanly");
+
+        Stopped {
+            watch_ceiling,
+            directory,
+        }
     }
 
     /// Stop this daemon and start a fresh one over the same control channel and the same store.
@@ -62,16 +110,10 @@ impl Harness {
     /// What survives a restart is exactly what was written to disk, which is how the Registry's
     /// durability is asserted without reaching into its files.
     pub async fn restart(self) -> Self {
-        let Self {
-            daemon, directory, ..
-        } = self;
-
-        daemon.shutdown().await.expect("the daemon stops cleanly");
-
-        Self::start_in(directory).await
+        self.stop().await.start().await
     }
 
-    async fn start_in(directory: TempDir) -> Self {
+    async fn start_in(directory: TempDir, watch_ceiling: Option<usize>) -> Self {
         let base = resolved(directory.path());
         let control_path = control_path(&base);
         let store_base = base.join("store");
@@ -81,6 +123,7 @@ impl Harness {
             control_path: control_path.clone(),
             store_base,
             config_path: Some(config_path),
+            watch_ceiling,
         })
         .await
         .expect("the daemon binds its control channel");
@@ -89,6 +132,7 @@ impl Harness {
             client: DaemonClient::new(control_path),
             daemon,
             base,
+            watch_ceiling,
             directory,
         }
     }
@@ -109,8 +153,13 @@ impl Harness {
     /// Write the global configuration this daemon reads, replacing whatever it held.
     ///
     /// The daemon reads it at every capture and every `explain`, so the next request sees it.
+    ///
+    /// Written as an editor saves, beside the file and renamed over it: a plain write truncates first,
+    /// and a daemon reading in between would take the empty file, validly, for the configuration.
     pub fn write_global_config(&self, content: &[u8]) {
-        std::fs::write(self.base.join("config.toml"), content).expect("the global configuration");
+        let saving = self.base.join("config.toml.saving");
+        std::fs::write(&saving, content).expect("the global configuration");
+        std::fs::rename(saving, self.base.join("config.toml")).expect("saved");
     }
 
     /// Create a directory beside the daemon's own state, for use as a Watched Root.

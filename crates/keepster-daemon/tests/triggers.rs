@@ -13,8 +13,10 @@ use serde_json::Value;
 /// Long enough for a loaded CI runner; each test finishes as soon as what it waits for happens.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// A quick debounce and rate limit, so a test waits for a Snapshot in moments rather than a minute.
-const QUICK: &[u8] = b"[triggers]\ndebounce = \"200ms\"\nrate_limit = \"1s\"\n";
+/// A quick debounce and rate limit, so a test waits for a Snapshot in moments rather than a minute — and
+/// no pass at the start, whose Snapshot would otherwise be the one that holds what a test writes.
+const QUICK: &[u8] =
+    b"[triggers]\ndebounce = \"200ms\"\nrate_limit = \"1s\"\n\n[reconcile]\nat_start = false\n";
 
 fn write(root: &Path, path: &str, content: &[u8]) {
     let file = root.join(path);
@@ -105,7 +107,7 @@ async fn an_atomic_save_is_captured_as_an_edit() {
 #[tokio::test]
 async fn the_periodic_floor_captures_when_it_is_switched_on() {
     let daemon = Harness::start_with_global_config(
-        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1s\"\nrate_limit = \"1s\"\n",
+        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1s\"\nrate_limit = \"1s\"\n[reconcile]\nat_start = false\n",
     )
     .await;
     let project = daemon.scratch("project");
@@ -125,9 +127,10 @@ async fn the_periodic_floor_captures_when_it_is_switched_on() {
 #[tokio::test]
 async fn stopping_flushes_a_debounce_window_still_counting_down() {
     // A window that would not close for an hour: only the stop can capture this edit.
-    let daemon =
-        Harness::start_with_global_config(b"[triggers]\ndebounce = \"1h\"\nrate_limit = \"1s\"\n")
-            .await;
+    let daemon = Harness::start_with_global_config(
+        b"[triggers]\ndebounce = \"1h\"\nrate_limit = \"1s\"\n[reconcile]\nat_start = false\n",
+    )
+    .await;
     let (root, project) = registered(&daemon).await;
     write(&project, "unsaved-work.txt", b"the most recent edit");
     eventually("the edit to be pending", || async {
@@ -142,15 +145,18 @@ async fn stopping_flushes_a_debounce_window_still_counting_down() {
 }
 
 #[tokio::test]
-async fn a_root_captured_automatically_is_degraded_only_for_want_of_reconciliation() {
-    let daemon = Harness::start().await;
+async fn a_root_with_nothing_waiting_reports_no_pending_change() {
+    let daemon = Harness::start_with_global_config(QUICK).await;
     let (root, _) = registered(&daemon).await;
 
-    let shown = daemon.get_json(&format!("/v1/roots/{root}")).await;
-
-    assert_eq!(shown["state"], "degraded");
-    assert_eq!(shown["state_code"], "coverage_not_guaranteed");
-    assert_eq!(shown["pending_paths"], 0);
+    // Whatever the platform reported while the watch was armed is captured within moments; after that,
+    // nothing waits.
+    let shown = eventually("nothing to be pending", || async {
+        let shown = daemon.get_json(&format!("/v1/roots/{root}")).await;
+        (shown["pending_paths"] == 0).then_some(shown)
+    })
+    .await;
+    assert!(shown.get("oldest_pending_seconds").is_none(), "{shown}");
 }
 
 #[tokio::test]

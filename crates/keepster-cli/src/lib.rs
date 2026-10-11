@@ -9,6 +9,7 @@ pub mod command;
 pub mod config;
 pub mod explain;
 pub mod history;
+pub mod reconcile;
 pub mod render;
 pub mod resolve;
 pub mod roots;
@@ -18,12 +19,13 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, ExplainArgs, LogArgs, MoveArgs, SnapshotArgs, StatusArgs,
-    UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, ExplainArgs, LogArgs, MoveArgs, ReconcileArgs, SnapshotArgs,
+    StatusArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use explain::explain;
 pub use history::{cat, log};
+pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
 pub use roots::{move_root, roots, unwatch, watch};

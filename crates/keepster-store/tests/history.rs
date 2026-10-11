@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{CapturePolicy, RootId, Trigger};
-use keepster_store::HistoryStore;
+use keepster_core::{CapturePolicy, RootId, Trigger, Verify};
+use keepster_store::{CaptureRequest, HistoryStore};
 
 #[test]
 fn a_new_store_is_bare_with_file_modes_and_reflogs_off() {
@@ -560,22 +560,55 @@ fn an_automatic_capture_that_changes_nothing_writes_no_snapshot() {
     let policy = CapturePolicy::default();
 
     let first = store
-        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT))
-        .expect("a capture");
+        .pass(
+            root_id,
+            &root,
+            &policy,
+            &CaptureRequest {
+                trigger: Trigger::Watcher,
+                now: at(MOMENT),
+                verify: Verify::Stat,
+                record_unchanged: false,
+            },
+        )
+        .expect("a capture")
+        .snapshot;
     assert!(
         first.is_some(),
         "the first Snapshot of a Root always has something to hold"
     );
 
     let unchanged = store
-        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT + 60))
-        .expect("a capture");
+        .pass(
+            root_id,
+            &root,
+            &policy,
+            &CaptureRequest {
+                trigger: Trigger::Watcher,
+                now: at(MOMENT + 60),
+                verify: Verify::Stat,
+                record_unchanged: false,
+            },
+        )
+        .expect("a capture")
+        .snapshot;
     assert!(unchanged.is_none(), "a touched file is not a new version");
 
     fs::write(root.join("notes.txt"), b"edited").expect("an edit");
     let edited = store
-        .capture_if_changed(root_id, &root, &policy, Trigger::Watcher, at(MOMENT + 120))
+        .pass(
+            root_id,
+            &root,
+            &policy,
+            &CaptureRequest {
+                trigger: Trigger::Watcher,
+                now: at(MOMENT + 120),
+                verify: Verify::Stat,
+                record_unchanged: false,
+            },
+        )
         .expect("a capture")
+        .snapshot
         .expect("an edit is a new version");
     assert_eq!(edited.trigger, Trigger::Watcher);
 

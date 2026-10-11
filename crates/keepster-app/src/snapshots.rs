@@ -1,11 +1,10 @@
 //! Taking a Snapshot of a Watched Root, and reading its history back.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId, Trigger};
+use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId};
 use keepster_store::{
-    CapturedSnapshot, Depth, Entry, HistoryStore, RegistryError, RootRecord, StoreError,
+    CaptureRequest, Depth, Entry, HistoryStore, Pass, RegistryError, RootRecord, StoreError,
     TimelinePage, TimelineQuery,
 };
 
@@ -70,40 +69,27 @@ pub fn location(root_dir: &Path) -> StoreLocation {
     }
 }
 
-/// Capture the Root's current contents.
+/// One pass over the Root: walk it, read what the last pass's evidence cannot vouch for, and write a
+/// Snapshot unless the request says an unchanged tree needs none.
 ///
-/// `now` is a parameter all the way down (ADR 0012): it dates the Snapshot, names its Segment and mints
-/// its identity, so a month of history can be produced by this path in a test rather than waited for.
+/// `request.now` is a parameter all the way down (ADR 0012): it dates the Snapshot, names its Segment,
+/// mints its identity and starts the pass, so a month of history can be produced by this path in a test
+/// rather than waited for.
 ///
 /// The Root's record and store location are taken as arguments rather than looked up here, so that the
 /// caller can release its hold on the Registry before a walk that may take seconds — an unrelated Root
 /// has no reason to wait for this one. The exclusive lock the capture does need is the store's own,
 /// which the caller holds: git concedes a corruption risk under concurrent access, and two captures
 /// racing would leave one of them unreferenced in any case (ticket 06).
-pub fn capture(
+pub fn pass(
     root: &RootRecord,
     location: &StoreLocation,
     policy: &CapturePolicy,
-    trigger: Trigger,
-    now: SystemTime,
-) -> Result<CapturedSnapshot, CaptureError> {
+    request: &CaptureRequest,
+) -> Result<Pass, CaptureError> {
     let store = open_for_capture(root, location)?;
 
-    Ok(store.capture(root.id, &root.path, policy, trigger, now)?)
-}
-
-/// Capture the Root as [`capture`] does for an automatic Trigger: nothing is written when nothing
-/// changed, so a touched file or a quiet periodic floor leaves no Snapshot behind.
-pub fn capture_if_changed(
-    root: &RootRecord,
-    location: &StoreLocation,
-    policy: &CapturePolicy,
-    trigger: Trigger,
-    now: SystemTime,
-) -> Result<Option<CapturedSnapshot>, CaptureError> {
-    let store = open_for_capture(root, location)?;
-
-    Ok(store.capture_if_changed(root.id, &root.path, policy, trigger, now)?)
+    Ok(store.pass(root.id, &root.path, policy, request)?)
 }
 
 fn open_for_capture(

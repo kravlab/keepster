@@ -9,7 +9,7 @@ mod index;
 mod registry;
 
 pub use history::{
-    CapturedSnapshot, Content, Depth, Entry, EntryKind, HistoryStore, SnapshotSummary, StoreError,
-    TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
+    CaptureRequest, CapturedSnapshot, Content, Depth, Entry, EntryKind, HistoryStore, Pass,
+    SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
 };
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

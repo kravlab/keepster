@@ -496,6 +496,109 @@
         }
       }
     },
+    "/v1/roots/{id}/reconcile": {
+      "post": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Compare the Root's Working Tree against its latest Snapshot now, and capture what differs.",
+        "description": "The same pass the daemon runs at its start and after the platform loses events, run on request —\nwith `verify: hash`, reading every file. Nothing is written when nothing changed.",
+        "operationId": "reconcile_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The pass ran; `snapshot` is the one it wrote, absent when nothing had changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reconciled"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is registered.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or its configuration has no valid version.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not declared as `application/json`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is JSON of the wrong shape, such as an unknown `verify`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Snapshot could not be written, or the clock cannot be recorded.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/snapshots": {
       "get": {
         "tags": [
@@ -1418,6 +1521,61 @@
           }
         }
       },
+      "ReconcileRequest": {
+        "type": "object",
+        "description": "What a client sends to reconcile a Root on demand.",
+        "properties": {
+          "verify": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VerifyMode",
+                "description": "`hash` reads every file, whatever the last pass observed — the one-off answer to a filesystem\nwhose mtimes cannot be trusted. `stat`, or nothing, uses the Root's configured mode."
+              }
+            ]
+          }
+        }
+      },
+      "Reconciled": {
+        "type": "object",
+        "description": "What a Reconciliation asked for on demand did.",
+        "required": [
+          "hashed",
+          "observed",
+          "coarse_mtime"
+        ],
+        "properties": {
+          "coarse_mtime": {
+            "type": "boolean",
+            "description": "Whether every mtime the pass saw fell on a whole second — a sign the filesystem keeps none finer,\nwhich makes the size-and-mtime filter weaker than it looks."
+          },
+          "hashed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many files the pass read and hashed; the rest were vouched for by what the last pass saw.",
+            "minimum": 0
+          },
+          "observed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many files the pass compared.",
+            "minimum": 0
+          },
+          "snapshot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Snapshot",
+                "description": "The Snapshot the pass wrote; absent when the Working Tree matched the latest Snapshot."
+              }
+            ]
+          }
+        }
+      },
       "RegisterRoot": {
         "type": "object",
         "description": "What a client sends to register a directory.",
@@ -1673,6 +1831,14 @@
             "description": "The Snapshots on this page, newest first."
           }
         }
+      },
+      "VerifyMode": {
+        "type": "string",
+        "description": "How a pass judges a file it does not read.",
+        "enum": [
+          "stat",
+          "hash"
+        ]
       },
       "VersionInfo": {
         "type": "object",

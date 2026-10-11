@@ -148,6 +148,12 @@ pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Regist
         .collect();
     state.forget_configuration_except(&records);
     state.runtimes.sync(state, resolved);
+
+    // A reload that changed what classifies a Root's paths owes it a full comparison: a file the old
+    // rules excluded may now belong in history, and no event will ever say so (ADR 0009).
+    for id in state.take_reconcile_queue() {
+        state.runtimes.reconcile(id);
+    }
 }
 
 /// A value as the wire types it.
@@ -157,6 +163,7 @@ fn wire(value: &Value) -> serde_json::Value {
         Value::Bytes(bytes) => json!(bytes),
         Value::Duration(duration) => json!(keepster_core::format_duration(*duration)),
         Value::Words(words) => json!(words),
+        Value::Name(name) => json!(name),
         Value::Pattern(pattern) => json!(pattern),
         Value::SizePattern { pattern, max } => json!({ "pattern": pattern, "max": max }),
     }

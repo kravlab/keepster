@@ -5,7 +5,7 @@ use keepster_testkit::Harness;
 
 #[tokio::test]
 async fn a_registered_directory_is_listed_and_survives_a_restart() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
 
     let created = daemon
@@ -20,11 +20,10 @@ async fn a_registered_directory_is_listed_and_survives_a_restart() {
     );
     assert_eq!(created["path"], project.to_string_lossy().as_ref());
 
-    // The watcher captures it, but the watcher is only a latency optimisation: until Reconciliation
-    // (ticket 44) gives the guarantee, claiming `watching` would be exactly the comfortable lie ticket 05
-    // forbids.
+    // With every Trigger switched off nothing captures it by itself, so claiming `watching` would be
+    // exactly the comfortable lie ticket 05 forbids.
     assert_eq!(created["state"], "degraded");
-    assert_eq!(created["state_code"], "coverage_not_guaranteed");
+    assert_eq!(created["state_code"], "capture_unavailable");
 
     let listed = daemon.get_json("/v1/roots").await;
     assert_eq!(listed.as_array().expect("an array of Roots").len(), 1);
@@ -43,7 +42,7 @@ async fn a_registered_directory_is_listed_and_survives_a_restart() {
 async fn a_root_may_neither_sit_inside_another_nor_contain_one() {
     // Nesting would break the walk-up every CLI command rests on — a file in two Roots makes `log`,
     // `restore` and `diff` all ask which one — and would capture every change into two stores.
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let outer = daemon.scratch("outer");
     let inner = daemon.scratch("outer/inner");
 
@@ -83,7 +82,7 @@ async fn a_root_may_neither_sit_inside_another_nor_contain_one() {
 
 #[tokio::test]
 async fn a_path_inside_a_root_resolves_to_it() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let nested = daemon.scratch("project/src/deep");
 
@@ -108,7 +107,7 @@ async fn a_path_inside_a_root_resolves_to_it() {
 
 #[tokio::test]
 async fn a_path_under_no_root_resolves_to_nothing() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let elsewhere = daemon.scratch("elsewhere");
 
@@ -132,7 +131,7 @@ async fn a_path_under_no_root_resolves_to_nothing() {
 
 #[tokio::test]
 async fn deregistering_keeps_the_history_and_does_not_come_back() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
 
     let created = daemon
@@ -172,7 +171,7 @@ async fn deregistering_keeps_the_history_and_does_not_come_back() {
 
 #[tokio::test]
 async fn purging_erases_the_history_it_was_asked_to_erase() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
 
     let created = daemon
@@ -195,7 +194,7 @@ async fn purging_erases_the_history_it_was_asked_to_erase() {
 
 #[tokio::test]
 async fn deregistering_something_that_was_never_registered_is_not_found() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
 
     let answer = daemon.delete("/v1/roots/01ARZ3NDEKTSV4RRFFQ69G5FAV").await;
 
@@ -207,7 +206,7 @@ async fn deregistering_something_that_was_never_registered_is_not_found() {
 
 #[tokio::test]
 async fn moving_a_root_changes_its_path_and_keeps_its_identity() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let before = daemon.scratch("before");
     let after = daemon.scratch("after");
 
@@ -235,7 +234,7 @@ async fn moving_a_root_changes_its_path_and_keeps_its_identity() {
 
 #[tokio::test]
 async fn moving_a_root_onto_an_overlap_is_refused() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let one = daemon.scratch("one");
     let two = daemon.scratch("two");
     let inside_two = daemon.scratch("two/inside");
@@ -278,7 +277,7 @@ fn refusal(response: &keepster_cli::Response) -> (String, String) {
 
 #[tokio::test]
 async fn a_body_that_is_not_the_one_asked_for_is_refused_as_a_problem() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
 
     let response = daemon
         .post("/v1/roots", &serde_json::json!({ "directory": "/tmp" }))
@@ -297,7 +296,7 @@ async fn a_body_that_is_not_the_one_asked_for_is_refused_as_a_problem() {
 
 #[tokio::test]
 async fn a_purge_that_is_not_a_boolean_is_refused_as_a_problem() {
-    let daemon = Harness::start().await;
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");
     let root = daemon
         .post_json("/v1/roots", &serde_json::json!({ "path": project }))

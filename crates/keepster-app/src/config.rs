@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use keepster_core::{
     CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, PathGlob, RootId,
-    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, ignore_file_rules,
+    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify, ignore_file_rules,
     parse_duration, parse_size,
 };
 use serde::Deserialize;
@@ -111,10 +111,13 @@ pub const SCHEMA: &[KeySpec] = &[
     trigger_key("triggers.debounce"),
     trigger_key("triggers.rate_limit"),
     trigger_key("triggers.periodic"),
+    trigger_key("reconcile.at_start"),
+    trigger_key("reconcile.verify"),
 ];
 
-/// A key deciding when a Root is captured rather than what a capture holds: settable per Root, as ticket
-/// 04 lists the Trigger set and its intervals, and changing it reclassifies nothing.
+/// A key deciding when and how a Root is captured rather than what a capture holds: settable per Root,
+/// as ticket 04 lists the Trigger set, its intervals and Reconciliation, and changing it reclassifies
+/// nothing.
 const fn trigger_key(name: &'static str) -> KeySpec {
     KeySpec {
         name,
@@ -155,6 +158,8 @@ pub enum Value {
     Duration(Duration),
     /// A set of names, replaced wholesale by a more specific level.
     Words(Vec<String>),
+    /// One name out of a closed set.
+    Name(String),
     /// A pattern, exactly as written.
     Pattern(String),
     /// A pattern with the size cap it sets; a negated pattern sets none, returning its paths to the
@@ -211,6 +216,19 @@ impl Setting {
     }
 }
 
+/// How a Root's Working Tree is compared against its latest Snapshot (ticket 44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reconciliation {
+    /// Whether a pass runs when the daemon starts. Switching it off drops only that walk — the answer
+    /// to a platform's lost events is never optional — and the Root is reported as not guaranteed.
+    pub at_start: bool,
+    /// How a pass decides a file is unchanged without reading it.
+    pub verify: Verify,
+    /// How often a Root that cannot be watched is reconciled instead: the periodic floor's interval,
+    /// whether or not the floor itself is active.
+    pub fallback_every: Duration,
+}
+
 /// One key of a Root's effective configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveKey {
@@ -229,6 +247,8 @@ pub struct Effective {
     pub policy: CapturePolicy,
     /// When the Root is captured.
     pub triggers: Triggers,
+    /// How the Root is reconciled.
+    pub reconcile: Reconciliation,
     /// Every key of the schema, in schema order, with its provenance.
     pub keys: Vec<EffectiveKey>,
     /// What was defined but almost certainly not meant.
@@ -260,6 +280,8 @@ struct Layer {
     debounce: Option<Entry>,
     rate_limit: Option<Entry>,
     periodic: Option<Entry>,
+    reconcile_at_start: Option<Entry>,
+    verify: Option<Entry>,
 }
 
 impl Layer {
@@ -280,6 +302,8 @@ impl Layer {
             "triggers.debounce" => self.debounce.take().is_some(),
             "triggers.rate_limit" => self.rate_limit.take().is_some(),
             "triggers.periodic" => self.periodic.take().is_some(),
+            "reconcile.at_start" => self.reconcile_at_start.take().is_some(),
+            "reconcile.verify" => self.verify.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -311,6 +335,7 @@ impl GlobalConfig {
         let base = settings_layer(
             &document.files,
             &document.triggers,
+            &document.reconcile,
             Level::Global,
             path,
             text,
@@ -328,6 +353,7 @@ impl GlobalConfig {
                 settings_layer(
                     &block.files,
                     &block.triggers,
+                    &block.reconcile,
                     Level::GlobalRoot,
                     path,
                     text,
@@ -356,6 +382,7 @@ impl GlobalConfig {
                 settings_layer(
                     &block.files,
                     &block.triggers,
+                    &block.reconcile,
                     Level::GlobalPattern,
                     path,
                     text,
@@ -394,6 +421,7 @@ impl RootConfig {
         let mut layer = settings_layer(
             &document.files,
             &document.triggers,
+            &document.reconcile,
             Level::Root,
             path,
             text,
@@ -563,6 +591,20 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         rate_limit: duration(&rate_limit),
     };
 
+    let at_start = scalar(|layer| layer.reconcile_at_start.as_ref(), Value::Bool(true));
+    let verify = scalar(
+        |layer| layer.verify.as_ref(),
+        Value::Name(Verify::default().as_str().to_owned()),
+    );
+    let reconcile = Reconciliation {
+        at_start: at_start.value == Value::Bool(true),
+        verify: match &verify.value {
+            Value::Name(name) => Verify::parse(name).unwrap_or_default(),
+            _ => unreachable!("the verification mode is only ever set as a name"),
+        },
+        fallback_every: duration(&periodic),
+    };
+
     let settings = [
         ("files.exclude", patterns(|layer| &layer.exclude)),
         ("files.include", patterns(|layer| &layer.include)),
@@ -580,6 +622,8 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         ("triggers.debounce", Setting::Scalar(debounce)),
         ("triggers.rate_limit", Setting::Scalar(rate_limit)),
         ("triggers.periodic", Setting::Scalar(periodic)),
+        ("reconcile.at_start", Setting::Scalar(at_start)),
+        ("reconcile.verify", Setting::Scalar(verify)),
     ];
     let keys = settings
         .into_iter()
@@ -595,6 +639,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
     Effective {
         policy,
         triggers,
+        reconcile,
         keys,
         warnings,
     }
@@ -667,6 +712,8 @@ struct GlobalDocument {
     #[serde(default)]
     triggers: TriggerTable,
     #[serde(default)]
+    reconcile: ReconcileTable,
+    #[serde(default)]
     root: BTreeMap<String, Settings>,
     #[serde(default)]
     roots: Vec<PatternBlock>,
@@ -680,6 +727,8 @@ struct Settings {
     files: Files,
     #[serde(default)]
     triggers: TriggerTable,
+    #[serde(default)]
+    reconcile: ReconcileTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -691,6 +740,16 @@ struct PatternBlock {
     files: Files,
     #[serde(default)]
     triggers: TriggerTable,
+    #[serde(default)]
+    reconcile: ReconcileTable,
+}
+
+/// The `[reconcile]` table: whether a pass runs at the start, and how it judges a file (ticket 44).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReconcileTable {
+    at_start: Option<Spanned<bool>>,
+    verify: Option<Spanned<String>>,
 }
 
 /// The `[triggers]` table: which Triggers are active, and their intervals (ticket 43).
@@ -731,6 +790,7 @@ struct SizeEntry {
 fn settings_layer(
     files: &Files,
     triggers: &TriggerTable,
+    reconcile: &ReconcileTable,
     level: Level,
     path: &Path,
     text: &str,
@@ -768,6 +828,27 @@ fn settings_layer(
     // Always in force, so a rate limit of nothing is refused rather than meaning "none".
     layer.rate_limit = interval("rate_limit", &triggers.rate_limit, false)?;
     layer.periodic = interval("periodic", &triggers.periodic, false)?;
+    layer.reconcile_at_start = reconcile.at_start.as_ref().map(|at_start| Entry {
+        value: Value::Bool(*at_start.get_ref()),
+        origin: origin(at_start.span()),
+    });
+    layer.verify = reconcile
+        .verify
+        .as_ref()
+        .map(|verify| match Verify::parse(verify.get_ref()) {
+            Some(mode) => Ok(Entry {
+                value: Value::Name(mode.as_str().to_owned()),
+                origin: origin(verify.span()),
+            }),
+            None => Err(ConfigError {
+                path: path.to_path_buf(),
+                message: format!(
+                    "{block}reconcile.verify: `{}` is not a mode; write `stat` or `hash`",
+                    verify.get_ref()
+                ),
+            }),
+        })
+        .transpose()?;
     layer.active = triggers
         .active
         .as_ref()

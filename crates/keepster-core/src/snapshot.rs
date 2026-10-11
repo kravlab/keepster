@@ -100,7 +100,7 @@ impl fmt::Display for ChangeKind {
 
 /// Which Trigger caused a Snapshot.
 ///
-/// Each is a variant of its own, so a new one is additive on the wire; ticket 44 adds Reconciliation.
+/// Each is a variant of its own, so a new one is additive on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Trigger {
     /// A person or a script asked for this Snapshot.
@@ -110,6 +110,42 @@ pub enum Trigger {
     Watcher,
     /// The periodic floor fell due.
     Periodic,
+    /// A Reconciliation: the whole Working Tree compared against the latest Snapshot — at the daemon's
+    /// start, after the platform lost events, after the rules changed, or because someone asked.
+    Reconcile,
+}
+
+/// How a pass decides whether a file it walks must be read.
+///
+/// The `stat` filter is never the verdict — the object id is — so a false positive costs one hash and a
+/// false negative the user's work (ticket 35). Where mtimes cannot be trusted, hashing everything is the
+/// user's to choose, never automatic: on a network Root it means reading the whole Root over the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Verify {
+    /// Read a file only when its size, mtime or mode differs from what the last pass observed.
+    #[default]
+    Stat,
+    /// Read every file.
+    Hash,
+}
+
+impl Verify {
+    /// The name the configuration and the wire spell it with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stat => "stat",
+            Self::Hash => "hash",
+        }
+    }
+
+    /// The mode a name spells, if this build knows it.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "stat" => Some(Self::Stat),
+            "hash" => Some(Self::Hash),
+            _ => None,
+        }
+    }
 }
 
 impl Trigger {
@@ -119,6 +155,7 @@ impl Trigger {
             Self::Manual => "manual",
             Self::Watcher => "watcher",
             Self::Periodic => "periodic",
+            Self::Reconcile => "reconcile",
         }
     }
 
@@ -128,6 +165,7 @@ impl Trigger {
             "manual" => Some(Self::Manual),
             "watcher" => Some(Self::Watcher),
             "periodic" => Some(Self::Periodic),
+            "reconcile" => Some(Self::Reconcile),
             _ => None,
         }
     }

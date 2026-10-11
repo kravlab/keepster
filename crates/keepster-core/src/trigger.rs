@@ -105,6 +105,10 @@ pub enum PolicyEvent {
     Changed(Vec<RootPath>),
     /// A timer the policy armed has fired — or the daemon asks what is due, as it does once at the start.
     Timer,
+    /// A Reconciliation is owed: the daemon started, the platform lost events, or the rules changed. It
+    /// is owed whatever Triggers are active, because it is the guarantee rather than a Trigger the user
+    /// chooses, and it takes whatever changes are pending with it.
+    Reconcile,
     /// The capture last asked for has been written.
     CaptureFinished,
     /// The capture last asked for found nothing to write. No Snapshot was taken, so the rate limit does
@@ -159,6 +163,8 @@ pub struct PolicyState {
     last_capture: Option<Duration>,
     /// When the periodic floor is next due.
     next_periodic: Option<Duration>,
+    /// Whether a Reconciliation is owed.
+    reconcile: bool,
     /// Whether a capture is waiting for the store's lock.
     waiting_for_lock: bool,
     /// Whether the daemon is stopping.
@@ -176,6 +182,7 @@ impl PolicyState {
             in_flight: None,
             last_capture: None,
             next_periodic: settings.periodic.map(|every| now + every),
+            reconcile: false,
             waiting_for_lock: false,
             stopping: false,
         }
@@ -226,6 +233,11 @@ pub fn decide(
             state.last_change = Some(now);
         }
         PolicyEvent::Timer => {}
+        PolicyEvent::Reconcile => {
+            if !state.stopping {
+                state.reconcile = true;
+            }
+        }
         PolicyEvent::CaptureFinished => {
             if let Some(in_flight) = state.in_flight.take() {
                 state.last_capture = Some(in_flight.asked);
@@ -265,15 +277,22 @@ pub fn decide(
     (actions, state)
 }
 
-/// Owe again, at once, what a capture that did not happen was for: its changes, or the periodic floor
-/// it was — which stays a periodic capture, so a Trigger the user switched off never fires instead.
+/// Owe again, at once, what a capture that did not happen was for: its changes, the Reconciliation it
+/// was, or the periodic floor — which stays a periodic capture, so a Trigger the user switched off never
+/// fires in its place.
 fn owe(state: &mut PolicyState, in_flight: InFlight) {
-    if in_flight.trigger == Trigger::Periodic && in_flight.paths.is_empty() {
-        state.next_periodic = Some(
-            state
-                .next_periodic
-                .map_or(in_flight.asked, |next| next.min(in_flight.asked)),
-        );
+    match in_flight.trigger {
+        Trigger::Reconcile => state.reconcile = true,
+        Trigger::Periodic if in_flight.paths.is_empty() => {
+            state.next_periodic = Some(
+                state
+                    .next_periodic
+                    .map_or(in_flight.asked, |next| next.min(in_flight.asked)),
+            );
+        }
+        _ => {}
+    }
+    if in_flight.paths.is_empty() && in_flight.trigger != Trigger::Watcher {
         return;
     }
 
@@ -318,6 +337,7 @@ fn due(state: &mut PolicyState, now: Duration) -> Vec<Action> {
             .map_or(gathered, |since| gathered.min(since + longest))
     });
     let candidates = [
+        state.reconcile.then_some((allowed, Trigger::Reconcile)),
         quiet.map(|at| (at.max(allowed), Trigger::Watcher)),
         state
             .next_periodic
@@ -326,9 +346,11 @@ fn due(state: &mut PolicyState, now: Duration) -> Vec<Action> {
 
     match candidates.into_iter().flatten().min_by_key(|(at, _)| *at) {
         Some((at, trigger)) if at <= now => {
-            // A change seen is the better account of why: a periodic floor falling due at the same moment
-            // captures the same walk.
-            let trigger = if quiet.is_some_and(|quiet| quiet.max(allowed) <= now) {
+            // Every capture is the same walk, so the label is the best account of why: a Reconciliation
+            // owed first, then a change seen, then the periodic floor.
+            let trigger = if state.reconcile {
+                Trigger::Reconcile
+            } else if quiet.is_some_and(|quiet| quiet.max(allowed) <= now) {
                 Trigger::Watcher
             } else {
                 trigger
@@ -348,6 +370,7 @@ fn capture(
     now: Duration,
 ) -> Action {
     state.last_change = None;
+    state.reconcile = false;
     state.in_flight = Some(InFlight {
         trigger,
         paths: paths.clone(),
