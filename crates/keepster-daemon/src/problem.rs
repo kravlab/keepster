@@ -13,7 +13,9 @@ use keepster_api::{ErrorCode, Problem};
 #[derive(Debug, Clone)]
 pub struct ProblemResponse {
     status: StatusCode,
-    problem: Problem,
+    /// Boxed: every handler returns this in its error arm, and the document is far larger than the
+    /// success values beside it.
+    problem: Box<Problem>,
 }
 
 impl ProblemResponse {
@@ -24,25 +26,32 @@ impl ProblemResponse {
     pub fn new(status: StatusCode, code: ErrorCode, detail: impl Into<String>) -> Self {
         Self {
             status,
-            problem: Problem {
+            problem: Box::new(Problem {
                 title: status.canonical_reason().unwrap_or("Error").to_owned(),
                 status: status.as_u16(),
                 detail: detail.into(),
                 code: code.as_str().to_owned(),
                 details: BTreeMap::new(),
-            },
+                paths: Vec::new(),
+            }),
         }
     }
 
     /// The problem document itself, for an answer that reports a problem without failing with it.
     pub(crate) fn into_problem(self) -> Problem {
-        self.problem
+        *self.problem
     }
 
     /// Add one machine-readable particular, so a client composes its own message instead of parsing
     /// ours.
     pub fn with_detail(mut self, key: &str, value: impl Into<String>) -> Self {
         self.problem.details.insert(key.to_owned(), value.into());
+        self
+    }
+
+    /// Say, for a Restore refused before it wrote anything, what every path of it needs.
+    pub(crate) fn with_paths(mut self, paths: Vec<keepster_api::RestoredPath>) -> Self {
+        self.problem.paths = paths;
         self
     }
 }

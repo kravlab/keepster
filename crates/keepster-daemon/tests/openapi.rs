@@ -122,6 +122,7 @@ fn every_route_the_api_serves_is_described() {
             "PATCH /v1/roots/{id}",
             "POST /v1/roots",
             "POST /v1/roots/{id}/reconcile",
+            "POST /v1/roots/{id}/restore",
             "POST /v1/roots/{id}/snapshots",
         ]
     );
@@ -168,6 +169,15 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "DiffLine",
         "FileChange",
         "LineKind",
+        "RestoreRequest",
+        "Confirm",
+        "Confirmation",
+        "PathResolution",
+        "NameCaseChoice",
+        "Restored",
+        "RestoredPath",
+        "RestoreOutcome",
+        "RestoreIssue",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -305,6 +315,7 @@ fn every_operation_has_its_own_stable_name() {
             "read_content",
             "reconcile_root",
             "register_root",
+            "restore_root",
             "stream_events",
             "take_snapshot",
             "unwatch_root",
@@ -355,6 +366,7 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
         [
             "config.invalid",
             "config.reloaded",
+            "restore.completed",
             "resync",
             "root.moved",
             "root.registered",

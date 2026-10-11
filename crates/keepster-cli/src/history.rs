@@ -472,6 +472,13 @@ pub(crate) async fn located(
     }
 }
 
+/// `path`, as typed on this machine, relative to the Root at `root` — `None` when it is outside it.
+pub(crate) fn inside(root: &Path, path: &Path) -> std::io::Result<Option<String>> {
+    let absolute = lexical(&std::path::absolute(path)?);
+
+    Ok(relative_to(&absolute, root))
+}
+
 /// `path` with `.` and `..` resolved by name, without touching the filesystem.
 ///
 /// By name, as a shell's own `cd ..` does: the file may be one that no longer exists, so there may be

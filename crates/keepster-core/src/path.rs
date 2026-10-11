@@ -76,6 +76,19 @@ impl RootPath {
             .map(|(end, _)| Self(self.0[..end].to_owned()))
     }
 
+    /// The directory holding this path — the Root itself for a top-level name, and for the Root.
+    pub fn parent(&self) -> Self {
+        match self.0.rfind('/') {
+            Some(end) => Self(self.0[..end].to_owned()),
+            None => Self::root(),
+        }
+    }
+
+    /// The last component, empty for the Root itself.
+    pub fn name(&self) -> &str {
+        self.0.rsplit('/').next().unwrap_or_default()
+    }
+
     /// The path one component deeper.
     pub fn child(&self, name: &str) -> Self {
         if self.0.is_empty() {

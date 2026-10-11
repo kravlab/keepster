@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 keepster-core.workspace = true
+keepster-service.workspace = true
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"

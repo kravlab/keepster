@@ -743,6 +743,108 @@
         }
       }
     },
+    "/v1/roots/{id}/restore": {
+      "post": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Put a Snapshot's versions back over the Working Tree.",
+        "operationId": "restore_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place; a replaced file keeps its permission bits with the Snapshot's executable bit applied, and a new one starts from the umask. A file that changed between the plan and its write fails without being touched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restored"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, which the blanket force never gives), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path in the Snapshot.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable, or its configuration has never been valid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not declared as `application/json`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is JSON of the wrong shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read, or the Safety Snapshot could not be taken — in which case nothing was written.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/snapshots": {
       "get": {
         "tags": [
@@ -1365,6 +1467,39 @@
           }
         }
       },
+      "Confirm": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ConfirmAll",
+            "description": "`\"all\"`: every confirmation."
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Confirmation"
+            },
+            "description": "These."
+          }
+        ],
+        "description": "The confirmations a Restore request gives."
+      },
+      "ConfirmAll": {
+        "type": "string",
+        "description": "The blanket force's spelling.",
+        "enum": [
+          "all"
+        ]
+      },
+      "Confirmation": {
+        "type": "string",
+        "description": "A structural change a Restore must be told it may make.",
+        "enum": [
+          "create_parents",
+          "replace_type",
+          "break_hardlinks",
+          "overwrite_unrecoverable"
+        ]
+      },
       "DaemonStatus": {
         "allOf": [
           {
@@ -1841,6 +1976,52 @@
           },
           {
             "type": "object",
+            "description": "A Restore wrote what it was asked to, as far as it could.",
+            "required": [
+              "root",
+              "safety_snapshot",
+              "restored",
+              "created",
+              "failed",
+              "event"
+            ],
+            "properties": {
+              "created": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many were created.",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "restore.completed"
+                ]
+              },
+              "failed": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many could not be written.",
+                "minimum": 0
+              },
+              "restored": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many files were replaced.",
+                "minimum": 0
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root."
+              },
+              "safety_snapshot": {
+                "type": "string",
+                "description": "Its Safety Snapshot, which undoes it."
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon\nrestarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.",
             "required": [
               "event"
@@ -1975,6 +2156,14 @@
           "deleted"
         ]
       },
+      "NameCaseChoice": {
+        "type": "string",
+        "description": "Which name a file restored over a name in another case keeps.",
+        "enum": [
+          "keep_existing",
+          "use_snapshot"
+        ]
+      },
       "OnDiskKind": {
         "type": "string",
         "description": "What is at a path in the Working Tree.",
@@ -2012,6 +2201,37 @@
           }
         }
       },
+      "PathResolution": {
+        "type": "object",
+        "description": "The answer to one path's question; exactly one field is set.",
+        "properties": {
+          "name_case": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NameCaseChoice",
+                "description": "For `name_case`: keep the name already on disk, or take the Snapshot's."
+              }
+            ]
+          },
+          "rename_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `name_invalid`: write the file under this bare name in the same directory."
+          },
+          "write": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For `name_collision`: write this path, and skip the others that are one file with it."
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "A failure, in the one shape every endpoint uses.\n\nRFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's\nlibrary already parses, and `code` — not the prose of `title` or `detail` — is the stable part\nclients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it\ndoes not know as its HTTP status.",
@@ -2024,7 +2244,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name."
           },
           "detail": {
             "type": "string",
@@ -2039,6 +2259,13 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredPath"
+            },
+            "description": "With `confirmation_required`, every file of the Restore asked for and what it needs; absent\notherwise."
           },
           "status": {
             "type": "integer",
@@ -2126,6 +2353,191 @@
         "enum": [
           "unknown"
         ]
+      },
+      "RestoreIssue": {
+        "type": "object",
+        "description": "Why a file of a Restore is not simply written.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `type_change` and `link_check_failed`: where, Root-relative."
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The confirmation that settles it, for the four that one does."
+          },
+          "existing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `name_case`: the name on disk."
+          },
+          "links_outside": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For `hardlinked`: how many more names the file has outside the Root.",
+            "minimum": 0
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For `hardlinked`: the file's other names inside the Root. For `name_collision`: the other\nSnapshot paths that are one file with it."
+          },
+          "reason": {
+            "type": "string",
+            "description": "The reason: `parent_missing`, `type_change`, `hardlinked`, `overwrite_unrecoverable`,\n`name_collision`, `name_invalid`, `name_case`, `type_conflict` or `link_check_failed`. An open set,\nas error codes are."
+          },
+          "resolution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The resolution that settles it — `write`, `rename_to` or `name_case` — for the three only the user\ncan answer. Neither this nor `confirm` for a path that cannot be restored at all."
+          },
+          "why": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `overwrite_unrecoverable`: why — `too_large`, `excluded`, `unreadable` or `unsupported`."
+          }
+        }
+      },
+      "RestoreOutcome": {
+        "type": "string",
+        "description": "What happened to one file of a Restore.",
+        "enum": [
+          "restored",
+          "created",
+          "unchanged",
+          "skipped",
+          "failed",
+          "blocked"
+        ]
+      },
+      "RestoreRequest": {
+        "type": "object",
+        "description": "What a client sends to restore — `POST /v1/roots/{id}/restore` (ticket 47).\n\nRestore only overwrites and creates; it never deletes. The whole request is checked before anything is\nwritten: a path that needs a confirmation or a resolution, or cannot be restored, stops it whole.",
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "confirm": {
+            "$ref": "#/components/schemas/Confirm",
+            "description": "The structural changes agreed to: a list, or `\"all\"` for the blanket force — which settles every\nconfirmation and no resolution."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Plan only: answer with what would happen to every path, write nothing and take no Safety\nSnapshot."
+          },
+          "from": {
+            "type": "string",
+            "description": "The Snapshot whose versions are written, by identity."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot."
+          },
+          "resolutions": {
+            "type": "object",
+            "description": "Answers to what only the user can settle, keyed by the Snapshot path they are for.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PathResolution"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "skip_unresolvable": {
+            "type": "boolean",
+            "description": "Skip each path still in the way, with its reasons, rather than stop the request."
+          }
+        }
+      },
+      "Restored": {
+        "type": "object",
+        "description": "What a Restore did — or, for a dry run, would do.",
+        "required": [
+          "dry_run",
+          "paths"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Whether this was only the plan."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredPath"
+            },
+            "description": "Every file of the request, in path order."
+          },
+          "safety_snapshot": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Snapshot to restore from to undo this Restore: taken of the state just before it, or the\nlatest one when the Working Tree was identical to it. Absent from a dry run. A file this Restore\ncreated is not removed by restoring it, since Restore never deletes."
+          }
+        }
+      },
+      "RestoredPath": {
+        "type": "object",
+        "description": "One file of a Restore.",
+        "required": [
+          "path",
+          "outcome"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `failed` path, why. What was there before is left as it was."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoreIssue"
+            },
+            "description": "For a `blocked` or `skipped` path, every reason, and what would settle each."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RestoreOutcome",
+            "description": "What happened to it — or, in a dry run, what would."
+          },
+          "path": {
+            "type": "string",
+            "description": "The file's path in the Snapshot."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it is written, when that is not `path`: a rename, or a name in another case kept."
+          }
+        }
       },
       "Root": {
         "type": "object",

@@ -597,7 +597,7 @@ fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
     }
 }
 
-fn snapshot_not_found(segment: &str) -> ProblemResponse {
+pub(crate) fn snapshot_not_found(segment: &str) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::NOT_FOUND,
         ErrorCode::SnapshotNotFound,
@@ -640,7 +640,7 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
     }
 }
 
-fn capture_problem(error: CaptureError) -> ProblemResponse {
+pub(crate) fn capture_problem(error: CaptureError) -> ProblemResponse {
     match error {
         CaptureError::NotFound { id } => ProblemResponse::new(
             StatusCode::NOT_FOUND,

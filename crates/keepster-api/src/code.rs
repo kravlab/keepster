@@ -62,6 +62,8 @@ error_codes! {
     ConfigInvalid = "config_invalid": "The Root's configuration cannot be read, so nothing is captured on terms it does not state.",
     ComparisonInvalid = "comparison_invalid": "`from` is not a Snapshot's identity, or `to` is neither one nor `working`.",
     FormatInvalid = "format_invalid": "`format` is neither `json` nor `unified`.",
+    ConfirmationRequired = "confirmation_required": "A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.",
+    ResolutionInvalid = "resolution_invalid": "A resolution sets no answer or more than one, or names a new name that is not a bare name.",
 }
 
 impl ErrorCode {

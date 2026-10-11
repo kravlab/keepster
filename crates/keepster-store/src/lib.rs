@@ -11,6 +11,7 @@ mod registry;
 pub use history::{
     CaptureRequest, CapturedSnapshot, Comparison, Content, DIFF_MAX_SIZE, Depth, DiffLine,
     DiffTarget, Entry, EntryKind, FileChange, FileDiff, HistoryStore, Hunk, LineKind, Pass,
-    SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, WithheldReason,
+    Preflight, RestoreScope, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
+    WithheldPath, WithheldReason, Written, destination_naming,
 };
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

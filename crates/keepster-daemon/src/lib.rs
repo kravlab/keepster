@@ -16,6 +16,7 @@ mod events;
 mod explain;
 mod openapi;
 mod problem;
+mod restore;
 mod roots;
 mod snapshots;
 mod triggers;
@@ -344,6 +345,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
         .routes(routes!(diff::diff))
+        .routes(routes!(restore::restore))
         .routes(routes!(explain::explain))
         .routes(routes!(configuration::show))
 }

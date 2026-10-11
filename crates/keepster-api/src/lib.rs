@@ -338,6 +338,187 @@ pub struct ConfigWarning {
     pub message: String,
 }
 
+/// What a client sends to restore — `POST /v1/roots/{id}/restore` (ticket 47).
+///
+/// Restore only overwrites and creates; it never deletes. The whole request is checked before anything is
+/// written: a path that needs a confirmation or a resolution, or cannot be restored, stops it whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RestoreRequest {
+    /// The Snapshot whose versions are written, by identity.
+    pub from: String,
+    /// Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Plan only: answer with what would happen to every path, write nothing and take no Safety
+    /// Snapshot.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// The structural changes agreed to: a list, or `"all"` for the blanket force — which settles every
+    /// confirmation and no resolution.
+    #[serde(default)]
+    pub confirm: Confirm,
+    /// Answers to what only the user can settle, keyed by the Snapshot path they are for.
+    #[serde(default)]
+    pub resolutions: std::collections::BTreeMap<String, PathResolution>,
+    /// Skip each path still in the way, with its reasons, rather than stop the request.
+    #[serde(default)]
+    pub skip_unresolvable: bool,
+}
+
+/// The confirmations a Restore request gives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(untagged)]
+pub enum Confirm {
+    /// `"all"`: every confirmation.
+    All(ConfirmAll),
+    /// These.
+    These(Vec<Confirmation>),
+}
+
+impl Default for Confirm {
+    fn default() -> Self {
+        Self::These(Vec::new())
+    }
+}
+
+/// The blanket force's spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum ConfirmAll {
+    /// Every confirmation.
+    #[serde(rename = "all")]
+    All,
+}
+
+/// A structural change a Restore must be told it may make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Confirmation {
+    /// Create directories that are not there.
+    CreateParents,
+    /// Replace something of another kind: a file where a directory is needed, a link or a special file.
+    ReplaceType,
+    /// Replace a file that has other names, which keep the old content.
+    BreakHardlinks,
+    /// Overwrite a file whose current content the Safety Snapshot cannot hold.
+    OverwriteUnrecoverable,
+}
+
+/// The answer to one path's question; exactly one field is set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PathResolution {
+    /// For `name_collision`: write this path, and skip the others that are one file with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write: Option<bool>,
+    /// For `name_invalid`: write the file under this bare name in the same directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_to: Option<String>,
+    /// For `name_case`: keep the name already on disk, or take the Snapshot's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_case: Option<NameCaseChoice>,
+}
+
+/// Which name a file restored over a name in another case keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum NameCaseChoice {
+    /// The name on disk.
+    KeepExisting,
+    /// The Snapshot's.
+    UseSnapshot,
+}
+
+/// What a Restore did — or, for a dry run, would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Restored {
+    /// The Snapshot to restore from to undo this Restore: taken of the state just before it, or the
+    /// latest one when the Working Tree was identical to it. Absent from a dry run. A file this Restore
+    /// created is not removed by restoring it, since Restore never deletes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_snapshot: Option<String>,
+    /// Whether this was only the plan.
+    pub dry_run: bool,
+    /// Every file of the request, in path order.
+    pub paths: Vec<RestoredPath>,
+}
+
+/// One file of a Restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RestoredPath {
+    /// The file's path in the Snapshot.
+    pub path: String,
+    /// Where it is written, when that is not `path`: a rename, or a name in another case kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// What happened to it — or, in a dry run, what would.
+    pub outcome: RestoreOutcome,
+    /// For a `blocked` or `skipped` path, every reason, and what would settle each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<RestoreIssue>,
+    /// For a `failed` path, why. What was there before is left as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What happened to one file of a Restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreOutcome {
+    /// A file in place was replaced by the Snapshot's version.
+    Restored,
+    /// The file was created.
+    Created,
+    /// The file already held the version.
+    Unchanged,
+    /// Passed over: a collision's other paths, or what `skip_unresolvable` let go.
+    Skipped,
+    /// It could not be written; nothing of it was left half-done.
+    Failed,
+    /// It needs a confirmation or a resolution, or cannot be restored: the request stops.
+    Blocked,
+}
+
+/// Why a file of a Restore is not simply written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RestoreIssue {
+    /// The reason: `parent_missing`, `type_change`, `hardlinked`, `overwrite_unrecoverable`,
+    /// `name_collision`, `name_invalid`, `name_case`, `type_conflict` or `link_check_failed`. An open set,
+    /// as error codes are.
+    pub reason: String,
+    /// The confirmation that settles it, for the four that one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+    /// The resolution that settles it — `write`, `rename_to` or `name_case` — for the three only the user
+    /// can answer. Neither this nor `confirm` for a path that cannot be restored at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    /// For `type_change` and `link_check_failed`: where, Root-relative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// For `hardlinked`: the file's other names inside the Root. For `name_collision`: the other
+    /// Snapshot paths that are one file with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    /// For `hardlinked`: how many more names the file has outside the Root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links_outside: Option<u64>,
+    /// For `name_case`: the name on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<String>,
+    /// For `overwrite_unrecoverable`: why — `too_large`, `excluded`, `unreadable` or `unsupported`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
 /// The `to` of a diff that names the Working Tree rather than a Snapshot.
 pub const WORKING_TREE: &str = "working";
 
@@ -535,6 +716,20 @@ pub enum Event {
         /// The Root the invalid file affects.
         root: String,
     },
+    /// A Restore wrote what it was asked to, as far as it could.
+    #[serde(rename = "restore.completed")]
+    RestoreCompleted {
+        /// The Root.
+        root: String,
+        /// Its Safety Snapshot, which undoes it.
+        safety_snapshot: String,
+        /// How many files were replaced.
+        restored: u64,
+        /// How many were created.
+        created: u64,
+        /// How many could not be written.
+        failed: u64,
+    },
     /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
     /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
     #[serde(rename = "resync")]
@@ -552,6 +747,7 @@ impl Event {
             Self::RootStateChanged { .. } => "root.state_changed",
             Self::ConfigReloaded { .. } => "config.reloaded",
             Self::ConfigInvalid { .. } => "config.invalid",
+            Self::RestoreCompleted { .. } => "restore.completed",
             Self::Resync => "resync",
         }
     }
@@ -723,6 +919,10 @@ pub struct Problem {
     /// message instead of parsing ours.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub details: std::collections::BTreeMap<String, String>,
+    /// With `confirmation_required`, every file of the Restore asked for and what it needs; absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<RestoredPath>,
 }
 
 /// What a Root's state means for the insurance it provides.
@@ -768,6 +968,13 @@ mod tests {
             },
             Event::ConfigReloaded { root: root() },
             Event::ConfigInvalid { root: root() },
+            Event::RestoreCompleted {
+                root: root(),
+                safety_snapshot: root(),
+                restored: 1,
+                created: 0,
+                failed: 0,
+            },
             Event::Resync,
         ] {
             let serialised = serde_json::to_value(&event).expect("JSON");

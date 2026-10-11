@@ -1,0 +1,283 @@
+//! Restore at the API (ticket 47): the request read, the Root locked, and the plan or the outcome said
+//! for every path.
+
+use std::collections::BTreeMap;
+
+use axum::Json;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use keepster_api::{
+    Confirm, ErrorCode, Event, NameCaseChoice, PathResolution, Problem, RestoreIssue,
+    RestoreOutcome, RestoreRequest, Restored, RestoredPath,
+};
+use keepster_app::restore::{self, RestoreError};
+use keepster_core::{
+    Confirmation, Confirmed, Issue, NameCase, PathPlan, Plan, Resolution, RootPath, SnapshotId,
+    Step,
+};
+use keepster_store::Written;
+
+use crate::DaemonState;
+use crate::problem::ProblemResponse;
+use crate::roots::{self, RootAddress};
+use crate::snapshots::{announce, capture_problem, parse_path, prepare, store_problem};
+
+/// Put a Snapshot's versions back over the Working Tree.
+#[utoipa::path(
+    post,
+    path = "/v1/roots/{id}/restore",
+    operation_id = "restore_root",
+    tag = "snapshots",
+    params(RootAddress),
+    request_body = RestoreRequest,
+    responses(
+        (status = 200, description = "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place; a replaced file keeps its permission bits with the Snapshot's executable bit applied, and a new one starts from the umask. A file that changed between the plan and its write fails without being touched.", body = Restored),
+        (status = 400, description = "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, which the blanket force never gives), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root, Snapshot or path in the Snapshot.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or its configuration has never been valid.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The history could not be read, or the Safety Snapshot could not be taken — in which case nothing was written.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(crate) async fn restore(
+    State(state): State<DaemonState>,
+    Path(RootAddress { id }): Path<RootAddress>,
+    body: Result<Json<RestoreRequest>, JsonRejection>,
+) -> Result<Json<Restored>, ProblemResponse> {
+    let Json(request) = body.map_err(|rejection| {
+        ProblemResponse::new(
+            rejection.status(),
+            ErrorCode::BodyInvalid,
+            rejection.body_text(),
+        )
+    })?;
+    let id = roots::parse_id(&id)?;
+    let request = parsed(request)?;
+    let (root, location, loaded) = prepare(&state, id)?;
+    let now = roots::now();
+    let dry_run = request.dry_run;
+
+    let restored = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || {
+            // Under the store's lock, as a capture is taken: the Safety Snapshot is one, and nothing else
+            // writes into this store while the files are put back.
+            let store = state.store_lock(id);
+            let _held = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state.registry().contains(id) {
+                return Err(roots::not_found(&id.to_string()));
+            }
+            if !root.path.is_dir() {
+                return Err(ProblemResponse::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::RootUnavailable,
+                    format!("{} is not there to restore into", root.path.display()),
+                )
+                .with_detail("path", root.path.to_string_lossy()));
+            }
+
+            let restored = restore::restore(&root, &location, &loaded.policy, &request, now)
+                .map_err(restore_problem)?;
+            if let Some(captured) = &restored.captured {
+                announce(&state, id, captured);
+            }
+
+            Ok(restored)
+        }
+    })
+    .await
+    .map_err(|joined| {
+        ProblemResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::HistoryUnreadable,
+            joined.to_string(),
+        )
+    })??;
+
+    let paths = wire(&restored.plan, restored.written.as_deref());
+    if let (false, Some(safety)) = (dry_run, restored.safety_snapshot) {
+        let count = |outcome: RestoreOutcome| {
+            paths.iter().filter(|path| path.outcome == outcome).count() as u64
+        };
+        state.publish(Event::RestoreCompleted {
+            root: id.to_string(),
+            safety_snapshot: safety.to_string(),
+            restored: count(RestoreOutcome::Restored),
+            created: count(RestoreOutcome::Created),
+            failed: count(RestoreOutcome::Failed),
+        });
+    }
+
+    Ok(Json(Restored {
+        safety_snapshot: restored.safety_snapshot.map(|id| id.to_string()),
+        dry_run,
+        paths,
+    }))
+}
+
+/// The request in the domain's terms, or the problem with it.
+fn parsed(request: RestoreRequest) -> Result<restore::RestoreRequest, ProblemResponse> {
+    let from = request
+        .from
+        .parse::<SnapshotId>()
+        .map_err(|_| crate::snapshots::snapshot_not_found(&request.from))?;
+    let paths = request
+        .paths
+        .iter()
+        .map(|path| parse_path(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let confirmed = match request.confirm {
+        Confirm::All(_) => Confirmed::all(),
+        Confirm::These(these) => {
+            Confirmed::these(these.into_iter().map(|confirmation| match confirmation {
+                keepster_api::Confirmation::CreateParents => Confirmation::CreateParents,
+                keepster_api::Confirmation::ReplaceType => Confirmation::ReplaceType,
+                keepster_api::Confirmation::BreakHardlinks => Confirmation::BreakHardlinks,
+                keepster_api::Confirmation::OverwriteUnrecoverable => {
+                    Confirmation::OverwriteUnrecoverable
+                }
+            }))
+        }
+    };
+    let mut resolutions = BTreeMap::new();
+    for (path, answer) in request.resolutions {
+        let path = parse_path(&path)?;
+        let resolution = resolution(&path, answer)?;
+        resolutions.insert(path, resolution);
+    }
+
+    Ok(restore::RestoreRequest {
+        from,
+        paths,
+        confirmed,
+        resolutions,
+        skip_unresolvable: request.skip_unresolvable,
+        dry_run: request.dry_run,
+    })
+}
+
+/// One path's answer, which must answer exactly one question.
+fn resolution(path: &RootPath, answer: PathResolution) -> Result<Resolution, ProblemResponse> {
+    match answer {
+        PathResolution {
+            write: Some(true),
+            rename_to: None,
+            name_case: None,
+        } => Ok(Resolution::Write),
+        PathResolution {
+            write: None,
+            rename_to: Some(name),
+            name_case: None,
+        } => Ok(Resolution::RenameTo(name)),
+        PathResolution {
+            write: None,
+            rename_to: None,
+            name_case: Some(choice),
+        } => Ok(Resolution::NameCase(match choice {
+            NameCaseChoice::KeepExisting => NameCase::KeepExisting,
+            NameCaseChoice::UseSnapshot => NameCase::UseSnapshot,
+        })),
+        _ => Err(resolution_invalid(
+            path,
+            "a resolution answers exactly one question: `write`, `rename_to` or `name_case`",
+        )),
+    }
+}
+
+fn resolution_invalid(path: &RootPath, message: &str) -> ProblemResponse {
+    ProblemResponse::new(
+        StatusCode::BAD_REQUEST,
+        ErrorCode::ResolutionInvalid,
+        message.to_owned(),
+    )
+    .with_detail("path", path.as_str())
+}
+
+fn restore_problem(error: RestoreError) -> ProblemResponse {
+    match error {
+        RestoreError::Blocked(plan) => ProblemResponse::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ConfirmationRequired,
+            "some files need a confirmation or a resolution, or cannot be restored; nothing was written",
+        )
+        .with_paths(wire(&plan, None)),
+        RestoreError::RenameInvalid { ref path, reason } => {
+            resolution_invalid(path, &format!("`rename_to` must be a bare name: {reason}"))
+        }
+        RestoreError::Capture(error) => capture_problem(error),
+        RestoreError::Store(error) => store_problem(error),
+    }
+}
+
+/// Every path as the wire says it: what happened, from `written`, or what is planned.
+fn wire(plan: &Plan, written: Option<&[Written]>) -> Vec<RestoredPath> {
+    plan.paths
+        .iter()
+        .enumerate()
+        .map(|(position, planned)| {
+            let (outcome, error) = match written.and_then(|written| written.get(position)) {
+                Some(Written::Restored) => (RestoreOutcome::Restored, None),
+                Some(Written::Created) => (RestoreOutcome::Created, None),
+                Some(Written::Unchanged) => (RestoreOutcome::Unchanged, None),
+                Some(Written::Skipped) => (RestoreOutcome::Skipped, None),
+                Some(Written::Failed(error)) => (RestoreOutcome::Failed, Some(error.clone())),
+                None => (planned_outcome(planned), None),
+            };
+
+            RestoredPath {
+                path: planned.path.as_str().to_owned(),
+                target: (planned.target != planned.path)
+                    .then(|| planned.target.as_str().to_owned()),
+                outcome,
+                issues: planned.issues.iter().map(issue).collect(),
+                error,
+            }
+        })
+        .collect()
+}
+
+fn planned_outcome(planned: &PathPlan) -> RestoreOutcome {
+    match planned.step {
+        Step::Restore => RestoreOutcome::Restored,
+        Step::Create => RestoreOutcome::Created,
+        Step::Unchanged => RestoreOutcome::Unchanged,
+        Step::Skipped => RestoreOutcome::Skipped,
+        Step::Blocked => RestoreOutcome::Blocked,
+    }
+}
+
+/// One reason, with what settles it and the particulars a client shows.
+fn issue(issue: &Issue) -> RestoreIssue {
+    let mut wire = RestoreIssue {
+        reason: issue.code().to_owned(),
+        confirm: issue
+            .confirmation()
+            .map(|confirmation| confirmation.as_str().to_owned()),
+        resolution: issue.resolution().map(ToOwned::to_owned),
+        at: None,
+        paths: Vec::new(),
+        links_outside: None,
+        existing: None,
+        why: None,
+    };
+    let names = |paths: &[RootPath]| paths.iter().map(|path| path.as_str().to_owned()).collect();
+    match issue {
+        Issue::TypeChange { at } | Issue::LinkCheckFailed { at } => {
+            wire.at = Some(at.as_str().to_owned());
+        }
+        Issue::Hardlinked { inside, outside } => {
+            wire.paths = names(inside);
+            wire.links_outside = Some(*outside);
+        }
+        Issue::OverwriteUnrecoverable { why } => wire.why = Some(why.as_str().to_owned()),
+        Issue::NameCollision { with } => wire.paths = names(with),
+        Issue::NameCase { existing } => wire.existing = Some(existing.clone()),
+        Issue::ParentMissing | Issue::NameInvalid | Issue::TypeConflict => {}
+    }
+
+    wire
+}

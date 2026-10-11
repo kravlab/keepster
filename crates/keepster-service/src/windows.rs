@@ -200,3 +200,88 @@ unsafe fn wide_to_string(text: *mut u16) -> String {
 
     String::from_utf16_lossy(units)
 }
+
+/// Every name of the file at `path`, as full paths — the hard links a Restore would break (ticket 10).
+///
+/// Windows has no link count in std's stable metadata and no `(dev, ino)` walk to find the other names;
+/// `FindFirstFileNameW` lists them all, volume-relative, so each is put back on the file's volume.
+pub fn hard_link_names(path: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows_sys::Win32::Foundation::{
+        ERROR_HANDLE_EOF, ERROR_MORE_DATA, GetLastError, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FindClose, FindFirstFileNameW, FindNextFileNameW, GetVolumePathNameW,
+    };
+
+    /// Closes the name enumeration however the loop ends.
+    struct Names(HANDLE);
+    impl Drop for Names {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from a successful `FindFirstFileNameW` and is closed once.
+            unsafe {
+                FindClose(self.0);
+            }
+        }
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+
+    let mut volume = vec![0u16; 1024];
+    // SAFETY: `wide` is NUL-terminated and `volume` holds the length passed.
+    let found =
+        unsafe { GetVolumePathNameW(wide.as_ptr(), volume.as_mut_ptr(), volume.len() as u32) };
+    if found == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let end = volume
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(volume.len());
+    let volume = std::path::PathBuf::from(OsString::from_wide(&volume[..end]));
+
+    let name_of = |buffer: &[u16], length: u32| {
+        let units = &buffer[..(length as usize).saturating_sub(1).min(buffer.len())];
+        let name = OsString::from_wide(units);
+        let relative = name.to_string_lossy().trim_start_matches('\\').to_owned();
+        volume.join(relative)
+    };
+
+    let mut buffer = vec![0u16; 512];
+    let mut length = buffer.len() as u32;
+    let handle = loop {
+        // SAFETY: `wide` is NUL-terminated, `length` is the capacity of `buffer` in UTF-16 units.
+        let handle =
+            unsafe { FindFirstFileNameW(wide.as_ptr(), 0, &mut length, buffer.as_mut_ptr()) };
+        if handle != INVALID_HANDLE_VALUE {
+            break Names(handle);
+        }
+        // SAFETY: reads the calling thread's last error, nothing else.
+        if unsafe { GetLastError() } == ERROR_MORE_DATA {
+            buffer.resize(length as usize, 0);
+            continue;
+        }
+        return Err(io::Error::last_os_error());
+    };
+
+    let mut names = vec![name_of(&buffer, length)];
+    loop {
+        length = buffer.len() as u32;
+        // SAFETY: the handle is open, and `length` is the capacity of `buffer` in UTF-16 units.
+        let next = unsafe { FindNextFileNameW(handle.0, &mut length, buffer.as_mut_ptr()) };
+        if next != 0 {
+            names.push(name_of(&buffer, length));
+            continue;
+        }
+        // SAFETY: reads the calling thread's last error, nothing else.
+        match unsafe { GetLastError() } {
+            ERROR_HANDLE_EOF => break,
+            ERROR_MORE_DATA => buffer.resize(length as usize, 0),
+            _ => return Err(io::Error::last_os_error()),
+        }
+    }
+
+    Ok(names)
+}

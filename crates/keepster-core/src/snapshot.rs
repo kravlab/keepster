@@ -113,6 +113,8 @@ pub enum Trigger {
     /// A Reconciliation: the whole Working Tree compared against the latest Snapshot — at the daemon's
     /// start, after the platform lost events, after the rules changed, or because someone asked.
     Reconcile,
+    /// A Restore is about to write: this is its Safety Snapshot, the state the Restore can be undone to.
+    Restore,
 }
 
 /// How a pass decides whether a file it walks must be read.
@@ -157,6 +159,7 @@ impl Trigger {
             Self::Watcher => "watcher",
             Self::Periodic => "periodic",
             Self::Reconcile => "reconcile",
+            Self::Restore => "restore",
         }
     }
 
@@ -167,6 +170,7 @@ impl Trigger {
             "watcher" => Some(Self::Watcher),
             "periodic" => Some(Self::Periodic),
             "reconcile" => Some(Self::Reconcile),
+            "restore" => Some(Self::Restore),
             _ => None,
         }
     }

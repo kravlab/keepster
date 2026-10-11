@@ -54,6 +54,9 @@ pub enum Command {
     /// Show what changed between a Snapshot and another Snapshot or the Working Tree.
     Diff(DiffArgs),
 
+    /// Put a Snapshot's versions of files back over the Working Tree.
+    Restore(RestoreArgs),
+
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
 
@@ -198,6 +201,76 @@ pub struct DiffArgs {
     /// such as Windows PowerShell 5.1 would re-encode.
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<PathBuf>,
+}
+
+/// Options of `keepster restore`.
+///
+/// Restore overwrites and creates; it never deletes. The whole request is checked first, and a Safety
+/// Snapshot of the current state is taken before anything is written, so the restore can be undone.
+#[derive(Debug, Args)]
+pub struct RestoreArgs {
+    /// The files or directories to put back, as paths on this machine — they need not exist any more.
+    /// The Root itself means every file of the Snapshot.
+    #[arg(required = true)]
+    pub paths: Vec<PathBuf>,
+
+    /// Which Snapshot, as `cat -s` takes it: `latest` (the default), `~N`, an identity, a moment or a
+    /// duration ago.
+    #[arg(long, value_name = "SELECTOR")]
+    pub from: Option<String>,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the first path.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print what would happen to every file, and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Create directories that are not there.
+    #[arg(long)]
+    pub create_parents: bool,
+
+    /// Replace something of another kind: a file where a directory is needed, a link or a special file.
+    #[arg(long)]
+    pub replace_type: bool,
+
+    /// Replace a file that has other names; those names keep the old content.
+    #[arg(long)]
+    pub break_hardlinks: bool,
+
+    /// Overwrite a file whose current content the Safety Snapshot cannot hold.
+    #[arg(long)]
+    pub overwrite_unrecoverable: bool,
+
+    /// All four of the above. It answers no question about names.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Of the files that are one file here, write this one and skip the others.
+    #[arg(long, value_name = "PATH")]
+    pub pick: Vec<PathBuf>,
+
+    /// Write the file at PATH under NAME, in the same directory, where its own name cannot exist.
+    #[arg(long, value_name = "PATH=NAME")]
+    pub rename: Vec<String>,
+
+    /// Where a name in another case is already there: `keep` it, or use the `snapshot`'s.
+    #[arg(long, value_name = "PATH=keep|snapshot")]
+    pub name_case: Vec<String>,
+
+    /// Skip each file still in the way, with its reason, and restore the rest.
+    #[arg(long)]
+    pub skip_unresolvable: bool,
+
+    /// Never ask: a confirmation or a resolution still missing is reported, and the exit code is 5.
+    #[arg(long)]
+    pub no_input: bool,
+
+    /// Print the daemon's answer.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster snapshot`.

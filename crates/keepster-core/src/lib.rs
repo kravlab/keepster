@@ -8,6 +8,7 @@ mod event;
 mod identity;
 mod path;
 mod policy;
+mod restore;
 mod root;
 mod rules;
 mod segment;
@@ -20,6 +21,10 @@ pub use path::{InvalidPath, RootPath};
 pub use policy::{
     CapturePolicy, DEFAULT_MAX_SIZE, Explanation, InvalidSize, SizeRule, Verdict, is_reserved,
     parse_size,
+};
+pub use restore::{
+    Ancestry, Confirmation, Confirmed, Existing, Found, Issue, NameCase, Naming, PathPlan, Plan,
+    Resolution, Step, Unrecoverable, plan, target_of,
 };
 pub use root::{RootId, containing, overlapping};
 pub use rules::{

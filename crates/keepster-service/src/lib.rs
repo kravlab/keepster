@@ -11,7 +11,7 @@ use std::path::PathBuf;
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{OwnerOnlyAccess, create_control_pipe, current_user_sid};
+pub use windows::{OwnerOnlyAccess, create_control_pipe, current_user_sid, hard_link_names};
 
 /// Where the daemon listens for the CLI, and where the CLI looks for it.
 ///

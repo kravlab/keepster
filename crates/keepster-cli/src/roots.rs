@@ -136,9 +136,11 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
             exit::NOT_FOUND
         }
         // A configuration that cannot be read is a state the Root is in until someone edits a file.
-        ErrorCode::RootOverlaps | ErrorCode::RootUnavailable | ErrorCode::ConfigInvalid => {
-            exit::STATE_CONFLICT
-        }
+        // A Restore waiting for an answer is in a state only the person can move it out of.
+        ErrorCode::RootOverlaps
+        | ErrorCode::RootUnavailable
+        | ErrorCode::ConfigInvalid
+        | ErrorCode::ConfirmationRequired => exit::STATE_CONFLICT,
         // Asking for the content of a directory, or the entries of a file, is a mistake in what was
         // asked rather than a state anything is in.
         ErrorCode::PathInvalid
@@ -149,7 +151,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::NotAFile
         | ErrorCode::NotADirectory
         | ErrorCode::PurgeInvalid
-        | ErrorCode::ComparisonInvalid => exit::USAGE,
+        | ErrorCode::ComparisonInvalid
+        | ErrorCode::ResolutionInvalid => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
@@ -270,6 +273,7 @@ mod tests {
             detail: "detail".to_owned(),
             code: code.to_owned(),
             details: BTreeMap::new(),
+            paths: Vec::new(),
         }
     }
 

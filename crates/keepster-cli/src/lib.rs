@@ -14,6 +14,7 @@ pub mod history;
 pub mod reconcile;
 pub mod render;
 pub mod resolve;
+pub mod restore;
 pub mod roots;
 pub mod selector;
 pub mod snapshots;
@@ -22,7 +23,7 @@ pub mod status;
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, LogArgs, MoveArgs, ReconcileArgs,
-    SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs,
+    RestoreArgs, SnapshotArgs, StatusArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -32,6 +33,7 @@ pub use history::{cat, log};
 pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
+pub use restore::restore;
 pub use roots::{move_root, roots, unwatch, watch};
 pub use snapshots::snapshot;
 pub use status::{Outcome, exit_code_for, outcome, status};
@@ -52,6 +54,8 @@ pub mod exit {
     pub const NOT_FOUND: u8 = 4;
     /// The daemon refused because of the state something is in, not because of the request.
     pub const STATE_CONFLICT: u8 = 5;
+    /// Some of what was asked was done and some failed: a Restore with a file it could not write.
+    pub const PARTIAL: u8 = 6;
     /// `status` found at least one Root that is not `Watching`.
     pub const ROOT_NOT_WATCHING: u8 = 10;
     /// Anything else, deliberately narrow.

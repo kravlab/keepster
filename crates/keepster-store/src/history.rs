@@ -25,10 +25,12 @@ use keepster_core::{
 use crate::index::{self, Index, Observation};
 
 mod diff;
+mod restore;
 
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
 };
+pub use restore::{Preflight, RestoreScope, Written, destination_naming};
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///
@@ -261,6 +263,8 @@ pub struct Pass {
     /// Why the derived index — the timeline or this pass's evidence — could not be brought up to date.
     /// The Snapshot, if one was written, is durable regardless.
     pub index_lag: Option<String>,
+    /// When no Snapshot was written because nothing changed, the one the Working Tree is identical to.
+    pub unchanged_since: Option<SnapshotId>,
 }
 
 /// Which part of a Root's chronology to list.
@@ -605,19 +609,21 @@ impl HistoryStore {
         };
         let (tree_id, walked) =
             self.write_working_tree(baseline_tree.as_ref(), root_path, policy, vouching, now)?;
+        let previous = baseline
+            .as_ref()
+            .and_then(|commit| commit.message().ok().and_then(index::trailers))
+            .map(|trailers| trailers.id);
         if !record_unchanged && baseline_tree.as_ref().map(git2::Tree::id) == Some(tree_id) {
             let index_lag = self.keep_observations(&walked, &observations);
-            return Ok(walked.pass(None, index_lag));
+            let mut pass = walked.pass(None, index_lag);
+            pass.unchanged_since = previous;
+            return Ok(pass);
         }
         let tree = self
             .repository
             .find_tree(tree_id)
             .map_err(self.failed("read"))?;
 
-        let previous = baseline
-            .as_ref()
-            .and_then(|commit| commit.message().ok().and_then(index::trailers))
-            .map(|trailers| trailers.id);
         let id = SnapshotId::following(previous, now);
         let signature = self.signature(now)?;
         let message = format!(
@@ -1226,6 +1232,7 @@ impl Walked {
             observed: self.seen,
             coarse_mtime: self.coarse_mtime,
             index_lag,
+            unchanged_since: None,
         }
     }
 
