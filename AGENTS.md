@@ -52,3 +52,11 @@ visual quality.
 
 These domain skills supplement workflow skills such as OpenSpec propose,
 apply, verify, and code-review; they do not replace them.
+
+## Session links
+
+Everything you publish stays free of Claude Code session links
+(`claude.ai/code/session_…`): commit messages, PR and issue bodies and
+titles, comments, review replies, files. GitHub tooling may append a
+footer carrying one after you post: re-read every PR, issue or comment
+you create or edit, and remove the link before going on.
