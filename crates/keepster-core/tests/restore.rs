@@ -167,9 +167,11 @@ fn each_structural_change_needs_its_own_confirmation() {
 }
 
 #[test]
-fn replacing_a_link_or_a_special_file_is_a_type_change_whose_old_self_cannot_be_kept() {
+fn replacing_a_special_file_is_a_type_change_whose_old_self_cannot_be_kept() {
     let link = Found {
-        existing: Existing::Other,
+        existing: Existing::Other {
+            unrecoverable: Some(Unrecoverable::Unsupported),
+        },
         ..absent("link.txt")
     };
 

@@ -190,9 +190,7 @@ fn run_pass(
         tracing::warn!(root = %id, %reason, "the history index lags");
     }
     report_unrecognized(id, &pass);
-    state
-        .runtimes
-        .passed(id, trigger, pass.coarse_mtime, pass.incomplete > 0);
+    state.runtimes.passed(id, trigger, &pass);
 
     Ok(pass)
 }
@@ -235,13 +233,35 @@ pub(crate) fn prepare(
     state: &DaemonState,
     id: RootId,
 ) -> Result<(RootRecord, StoreLocation, Effective), ProblemResponse> {
-    let (root, location, loaded) = {
+    let (root, location, mut loaded, others) = {
         let registry = state.registry();
         let entry = roots::record(&registry, id)?;
         let loaded = state.effective(id, &entry.path)?;
+        // Every other Root, by its real path: a followed link never leads into one, and a target
+        // containing one has it withheld (ticket 49). Registration keeps Roots from overlapping, so
+        // nothing else can reach them.
+        let others: Vec<_> = registry
+            .readable()
+            .unwrap_or_else(|error| {
+                tracing::warn!(root = %id, %error, "the other Roots could not be listed, so no followed link is kept out of them");
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|other| other.id != id)
+            .map(|other| {
+                let real = std::fs::canonicalize(&other.path).unwrap_or(other.path);
+                (real, keepster_core::WithheldReason::OtherRoot)
+            })
+            .collect();
 
-        (entry, snapshots::location(&registry.root_dir(id)), loaded)
+        (
+            entry,
+            snapshots::location(&registry.root_dir(id)),
+            loaded,
+            others,
+        )
     };
+    loaded.policy = loaded.policy.with_real_fences(others);
     for warning in &loaded.warnings {
         tracing::warn!(root = %id, code = warning.code.as_str(), "{}", warning.message);
     }

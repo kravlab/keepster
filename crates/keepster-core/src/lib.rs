@@ -20,8 +20,8 @@ pub use event::EventId;
 pub use identity::NotAnIdentity;
 pub use path::{InvalidPath, RootPath};
 pub use policy::{
-    CapturePolicy, DEFAULT_MAX_SIZE, Explanation, InvalidSize, SizeRule, Verdict, is_reserved,
-    parse_size,
+    CapturePolicy, DEFAULT_MAX_SIZE, Explanation, FollowStop, InvalidSize, SizeRule, Verdict,
+    is_reserved, parse_size,
 };
 pub use restore::{
     Ancestry, Confirmation, Confirmed, Existing, Found, Issue, NameCase, Naming, PathPlan, Plan,

@@ -107,6 +107,15 @@ pub const SCHEMA: &[KeySpec] = &[
         live: true,
         classifies: true,
     },
+    // Following a link decides what may enter the user's history — a file arriving in someone else's
+    // repository must not be able to pull `~/.ssh` in through a link of its own (ticket 49).
+    KeySpec {
+        name: "files.follow_symlinks",
+        root_settable: false,
+        live: true,
+        classifies: true,
+    },
+    trigger_key("files.follow_reconcile_interval"),
     trigger_key("triggers.active"),
     trigger_key("triggers.debounce"),
     trigger_key("triggers.rate_limit"),
@@ -146,6 +155,9 @@ fn spec(name: &str) -> &'static KeySpec {
 
 /// How often the periodic floor captures once it is switched on, unless configured otherwise.
 const DEFAULT_PERIODIC: Duration = Duration::from_secs(3600);
+
+/// How often a Root that follows links passes over their targets, unless configured otherwise.
+const DEFAULT_FOLLOW_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 /// One value, as the schema types it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +288,8 @@ struct Layer {
     max_size: Option<Entry>,
     max_size_by_pattern: Vec<SizeRule>,
     secret_opt_in: Vec<Rule>,
+    follow_symlinks: Vec<Rule>,
+    follow_interval: Option<Entry>,
     active: Option<Entry>,
     debounce: Option<Entry>,
     rate_limit: Option<Entry>,
@@ -298,6 +312,8 @@ impl Layer {
             "files.max_size" => self.max_size.take().is_some(),
             "files.max_size_by_pattern" => emptied(&mut self.max_size_by_pattern),
             "files.secret_opt_in" => emptied(&mut self.secret_opt_in),
+            "files.follow_symlinks" => emptied(&mut self.follow_symlinks),
+            "files.follow_reconcile_interval" => self.follow_interval.take().is_some(),
             "triggers.active" => self.active.take().is_some(),
             "triggers.debounce" => self.debounce.take().is_some(),
             "triggers.rate_limit" => self.rate_limit.take().is_some(),
@@ -515,6 +531,11 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         .flat_map(|layer| &layer.max_size_by_pattern)
         .cloned()
         .collect();
+    let follow: Vec<Rule> = layers
+        .iter()
+        .flat_map(|layer| &layer.follow_symlinks)
+        .cloned()
+        .collect();
 
     let Value::Bytes(max) = max_size.value else {
         unreachable!("max_size is only ever set in bytes")
@@ -528,7 +549,8 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         max,
         size_rules.clone(),
     )
-    .honouring_ignore_files(honour);
+    .honouring_ignore_files(honour)
+    .following(RuleSet::new(follow));
     if max_size.origin.level != Level::Default {
         policy = policy.with_max_size_origin(max_size.origin.clone());
     }
@@ -574,6 +596,10 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         |layer| layer.periodic.as_ref(),
         Value::Duration(DEFAULT_PERIODIC),
     );
+    let follow_interval = scalar(
+        |layer| layer.follow_interval.as_ref(),
+        Value::Duration(DEFAULT_FOLLOW_INTERVAL),
+    );
     let duration = |entry: &Entry| match entry.value {
         Value::Duration(duration) => duration,
         _ => unreachable!("an interval is only ever set as a duration"),
@@ -581,7 +607,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
     let Value::Words(names) = &active.value else {
         unreachable!("the active Triggers are only ever set as names")
     };
-    let triggers = Triggers {
+    let mut triggers = Triggers {
         watcher: names.iter().any(|name| name == Trigger::Watcher.as_str()),
         periodic: names
             .iter()
@@ -589,7 +615,13 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
             .then(|| duration(&periodic)),
         debounce: duration(&debounce),
         rate_limit: duration(&rate_limit),
+        follow_every: None,
     };
+    // Only for a Root captured automatically — one captured on request only is passed over on request
+    // only — and never more often than the rate limit allows anyway.
+    if policy.follows_any() && (triggers.watcher || triggers.periodic.is_some()) {
+        triggers.follow_every = Some(duration(&follow_interval).max(triggers.rate_limit));
+    }
 
     let at_start = scalar(|layer| layer.reconcile_at_start.as_ref(), Value::Bool(true));
     let verify = scalar(
@@ -617,6 +649,14 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         (
             "files.secret_opt_in",
             patterns(|layer| &layer.secret_opt_in),
+        ),
+        (
+            "files.follow_symlinks",
+            patterns(|layer| &layer.follow_symlinks),
+        ),
+        (
+            "files.follow_reconcile_interval",
+            Setting::Scalar(follow_interval),
         ),
         ("triggers.active", Setting::Scalar(active)),
         ("triggers.debounce", Setting::Scalar(debounce)),
@@ -775,6 +815,9 @@ struct Files {
     max_size_by_pattern: Vec<Spanned<SizeEntry>>,
     #[serde(default)]
     secret_opt_in: Vec<Spanned<String>>,
+    #[serde(default)]
+    follow_symlinks: Vec<Spanned<String>>,
+    follow_reconcile_interval: Option<Spanned<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -943,6 +986,25 @@ fn layer(
         })
         .transpose()?;
 
+    let follow_interval = files
+        .follow_reconcile_interval
+        .as_ref()
+        .map(|interval| {
+            let duration = parse_duration(interval.get_ref())
+                .map_err(|error| invalid("follow_reconcile_interval", error.to_string()))?;
+            if duration.is_zero() {
+                return Err(invalid(
+                    "follow_reconcile_interval",
+                    "it cannot be zero".to_owned(),
+                ));
+            }
+            Ok(Entry {
+                value: Value::Duration(duration),
+                origin: origin(interval.span()),
+            })
+        })
+        .transpose()?;
+
     Ok(Layer {
         exclude: rules("exclude", &files.exclude, Rule::parse)?,
         include: rules("include", &files.include, Rule::include)?,
@@ -953,6 +1015,8 @@ fn layer(
         max_size,
         max_size_by_pattern,
         secret_opt_in: rules("secret_opt_in", &files.secret_opt_in, Rule::parse)?,
+        follow_symlinks: rules("follow_symlinks", &files.follow_symlinks, Rule::parse)?,
+        follow_interval,
         ..Layer::default()
     })
 }
@@ -1061,11 +1125,16 @@ impl Configuration {
             return self.unresolved(id);
         };
         let mut effective = effective(global, id, root_path, own.as_ref());
-        effective.policy = std::mem::take(&mut effective.policy).with_fences(
-            history_fence(&self.state_dir, root_path)
-                .into_iter()
-                .collect(),
-        );
+        effective.policy = std::mem::take(&mut effective.policy)
+            .with_fences(
+                history_fence(&self.state_dir, root_path)
+                    .into_iter()
+                    .collect(),
+            )
+            .with_real_fences(vec![(
+                resolved(&self.state_dir),
+                WithheldReason::HistoryStore,
+            )]);
 
         if let Some(started) = &self.at_start {
             let now = self.daemon_settings();
@@ -1384,11 +1453,15 @@ fn line_of(text: &str, offset: usize) -> u32 {
     u32::try_from(before.matches('\n').count() + 1).unwrap_or(u32::MAX)
 }
 
+/// `path` with every link resolved, or as it is when it cannot be.
+fn resolved(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Where the History Stores live, as a path inside the Root at `root_path` — when they are inside it, as
 /// they are in a Root that is a whole home directory — so a capture withholds them as `history_store`
 /// rather than capturing history into history, and the watcher never watches its own writes.
 fn history_fence(state_dir: &Path, root_path: &Path) -> Option<(RootPath, WithheldReason)> {
-    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let state_dir = resolved(state_dir);
     let inside = state_dir.strip_prefix(resolved(root_path)).ok()?;
 

@@ -361,35 +361,82 @@ fn a_directory_that_cannot_be_listed_names_its_errno_and_keeps_what_it_held() {
     );
 }
 
-/// Append to `path` until told to stop, so that no two looks at it agree.
-fn keep_appending(path: PathBuf) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
-    use std::io::Write;
+/// A file at `busy.log` that no read finds as its `stat` described, for as long as this lives.
+///
+/// On Linux it is a followed link to a procfs file, which reports a size of zero and always holds more:
+/// unstable on every read, whatever else the machine is doing. Elsewhere a thread appends to a large
+/// file while it is read, which a starved machine can fail to interleave.
+struct Busy {
+    writer: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>,
+}
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let writer = std::thread::spawn(move || {
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .expect("the file opens for appending");
-        while !flag.load(Ordering::Relaxed) {
-            file.write_all(b"more\n").expect("an append");
+impl Busy {
+    fn start(fixture: &Fixture) -> Self {
+        let path = fixture.root.join("busy.log");
+        let _ = fs::remove_file(&path);
+
+        #[cfg(target_os = "linux")]
+        {
+            std::os::unix::fs::symlink("/proc/self/stat", &path).expect("a link to procfs");
+            Self { writer: None }
         }
-    });
 
-    (stop, writer)
+        #[cfg(not(target_os = "linux"))]
+        {
+            use std::io::Write;
+
+            fs::write(&path, vec![b'.'; 8 * 1024 * 1024]).expect("a large file");
+            let stop = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&stop);
+            let writer = std::thread::spawn(move || {
+                let mut file = fs::OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .expect("the file opens for appending");
+                while !flag.load(Ordering::Relaxed) {
+                    file.write_all(b"more\n").expect("an append");
+                }
+            });
+            Self {
+                writer: Some((stop, writer)),
+            }
+        }
+    }
+
+    /// What a pass needs to read `busy.log` as the busy file it is.
+    fn policy() -> CapturePolicy {
+        CapturePolicy::default().following(RuleSet::new(vec![
+            keepster_core::Rule::parse(
+                "busy.log",
+                RootPath::root(),
+                keepster_core::RuleOrigin {
+                    level: keepster_core::Level::Global,
+                    source: "test".to_owned(),
+                    line: None,
+                },
+            )
+            .expect("a pattern"),
+        ]))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        if let Some((stop, writer)) = self.writer.take() {
+            stop.store(true, Ordering::Relaxed);
+            let _ = writer.join();
+        }
+    }
 }
 
 #[test]
 fn a_file_that_never_settles_is_unstable_and_carries_its_previous_version_forward() {
     let fixture = Fixture::new();
-    // Large enough that reading it takes long enough for the writer to land an append in between.
-    fixture.write("busy.log", &vec![b'.'; 8 * 1024 * 1024]);
+    let policy = Busy::policy();
 
-    let (stop, writer) = keep_appending(fixture.root.join("busy.log"));
-    let first = fixture.capture(&CapturePolicy::default(), MOMENT);
-    stop.store(true, Ordering::Relaxed);
-    writer.join().expect("the writer stops");
+    let busy = Busy::start(&fixture);
+    let first = fixture.capture(&policy, MOMENT);
+    drop(busy);
 
     assert_eq!(
         first.incomplete,
@@ -407,16 +454,15 @@ fn a_file_that_never_settles_is_unstable_and_carries_its_previous_version_forwar
             .contains("\ni unstable busy.log\n")
     );
 
+    fs::remove_file(fixture.root.join("busy.log")).expect("the busy file goes");
     fixture.write("busy.log", b"settled\n");
-    let settled = fixture.capture(&CapturePolicy::default(), MOMENT + 60);
+    let settled = fixture.capture(&policy, MOMENT + 60);
     assert!(settled.incomplete.is_empty());
     assert_eq!(fixture.sidecar(), None, "the record goes once it is read");
 
-    fixture.write("busy.log", &vec![b'.'; 8 * 1024 * 1024]);
-    let (stop, writer) = keep_appending(fixture.root.join("busy.log"));
-    let third = fixture.capture(&CapturePolicy::default(), MOMENT + 120);
-    stop.store(true, Ordering::Relaxed);
-    writer.join().expect("the writer stops");
+    let busy = Busy::start(&fixture);
+    let third = fixture.capture(&policy, MOMENT + 120);
+    drop(busy);
 
     assert_eq!(third.incomplete.len(), 1);
     assert_eq!(
@@ -515,11 +561,9 @@ fn entries_list_withheld_paths_with_their_reasons_and_never_the_sidecar() {
 #[test]
 fn an_unstable_path_is_listed_as_omitted_or_marked_where_its_previous_version_is_kept() {
     let fixture = Fixture::new();
-    fixture.write("busy.log", &vec![b'.'; 8 * 1024 * 1024]);
-    let (stop, writer) = keep_appending(fixture.root.join("busy.log"));
-    let captured = fixture.capture(&CapturePolicy::default(), MOMENT);
-    stop.store(true, Ordering::Relaxed);
-    writer.join().expect("the writer stops");
+    let busy = Busy::start(&fixture);
+    let captured = fixture.capture(&Busy::policy(), MOMENT);
+    drop(busy);
 
     let listing = fixture
         .store

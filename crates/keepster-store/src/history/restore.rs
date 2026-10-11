@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use keepster_core::{
-    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Naming, Plan, Record, RootPath,
+    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Kind, Naming, Plan, Record, RootPath,
     SnapshotId, Step, Unrecoverable, Verdict, WithheldReason, ignore_file_rules,
 };
 
@@ -68,6 +68,8 @@ struct Source {
     blob: git2::Oid,
     size: u64,
     executable: bool,
+    /// Whether it is a link, its blob the target text (ticket 49).
+    link: bool,
 }
 
 /// What the Snapshot has for one path of a Restore.
@@ -150,7 +152,7 @@ impl HistoryStore {
                             "it changed between the preflight and the write".to_owned(),
                         );
                     }
-                    match self.write_one(scope.root_path, planned, &now, source) {
+                    match self.write_one(scope, planned, &now, source) {
                         Ok(()) if planned.step == Step::Create => Written::Created,
                         Ok(()) => Written::Restored,
                         Err(error) => Written::Failed(error.to_string()),
@@ -266,19 +268,16 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// A regular file's version, or `None` for a link — which ticket 49 restores as a link.
+    /// A file's version — a regular file's, or a link's, which is restored as a link (ticket 49).
     fn source(&self, entry: &git2::TreeEntry<'_>) -> Result<Option<Source>, StoreError> {
         const EXECUTABLE: i32 = 0o100_755;
         const SYMLINK: i32 = 0o120_000;
-
-        if entry.filemode() == SYMLINK {
-            return Ok(None);
-        }
 
         Ok(Some(Source {
             blob: entry.id(),
             size: self.blob_size(entry.id())?,
             executable: entry.filemode() == EXECUTABLE,
+            link: entry.filemode() == SYMLINK,
         }))
     }
 
@@ -286,12 +285,21 @@ impl HistoryStore {
     /// request may have changed.
     fn write_one(
         &self,
-        root: &Path,
+        scope: &RestoreScope<'_>,
         planned: &keepster_core::PathPlan,
         found: &Found,
         source: &Source,
     ) -> io::Result<()> {
-        let target = absolute(root, &planned.target);
+        let root = scope.root_path;
+        // A file reached through a followed link to it is written where the link leads, which keeps
+        // the link a link; a link is always written at its own path.
+        let at = absolute(root, &planned.target);
+        let through = if source.link {
+            None
+        } else {
+            followed(scope, &planned.target, &at).filter(|real| real.is_file())
+        };
+        let target = through.clone().unwrap_or(at);
         let parent = target
             .parent()
             .map(Path::to_path_buf)
@@ -311,10 +319,12 @@ impl HistoryStore {
             }
         }
 
-        let replaced = planned
-            .replaces
-            .as_ref()
-            .map_or_else(|| target.clone(), |replaces| absolute(root, replaces));
+        // A name in another case is the Root's to replace; written through a link, the file the link
+        // leads to is replaced, whatever names sit beside the link.
+        let replaced = match (&planned.replaces, &through) {
+            (Some(replaces), None) => absolute(root, replaces),
+            _ => target.clone(),
+        };
         let base_mode = match &found.existing {
             Existing::File { .. } => fs::metadata(&replaced)
                 .ok()
@@ -329,10 +339,12 @@ impl HistoryStore {
             std::process::id(),
             TEMPORARY.fetch_add(1, Ordering::Relaxed)
         ));
-        if let Err(error) = self
-            .write_temporary(&temporary, source, base_mode)
-            .and_then(|()| fs::rename(&temporary, &replaced))
-        {
+        let written = if source.link {
+            self.link_temporary(&temporary, source)
+        } else {
+            self.write_temporary(&temporary, source, base_mode)
+        };
+        if let Err(error) = written.and_then(|()| fs::rename(&temporary, &replaced)) {
             let _ = fs::remove_file(&temporary);
             return Err(error);
         }
@@ -349,6 +361,28 @@ impl HistoryStore {
         sync_directory(&parent);
 
         Ok(())
+    }
+
+    /// The version's link at `temporary`, pointing where it pointed.
+    fn link_temporary(&self, temporary: &Path, source: &Source) -> io::Result<()> {
+        let blob = self
+            .repository
+            .find_blob(source.blob)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(blob.content()), temporary)
+        }
+
+        // Ticket 76 decides a Windows link's flavour, and refuses one the account cannot create.
+        #[cfg(not(unix))]
+        {
+            let target = String::from_utf8_lossy(blob.content()).replace('/', "\\");
+            std::os::windows::fs::symlink_file(target, temporary)
+        }
     }
 
     /// The version's bytes in a new file at `temporary`, synced, with its permissions set.
@@ -415,15 +449,24 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
     let root = scope.root_path;
 
     let mut ancestry = Ancestry::Present;
+    // The last followed link on the way, if the write goes through one.
+    let mut via = None;
     for ancestor in target.ancestors() {
         match fs::symlink_metadata(absolute(root, &ancestor)) {
             Err(_) => {
                 ancestry = Ancestry::Missing;
                 break;
             }
+            // A followed link to a directory is written through, as the capture read through it; any
+            // other link above the file would lead the write out of what was checked.
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                ancestry = Ancestry::Link { at: ancestor };
-                break;
+                let through = followed(scope, &ancestor, &absolute(root, &ancestor))
+                    .is_some_and(|real| real.is_dir());
+                if !through {
+                    ancestry = Ancestry::Link { at: ancestor };
+                    break;
+                }
+                via = Some(ancestor);
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(metadata) => {
@@ -443,6 +486,15 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
                 };
                 break;
             }
+        }
+    }
+
+    // Through a followed link, the directory the file lands in must not be inside another Root or a
+    // History Store, however deep beneath the link's own target it is.
+    if let (Ancestry::Present, Some(link)) = (&ancestry, via) {
+        let lands = fs::canonicalize(absolute(root, &target.parent()));
+        if lands.is_ok_and(|real| scope.policy.stop_following(&real, &[]).is_some()) {
+            ancestry = Ancestry::Link { at: link };
         }
     }
 
@@ -474,32 +526,107 @@ fn existing(scope: &RestoreScope<'_>, target: &RootPath, source: &Source) -> Exi
         return Existing::Absent;
     };
 
+    if metadata.file_type().is_symlink() {
+        if source.link {
+            let same = fs::read_link(&at).is_ok_and(|text| {
+                git2::Oid::hash_object(git2::ObjectType::Blob, &super::link_text(&text))
+                    .is_ok_and(|current| current == source.blob)
+            });
+            if same {
+                return Existing::Same;
+            }
+            // One link replaced by another, in place: no change of kind.
+            return Existing::File {
+                links: 1,
+                links_inside: Vec::new(),
+                unrecoverable: recoverability(scope, target, &metadata),
+            };
+        }
+        // A followed link to a file is written through: what is there is the file it leads to.
+        if let Some(real) = followed(scope, target, &at) {
+            if let Ok(followed) = fs::metadata(&real) {
+                if followed.is_file() {
+                    return file_existing(scope, target, &real, &followed, source);
+                }
+            }
+        }
+        return Existing::Other {
+            unrecoverable: recoverability(scope, target, &metadata),
+        };
+    }
     if metadata.is_dir() {
         return Existing::Directory;
     }
     if !metadata.is_file() {
-        return Existing::Other;
+        return Existing::Other {
+            unrecoverable: Some(Unrecoverable::Unsupported),
+        };
+    }
+    if source.link {
+        return Existing::Other {
+            unrecoverable: unrecoverable_file(scope, target, &at, &metadata),
+        };
     }
 
-    let same_content = git2::Oid::hash_file(git2::ObjectType::Blob, &at)
+    file_existing(scope, target, &at, &metadata, source)
+}
+
+/// What the regular file at `at` is, compared with the version to write.
+fn file_existing(
+    scope: &RestoreScope<'_>,
+    target: &RootPath,
+    at: &Path,
+    metadata: &fs::Metadata,
+    source: &Source,
+) -> Existing {
+    let same_content = git2::Oid::hash_file(git2::ObjectType::Blob, at)
         .is_ok_and(|current| current == source.blob);
     // Where the platform keeps no executable bit, the content alone decides.
-    let mode_matches = executable(&metadata).is_none_or(|current| current == source.executable);
+    let mode_matches = executable(metadata).is_none_or(|current| current == source.executable);
     if same_content && mode_matches {
         return Existing::Same;
     }
 
-    let unrecoverable = recoverability(scope, target, &metadata).or_else(|| {
-        File::open(&at)
-            .is_err()
-            .then_some(Unrecoverable::Unreadable)
-    });
-
     Existing::File {
-        links: link_count(scope, &at, &metadata),
+        links: link_count(scope, at, metadata),
         links_inside: Vec::new(),
-        unrecoverable,
+        unrecoverable: unrecoverable_file(scope, target, at, metadata),
     }
+}
+
+/// Why the regular file at `at` could not be brought back by the Safety Snapshot, if it could not.
+fn unrecoverable_file(
+    scope: &RestoreScope<'_>,
+    target: &RootPath,
+    at: &Path,
+    metadata: &fs::Metadata,
+) -> Option<Unrecoverable> {
+    recoverability(scope, target, metadata)
+        .or_else(|| File::open(at).is_err().then_some(Unrecoverable::Unreadable))
+}
+
+/// Where the link at `path` — `at` on disk — leads, if a Restore may write through it: the follow list
+/// still names it, and it leads into no other Root and no History Store (ticket 49).
+fn followed(scope: &RestoreScope<'_>, path: &RootPath, at: &Path) -> Option<PathBuf> {
+    if !fs::symlink_metadata(at).ok()?.file_type().is_symlink() {
+        return None;
+    }
+    let target = fs::metadata(at).ok()?;
+    let kind = if target.is_dir() {
+        Kind::Directory
+    } else {
+        Kind::File
+    };
+    if !scope.policy.follows(path, kind) {
+        return None;
+    }
+    let real = fs::canonicalize(at).ok()?;
+
+    scope
+        .policy
+        .stop_following(&real, &[])
+        .is_none()
+        .then_some(real)
 }
 
 /// Why the file at `path` would not enter a Snapshot taken now — the Safety Snapshot — if it would not:

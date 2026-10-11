@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
-    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Parsed, Record, RootId, RootPath,
-    SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger, Verdict, Verify,
+    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Kind, Parsed, Record, RootId,
+    RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger, Verdict, Verify,
     WithheldReason, ignore_file_rules,
 };
 
@@ -275,6 +275,9 @@ pub struct Pass {
     /// Records of the previous Snapshot's sidecar this build does not know — a later build's facts —
     /// which this pass could not carry into its own: to be reported, never dropped in silence.
     pub unrecognized: Vec<String>,
+    /// How many links the pass followed into their targets — which no watch covers, so this pass was
+    /// their coverage (ticket 49).
+    pub followed: u64,
 }
 
 /// Which part of a Root's chronology to list.
@@ -1140,7 +1143,9 @@ impl HistoryStore {
         now: SystemTime,
     ) -> Result<Walked, StoreError> {
         let mut walked = Walked::default();
-        collect_files(root_path, &RootPath::root(), policy, &mut walked)?;
+        let place =
+            Place::root(fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf()));
+        collect_files(root_path, &RootPath::root(), policy, &place, &mut walked)?;
 
         // Entries are applied in the index's own order, which is the byte order of the `/`-joined path —
         // not the component order `Path` compares by, where `sub/b.txt` would precede `sub.txt` while
@@ -1154,7 +1159,10 @@ impl HistoryStore {
         // replaced by a special file. Neither is the file the walk found, and neither is a failure.
         let mut gone = Vec::new();
         for path in &paths {
-            let absolute = root_path.join(path.as_filesystem_path());
+            let absolute = match walked.real.get(path) {
+                Some(real) => real.clone(),
+                None => root_path.join(path.as_filesystem_path()),
+            };
 
             let metadata = match fs::symlink_metadata(&absolute) {
                 Ok(metadata) => metadata,
@@ -1175,7 +1183,13 @@ impl HistoryStore {
             // The filter: the last pass read this very size and mtime and found the content the baseline
             // holds. Any doubt — no row, a different size or mtime, a baseline that disagrees — reads.
             let mtime = metadata.modified().ok().map(nanos_since_epoch);
-            let vouched = match (observations.get(&path.0), mtime, recorded) {
+            // Beyond a followed link the evidence is keyed by where the file really is, so a link
+            // retargeted at a lookalike tree — same sizes, same mtimes — vouches for nothing.
+            let evidence = match walked.real.get(path) {
+                Some(real) => format!("{}\0{}", path.0, real.display()),
+                None => path.0.clone(),
+            };
+            let vouched = match (observations.get(&evidence), mtime, recorded) {
                 (Some(seen), Some(mtime), Some((oid, _)))
                     if seen.size == metadata.len() && seen.mtime == mtime && seen.oid == oid =>
                 {
@@ -1221,7 +1235,7 @@ impl HistoryStore {
             if let Some(mtime) = mtime {
                 walked
                     .observed
-                    .push((path.0.clone(), Observation { size, mtime, oid }));
+                    .push((evidence, Observation { size, mtime, oid }));
             }
             walked.seen += 1;
 
@@ -1237,6 +1251,20 @@ impl HistoryStore {
         // `gone` was collected in the order of `paths`, so both stay sorted.
         paths.retain(|path| gone.binary_search(path).is_err());
         walked.paths = paths;
+
+        // A link's content is its target text, which costs nothing to read, so no evidence vouches for it.
+        walked.links.sort();
+        for (path, text) in &walked.links {
+            let unchanged = git2::Oid::hash_object(git2::ObjectType::Blob, text)
+                .is_ok_and(|oid| baseline_entry(baseline, path) == Some((oid, LINK_MODE)));
+            if unchanged {
+                continue;
+            }
+            let oid = self.repository.blob(text).map_err(self.failed("written"))?;
+            index
+                .add(&entry_for(path, oid, LINK_MODE))
+                .map_err(self.failed("written"))?;
+        }
         walked.coarse_mtime = walked.seen > 0 && !sub_second;
 
         // Git's racy rule: a file whose mtime is not older than the pass's start may change again within
@@ -1466,7 +1494,7 @@ impl HistoryStore {
 /// platform's `Path` compares by component — which puts `sub/b.txt` before `sub.txt`, the opposite of
 /// what the index expects, and would cost the out-of-order insertion ticket 12 measured at 22.74 s
 /// against 0.86 s.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct WirePath(String);
 
 impl WirePath {
@@ -1502,8 +1530,14 @@ struct Walked {
     carried: Vec<WirePath>,
     /// Paths present but deliberately not held.
     withheld: Vec<WithheldPath>,
+    /// Links stored as links, with their target text.
+    links: Vec<(WirePath, Vec<u8>)>,
+    /// Where a file reached through a followed link to it is read from, since the link is never opened.
+    real: HashMap<WirePath, PathBuf>,
     /// What the baseline's sidecar said that this build does not know, and so did not carry.
     unrecognized: Vec<String>,
+    /// How many links the walk followed.
+    followed: u64,
     /// What this pass observed of each file it read or vouched for, for the next pass to compare with.
     observed: Vec<(String, Observation)>,
     /// How many files were read and hashed.
@@ -1525,6 +1559,7 @@ impl Walked {
             unchanged_since: None,
             incomplete: u64::try_from(self.incomplete.len()).unwrap_or(u64::MAX),
             unrecognized: self.unrecognized.clone(),
+            followed: self.followed,
         }
     }
 
@@ -1539,6 +1574,32 @@ impl Walked {
     /// Name a path that could not be looked at, and keep what the baseline holds there.
     fn could_not_look(&mut self, path: WirePath, error: &io::Error) {
         self.incomplete(&path, Incomplete::Error(error_name::of(error)));
+        self.carried.push(path);
+    }
+
+    /// Act on the policy's verdict on `rooted`: `held` when its content is held, a Withheld record when
+    /// it is withheld, and nothing when the rules leave it out.
+    fn judge(
+        &mut self,
+        judged: Judged,
+        rooted: &RootPath,
+        held: impl FnOnce(&mut Self) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        match judged {
+            Judged::Held => held(self),
+            Judged::Withheld(reason) => {
+                self.withhold(rooted.clone(), reason);
+                Ok(())
+            }
+            Judged::Left => Ok(()),
+        }
+    }
+
+    /// Name a directory that leads back to one already on the way to it, and keep what the baseline
+    /// holds there, rather than walk it for ever.
+    fn loops(&mut self, rooted: &RootPath) {
+        let path = WirePath(rooted.as_str().to_owned());
+        self.incomplete(&path, Incomplete::Error("eloop".to_owned()));
         self.carried.push(path);
     }
 
@@ -1574,6 +1635,10 @@ impl Walked {
             || self
                 .paths
                 .binary_search_by(|walked| walked.as_str().cmp(path))
+                .is_ok()
+            || self
+                .links
+                .binary_search_by(|(walked, _)| walked.as_str().cmp(path))
                 .is_ok()
             || self.carried.iter().any(|carried| {
                 path == carried.as_str() || path.starts_with(&format!("{}/", carried.as_str()))
@@ -1819,6 +1884,7 @@ fn collect_files(
     root: &Path,
     here: &RootPath,
     policy: &CapturePolicy,
+    place: &Place,
     walked: &mut Walked,
 ) -> Result<(), StoreError> {
     let relative = WirePath(here.as_str().to_owned());
@@ -1902,15 +1968,39 @@ fn collect_files(
 
         // Present, but without content: no tree entry at all (ADR 0009), and a record in the sidecar.
         // A reserved or fenced directory is one record, and is never entered.
-        if metadata.is_dir() {
+        if metadata.file_type().is_symlink() {
+            walk_link(root, &rooted, &directory.join(name), policy, place, walked)?;
+        } else if metadata.is_dir() {
+            let real = place.real.join(name);
             match Judged::from(policy.directory(&rooted)) {
-                Judged::Held => collect_files(root, &rooted, policy, walked)?,
+                // A fence is named by its real path where a followed link reaches it.
+                Judged::Held => match policy.fenced_at(&real) {
+                    Some(reason) => walked.withhold(rooted, reason),
+                    // A directory already on the way here — a bind mount of an ancestor — would never
+                    // end: what the baseline holds there is kept, and the loop named.
+                    None if place.revisits(&metadata) => walked.loops(&rooted),
+                    None => collect_files(
+                        root,
+                        &rooted,
+                        policy,
+                        &place.within(real, &metadata),
+                        walked,
+                    )?,
+                },
                 Judged::Withheld(reason) => walked.withhold(rooted, reason),
                 Judged::Left => {}
             }
         } else if metadata.is_file() {
             match Judged::from(policy.file(&rooted, metadata.len())) {
-                Judged::Held => walked.paths.push(WirePath(rooted.as_str().to_owned())),
+                Judged::Held => {
+                    let wire = WirePath(rooted.as_str().to_owned());
+                    // Beyond a followed link, the evidence of the last pass is keyed by where the file
+                    // really is, so a link retargeted at a lookalike tree vouches for nothing.
+                    if place.is_followed() {
+                        walked.real.insert(wire.clone(), place.real.join(name));
+                    }
+                    walked.paths.push(wire);
+                }
                 Judged::Withheld(reason) => walked.withhold(rooted, reason),
                 Judged::Left => {}
             }
@@ -1923,10 +2013,192 @@ fn collect_files(
                 Judged::Left => {}
             }
         }
-        // A symlink waits for ticket 49, which stores links as links.
     }
 
     Ok(())
+}
+
+/// Where the directory a walk is in really is, for deciding where a link it meets may lead.
+struct Place {
+    /// The Root's own real path, where a cycle is measured from.
+    root: PathBuf,
+    /// Its real path: the Root's, joined with names, or a followed link's target, joined with names.
+    real: PathBuf,
+    /// The targets of the links followed to get here, by their real paths.
+    followed: Vec<PathBuf>,
+    /// Every directory on the way here by its identity, `(dev, ino)`, which no path comparison can
+    /// replace: a bind mount, or a chain of links, reaches one directory by several paths. Empty
+    /// where the platform gives no identity.
+    seen: Vec<(u64, u64)>,
+}
+
+impl Place {
+    /// The Root itself, at its real path.
+    fn root(real: PathBuf) -> Self {
+        let seen = fs::metadata(&real)
+            .ok()
+            .and_then(|metadata| identity(&metadata))
+            .into_iter()
+            .collect();
+        Self {
+            root: real.clone(),
+            real,
+            followed: Vec::new(),
+            seen,
+        }
+    }
+
+    /// The directory `real`, `metadata` its own, beneath this one, reached by name.
+    fn within(&self, real: PathBuf, metadata: &fs::Metadata) -> Self {
+        let mut seen = self.seen.clone();
+        seen.extend(identity(metadata));
+        Self {
+            root: self.root.clone(),
+            real,
+            followed: self.followed.clone(),
+            seen,
+        }
+    }
+
+    /// The target `real`, `metadata` its own, of a link followed from here.
+    fn following(&self, real: PathBuf, metadata: &fs::Metadata) -> Self {
+        let mut next = self.within(real.clone(), metadata);
+        next.followed.push(real);
+        next
+    }
+
+    /// Whether the directory `metadata` describes is already on the way here.
+    fn revisits(&self, metadata: &fs::Metadata) -> bool {
+        identity(metadata).is_some_and(|identity| self.seen.contains(&identity))
+    }
+
+    /// Whether a followed link led here.
+    fn is_followed(&self) -> bool {
+        !self.followed.is_empty()
+    }
+
+    /// Everything a link followed from here must not lead back to: the Root, the targets followed on
+    /// the way here, and this directory itself.
+    fn walk(&self) -> Vec<PathBuf> {
+        let mut walk = Vec::with_capacity(self.followed.len() + 2);
+        walk.push(self.root.clone());
+        walk.extend(self.followed.iter().cloned());
+        walk.push(self.real.clone());
+        walk
+    }
+}
+
+/// What a walk does with the link at `rooted` — `absolute` on disk — met in `place` (ticket 49).
+///
+/// Stored as a link, its target text the blob, unless the follow list names it: then its target is
+/// captured at the link's own path, under the rules for that logical path — unless following it would
+/// close a cycle or lead into another Root or a History Store, when it is stored as a link after all. A
+/// followed link whose target cannot be reached is not read as everything beneath it deleted: the
+/// baseline is carried forward and the link named with its error, as an unmount must be.
+fn walk_link(
+    root: &Path,
+    rooted: &RootPath,
+    absolute: &Path,
+    policy: &CapturePolicy,
+    place: &Place,
+    walked: &mut Walked,
+) -> Result<(), StoreError> {
+    let wire = || WirePath(rooted.as_str().to_owned());
+    let target = fs::metadata(absolute);
+    // A target that cannot be reached has no kind to read, and an unmounted directory must still be
+    // known by a pattern naming it as one, or its subtree would read as deleted.
+    let follows = match &target {
+        Ok(metadata) if metadata.is_dir() => policy.follows(rooted, Kind::Directory),
+        Ok(_) => policy.follows(rooted, Kind::File),
+        Err(_) => policy.follows(rooted, Kind::Directory) || policy.follows(rooted, Kind::File),
+    };
+
+    if follows {
+        let followed = target.and_then(|metadata| Ok((metadata, fs::canonicalize(absolute)?)));
+        let (metadata, real) = match followed {
+            Ok(followed) => followed,
+            Err(error) => {
+                walked.judge(Judged::from(policy.file(rooted, 0)), rooted, |walked| {
+                    walked.could_not_look(wire(), &error);
+                    Ok(())
+                })?;
+                return Ok(());
+            }
+        };
+
+        let stopped = policy.stop_following(&real, &place.walk()).is_some()
+            || (metadata.is_dir() && place.revisits(&metadata));
+        if !stopped {
+            if metadata.is_dir() {
+                walked.judge(Judged::from(policy.directory(rooted)), rooted, |walked| {
+                    walked.followed += 1;
+                    let inside = place.following(real, &metadata);
+                    collect_files(root, rooted, policy, &inside, walked)
+                })?;
+            } else if metadata.is_file() {
+                // Read by its real path: the link itself is never opened, since reads never follow one.
+                walked.judge(
+                    Judged::from(policy.file(rooted, metadata.len())),
+                    rooted,
+                    |walked| {
+                        walked.followed += 1;
+                        walked.real.insert(wire(), real);
+                        walked.paths.push(wire());
+                        Ok(())
+                    },
+                )?;
+            } else if let Some(special) = special_kind(&metadata) {
+                walked.judge(Judged::from(policy.file(rooted, 0)), rooted, |walked| {
+                    walked.withhold(rooted.clone(), WithheldReason::SpecialFile(special));
+                    Ok(())
+                })?;
+            }
+            return Ok(());
+        }
+    }
+
+    let text = fs::read_link(absolute).map(|text| link_text(&text));
+    let size = text
+        .as_ref()
+        .map_or(0, |text| u64::try_from(text.len()).unwrap_or(u64::MAX));
+    walked.judge(Judged::from(policy.file(rooted, size)), rooted, |walked| {
+        match text {
+            Ok(text) => walked.links.push((wire(), text)),
+            Err(error) => walked.could_not_look(wire(), &error),
+        }
+        Ok(())
+    })
+}
+
+/// A directory's identity, `(dev, ino)`, where the platform gives one.
+fn identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        Some((metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// A link's target as git holds it: its bytes on Unix, `/`-separated text elsewhere.
+fn link_text(target: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        target.as_os_str().as_bytes().to_vec()
+    }
+
+    #[cfg(not(unix))]
+    {
+        target.to_string_lossy().replace('\\', "/").into_bytes()
+    }
 }
 
 /// What a walk does with a path, by the policy's verdict on it.
@@ -1980,6 +2252,9 @@ fn special_kind(metadata: &fs::Metadata) -> Option<SpecialKind> {
 
 /// The mode a sidecar, or any regular file that is not executable, is held with.
 const REGULAR_MODE: u32 = 0o100_644;
+
+/// The mode a link is held with, its blob the target text.
+const LINK_MODE: u32 = 0o120_000;
 
 /// The tree mode for a file.
 ///

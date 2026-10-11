@@ -4,7 +4,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{ErrorCode, Event, Problem, RegisterRoot, Root, RootState};
+use keepster_api::{ErrorCode, Event, FollowTargets, Problem, RegisterRoot, Root, RootState};
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::RootId;
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
@@ -336,6 +336,7 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
             state: RootState::Unavailable,
             pending_paths: 0,
             oldest_pending_seconds: None,
+            follow_targets: None,
             state_code: Some(
                 match error {
                     RegistryError::TooNew { .. } => "store_too_new",
@@ -382,6 +383,15 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
         oldest_pending_seconds: activity
             .pending_since
             .map(|since| since.elapsed().as_secs()),
+        follow_targets: activity.follow_every.map(|interval| FollowTargets {
+            count: activity.followed,
+            last_reconciled_at: activity.followed_at.and_then(|moment| {
+                jiff::Timestamp::try_from(moment)
+                    .ok()
+                    .map(|moment| moment.to_string())
+            }),
+            interval: interval.as_secs(),
+        }),
     }
 }
 

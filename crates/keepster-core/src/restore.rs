@@ -169,8 +169,12 @@ pub enum Existing {
     },
     /// A directory.
     Directory,
-    /// A link, or a special file: something no Snapshot holds yet.
-    Other,
+    /// Something of another kind than the version: a link where the Snapshot holds a file, a file where
+    /// it holds a link, or a special file, which no Snapshot holds.
+    Other {
+        /// Why it could not be brought back, if it could not.
+        unrecoverable: Option<Unrecoverable>,
+    },
 }
 
 /// What the directories above a file are on disk.
@@ -476,11 +480,11 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
             issues.push(Issue::TypeConflict);
             Step::Restore
         }
-        Existing::Other => {
+        Existing::Other { unrecoverable } => {
             issues.push(Issue::TypeChange { at: target.clone() });
-            issues.push(Issue::OverwriteUnrecoverable {
-                why: Unrecoverable::Unsupported,
-            });
+            if let Some(why) = unrecoverable {
+                issues.push(Issue::OverwriteUnrecoverable { why });
+            }
             Step::Restore
         }
     };

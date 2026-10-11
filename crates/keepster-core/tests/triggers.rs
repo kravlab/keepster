@@ -686,3 +686,27 @@ fn the_daemon_can_shorten_the_first_retry() {
 
     assert_eq!(actions, [Action::ArmTimer { at: secs(1) }]);
 }
+
+#[test]
+fn followed_targets_are_reconciled_on_their_own_interval_and_any_pass_resets_it() {
+    // Ticket 49: no watch covers a followed link's target, so a Root that follows any is passed over on
+    // an interval of its own — counted, like the floor, from the last pass of any kind.
+    let run = run(
+        Triggers {
+            follow_every: Some(secs(900)),
+            ..defaults()
+        },
+        &[(300, changed("a.txt"))],
+        2_000,
+    );
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|(at, trigger, _)| (at.as_secs(), *trigger))
+            .collect::<Vec<_>>(),
+        [(303, Trigger::Watcher), (1_203, Trigger::Reconcile),],
+        "{run:?}"
+    );
+    assert_eq!(run.timer, Some(secs(2_103)));
+}

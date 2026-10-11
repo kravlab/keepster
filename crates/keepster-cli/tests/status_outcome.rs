@@ -35,6 +35,7 @@ fn root(id: &str, state: RootState) -> Root {
         state_code: (state != RootState::Watching).then(|| "capture_unavailable".to_owned()),
         pending_paths: 0,
         oldest_pending_seconds: None,
+        follow_targets: None,
     }
 }
 

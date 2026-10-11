@@ -7,6 +7,8 @@
 //! the size cap is asked last, because a file over it is Withheld — recorded as present — rather than
 //! left out.
 
+use std::path::{Path, PathBuf};
+
 use crate::path::RootPath;
 use crate::rules::{Kind, Level, Rule, RuleOrigin, RuleSet};
 use crate::sidecar::{SIDECAR, WithheldReason};
@@ -163,6 +165,21 @@ pub struct CapturePolicy {
     secrets: RuleSet,
     /// Directories inside the Root that are not the Root's to capture, and why.
     fences: Vec<(RootPath, WithheldReason)>,
+    /// The links followed rather than stored as links (ticket 49), by their own path.
+    follow: RuleSet,
+    /// The same directories as `fences`, and any others, by their real path: what a followed link may
+    /// lead into, which no Root-relative path names.
+    real_fences: Vec<(PathBuf, WithheldReason)>,
+}
+
+/// Why a link the follow list names is stored as a link after all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowStop {
+    /// Its target is the Root, a directory the walk is already in, or one it reached through another
+    /// followed link: following it would never end.
+    Cycle,
+    /// Its target is inside another Root or a History Store, which are not this Root's to capture.
+    Inside(WithheldReason),
 }
 
 impl CapturePolicy {
@@ -188,6 +205,8 @@ impl CapturePolicy {
             honour_ignore_files: false,
             secrets: secret_denylist(),
             fences: Vec::new(),
+            follow: RuleSet::default(),
+            real_fences: Vec::new(),
         }
     }
 
@@ -211,6 +230,61 @@ impl CapturePolicy {
     pub fn with_fences(mut self, fences: Vec<(RootPath, WithheldReason)>) -> Self {
         self.fences = fences;
         self
+    }
+
+    /// This policy, following the links `rules` match (`files.follow_symlinks`) rather than storing them.
+    pub fn following(mut self, rules: RuleSet) -> Self {
+        self.follow = rules;
+        self
+    }
+
+    /// This policy, also withholding each of `fences` — a directory by its real path — where a followed
+    /// link reaches it, and never following a link into one.
+    pub fn with_real_fences(mut self, fences: Vec<(PathBuf, WithheldReason)>) -> Self {
+        self.real_fences.extend(fences);
+        self
+    }
+
+    /// Whether the link at `link`, whose target is of `kind`, is followed: the last follow pattern that
+    /// matches it is not a negation. Include Rules still apply to the link's own path first.
+    pub fn follows(&self, link: &RootPath, kind: Kind) -> bool {
+        self.follow
+            .last_match(link, kind)
+            .is_some_and(|rule| !rule.negated)
+    }
+
+    /// Whether any link may be followed at all — which is what owes a Root the periodic Reconciliation
+    /// of its followed targets.
+    pub fn follows_any(&self) -> bool {
+        self.follow.rules().any(|rule| !rule.negated)
+    }
+
+    /// Why a directory reached through a followed link, by its real path, is Withheld, if it is.
+    pub fn fenced_at(&self, real: &Path) -> Option<WithheldReason> {
+        self.real_fences
+            .iter()
+            .find(|(fenced, _)| fenced == real)
+            .map(|(_, reason)| *reason)
+    }
+
+    /// Why following a link to the real path `target` stops, if it does, given `walk`: the Root's real
+    /// path, every target already followed on the way here, and the real directory the link is in.
+    ///
+    /// A target that is any of them, or holds any of them, closes a cycle; one inside a fence leads
+    /// where this Root has no business. Both are stored as links instead. A target that only *contains*
+    /// a fence is followed, and the fence is withheld once reached ([`CapturePolicy::fenced_at`]).
+    pub fn stop_following(&self, target: &Path, walk: &[PathBuf]) -> Option<FollowStop> {
+        if let Some((_, reason)) = self
+            .real_fences
+            .iter()
+            .find(|(fenced, _)| target.starts_with(fenced))
+        {
+            return Some(FollowStop::Inside(*reason));
+        }
+
+        walk.iter()
+            .any(|walked| walked.starts_with(target))
+            .then_some(FollowStop::Cycle)
     }
 
     /// Whether the watched directory's own ignore files join the rules.

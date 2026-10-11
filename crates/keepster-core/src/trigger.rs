@@ -28,6 +28,9 @@ pub struct Triggers {
     /// The shortest time between two Snapshots of one Root, always in force, so a noisy build is not a
     /// Snapshot per second.
     pub rate_limit: Duration,
+    /// How often a Root that follows links passes over their targets, which no watch covers (ticket 49).
+    /// `None` for a Root that follows none. Whatever Triggers are active, as Reconciliation is.
+    pub follow_every: Option<Duration>,
 }
 
 impl Default for Triggers {
@@ -39,6 +42,7 @@ impl Default for Triggers {
             periodic: None,
             debounce: Duration::from_secs(3),
             rate_limit: Duration::from_secs(60),
+            follow_every: None,
         }
     }
 }
@@ -176,6 +180,8 @@ pub struct PolicyState {
     last_capture: Option<Duration>,
     /// When the periodic floor is next due.
     next_periodic: Option<Duration>,
+    /// When the followed targets are next due to be passed over.
+    next_follow: Option<Duration>,
     /// Whether a Reconciliation is owed.
     reconcile: bool,
     /// Whether a capture is waiting for the store's lock.
@@ -208,6 +214,7 @@ impl PolicyState {
             in_flight: None,
             last_capture: None,
             next_periodic: settings.periodic.map(|every| now + every),
+            next_follow: settings.follow_every.map(|every| now + every),
             reconcile: false,
             waiting_for_lock: false,
             stopping: false,
@@ -303,6 +310,9 @@ pub fn decide(
             if settings.periodic != state.settings.periodic {
                 state.next_periodic = settings.periodic.map(|every| now + every);
             }
+            if settings.follow_every != state.settings.follow_every {
+                state.next_follow = settings.follow_every.map(|every| now + every);
+            }
             state.settings = settings;
         }
         PolicyEvent::Shutdown => state.stopping = true,
@@ -394,6 +404,10 @@ fn due(state: &mut PolicyState, now: Duration) -> Vec<Action> {
         state
             .retry
             .map(|retry| (retry.at.max(allowed), Trigger::Retry)),
+        // The guarantee for what no watch covers, so recorded as the Reconciliation it is.
+        state
+            .next_follow
+            .map(|at| (at.max(allowed), Trigger::Reconcile)),
     ];
 
     match candidates.into_iter().flatten().min_by_key(|(at, _)| *at) {
@@ -431,6 +445,7 @@ fn capture(
     });
     // Any Snapshot is the floor's Snapshot: it walks the whole Root, so the floor counts again from here.
     state.next_periodic = state.settings.periodic.map(|every| now + every);
+    state.next_follow = state.settings.follow_every.map(|every| now + every);
 
     Action::Capture { trigger, paths }
 }

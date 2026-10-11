@@ -471,6 +471,11 @@ impl RuleSet {
         Self::new(rules)
     }
 
+    /// Every rule, in precedence order.
+    pub fn rules(&self) -> impl Iterator<Item = &Rule> {
+        self.rules.iter()
+    }
+
     /// The last rule matching `path` itself, ignoring its ancestors.
     ///
     /// This is what a walk asks about each entry it meets: it never meets an entry beneath an excluded

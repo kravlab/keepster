@@ -396,7 +396,7 @@ max_size_by_pattern = [
 
 #[cfg(unix)]
 #[tokio::test]
-async fn explain_never_calls_a_link_captured_while_the_walk_passes_links_over() {
+async fn explain_calls_a_link_captured_now_that_links_are_stored_as_links() {
     let daemon = Harness::start().await;
     let (root, project) = registered(&daemon).await;
     write(&project, "target.txt", b"content");
@@ -404,9 +404,8 @@ async fn explain_never_calls_a_link_captured_while_the_walk_passes_links_over() 
 
     let explained = explain(&daemon, &root, "link.txt").await;
 
-    assert_eq!(explained["captured"], false);
-    assert_eq!(explained["decision"], "withheld");
-    assert_eq!(explained["reason"], "symlink");
+    assert_eq!(explained["captured"], true);
+    assert_eq!(explained["decision"], "captured");
     assert_eq!(explained["on_disk"], "symlink");
 }
 

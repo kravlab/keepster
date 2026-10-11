@@ -2133,7 +2133,7 @@
               "string",
               "null"
             ],
-            "description": "With `withheld`, why: `too_large`, `reserved_name` (the directory's own `.git`), `special_file`\n(a FIFO, socket or device), or `symlink` (passed over until ticket 49 stores links). An open\nset, as `Withheld::reason` is."
+            "description": "With `withheld`, why: `too_large`, `reserved_name` (the directory's own `.git`), `special_file`\n(a FIFO, socket or device), `history_store` or `other_root`. An open set, as `Withheld::reason`\nis."
           },
           "rule": {
             "oneOf": [
@@ -2173,6 +2173,35 @@
           "deleted",
           "renamed"
         ]
+      },
+      "FollowTargets": {
+        "type": "object",
+        "description": "How the targets of a Root's followed links are covered.",
+        "required": [
+          "count",
+          "interval"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many links the last pass followed.",
+            "minimum": 0
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How often they are passed over, in seconds.",
+            "minimum": 0
+          },
+          "last_reconciled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When a pass last covered them, in UTC, as RFC 3339; absent before the first."
+          }
+        }
       },
       "LineKind": {
         "type": "string",
@@ -2575,6 +2604,17 @@
           "state"
         ],
         "properties": {
+          "follow_targets": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FollowTargets",
+                "description": "For a Root that follows links (`files.follow_symlinks`), how their targets are covered: by a\npass on an interval of its own rather than by watches. Its own fact, not a coverage gap. Absent\nfor a Root that follows none, or is not captured automatically."
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "description": "The Root's identity, which survives renaming or moving its directory."

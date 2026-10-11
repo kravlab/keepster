@@ -81,6 +81,12 @@ pub(crate) struct Activity {
     pub(crate) pending_paths: u64,
     /// When the oldest of them changed.
     pub(crate) pending_since: Option<Instant>,
+    /// How often its followed links' targets are passed over, for a Root that follows any.
+    pub(crate) follow_every: Option<Duration>,
+    /// How many links the last pass followed.
+    pub(crate) followed: u64,
+    /// When the last pass ran — the last time the followed targets were covered.
+    pub(crate) followed_at: Option<std::time::SystemTime>,
 }
 
 /// How a Root's watcher stands.
@@ -179,18 +185,13 @@ impl Runtimes {
 
     /// Record what a pass over the Root `id` saw, when the pass ran outside its runtime — one someone asked
     /// for — and whether it owes a retry.
-    pub(crate) fn passed(
-        &self,
-        id: RootId,
-        trigger: Trigger,
-        coarse_mtime: bool,
-        incomplete: bool,
-    ) {
+    pub(crate) fn passed(&self, id: RootId, trigger: Trigger, pass: &keepster_store::Pass) {
         if let Some(runtime) = self.runtimes().get(&id) {
-            record_pass(&mut lock(&runtime.activity), trigger, coarse_mtime);
-            let _ = runtime
-                .inbox
-                .send(Message::Event(PolicyEvent::PassOutcome { incomplete }));
+            let passed = Passed::from(pass);
+            record_pass(&mut lock(&runtime.activity), trigger, &passed);
+            let _ = runtime.inbox.send(Message::Event(PolicyEvent::PassOutcome {
+                incomplete: passed.incomplete,
+            }));
         }
     }
 
@@ -283,10 +284,13 @@ fn start(
     }
 }
 
-/// Record in `activity` what a pass saw: the mtimes' granularity, and — for a Reconciliation — that
-/// coverage is now proven.
-fn record_pass(activity: &mut Activity, trigger: Trigger, coarse_mtime: bool) {
-    activity.coarse_mtime = coarse_mtime;
+/// Record in `activity` what a pass saw: the mtimes' granularity, the links it followed and when —
+/// every pass walks their targets, which no watch covers — and, for a Reconciliation, that coverage is
+/// now proven.
+fn record_pass(activity: &mut Activity, trigger: Trigger, passed: &Passed) {
+    activity.coarse_mtime = passed.coarse_mtime;
+    activity.followed = passed.followed;
+    activity.followed_at = Some(crate::roots::now());
     if trigger == Trigger::Reconcile {
         activity.reconciled = true;
     }
@@ -297,6 +301,7 @@ fn describe(activity: &mut Activity, effective: &Effective) {
     activity.automatic = effective.triggers.watcher || effective.triggers.periodic.is_some();
     activity.at_start = effective.reconcile.at_start;
     activity.verify = effective.reconcile.verify;
+    activity.follow_every = effective.triggers.follow_every;
 }
 
 /// The policy's settings for a Root under `effective`, watched or not: a Root whose watcher Trigger is on
@@ -524,15 +529,13 @@ fn capture(
 
     tokio::spawn(async move {
         let (outcome, passed) = captured.await.unwrap_or((PolicyEvent::CaptureFailed, None));
-        if let Some(Passed {
-            coarse_mtime,
-            incomplete,
-        }) = passed
-        {
-            record_pass(&mut lock(&activity), trigger, coarse_mtime);
+        if let Some(passed) = passed {
+            record_pass(&mut lock(&activity), trigger, &passed);
             // Before the capture's own outcome, so the retry it owes is armed when the policy next asks
             // what is due.
-            let _ = outbox.send(Message::Event(PolicyEvent::PassOutcome { incomplete }));
+            let _ = outbox.send(Message::Event(PolicyEvent::PassOutcome {
+                incomplete: passed.incomplete,
+            }));
         }
         let busy = outcome == PolicyEvent::LockBusy;
         let _ = outbox.send(Message::Event(outcome));
@@ -559,6 +562,18 @@ struct Passed {
     coarse_mtime: bool,
     /// Whether something it meant to read could not be read.
     incomplete: bool,
+    /// How many links it followed.
+    followed: u64,
+}
+
+impl From<&keepster_store::Pass> for Passed {
+    fn from(pass: &keepster_store::Pass) -> Self {
+        Self {
+            coarse_mtime: pass.coarse_mtime,
+            incomplete: pass.incomplete > 0,
+            followed: pass.followed,
+        }
+    }
 }
 
 /// One automatic capture, as the event that reports how it went — with what the pass saw, when a pass
@@ -605,13 +620,7 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
                 }
                 None => PolicyEvent::CaptureUnchanged,
             };
-            (
-                event,
-                Some(Passed {
-                    coarse_mtime: pass.coarse_mtime,
-                    incomplete: pass.incomplete > 0,
-                }),
-            )
+            (event, Some(Passed::from(&pass)))
         }
         Err(error) => {
             tracing::warn!(root = %id, %trigger, %error, "an automatic capture failed");

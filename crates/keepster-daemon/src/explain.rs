@@ -68,11 +68,9 @@ pub(crate) async fn explain(
 
     let withheld = |reason: &str| (Decision::Withheld, Some(reason.to_owned()));
     let ((decision, reason), rule, pruned_by) = match &explained.verdict {
-        // The rules would let it in, but the walk passes over what is neither a file nor a directory:
-        // saying "captured" here would be the one answer `explain` exists to prevent.
-        Verdict::Captured if on_disk.kind == Some(OnDiskKind::Symlink) => {
-            (withheld("symlink"), None, None)
-        }
+        // The rules would let it in, but a walk never reads a pipe or a device: saying "captured" here
+        // would be the one answer `explain` exists to prevent. A link is captured — as a link, or
+        // followed — like a file (ticket 49).
         Verdict::Captured if on_disk.kind == Some(OnDiskKind::Special) => {
             (withheld("special_file"), None, None)
         }

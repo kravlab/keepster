@@ -121,6 +121,24 @@ pub struct Root {
     /// How long the oldest of those changes has waited, in seconds; absent when nothing is pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_pending_seconds: Option<u64>,
+    /// For a Root that follows links (`files.follow_symlinks`), how their targets are covered: by a
+    /// pass on an interval of its own rather than by watches. Its own fact, not a coverage gap. Absent
+    /// for a Root that follows none, or is not captured automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_targets: Option<FollowTargets>,
+}
+
+/// How the targets of a Root's followed links are covered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FollowTargets {
+    /// How many links the last pass followed.
+    pub count: u64,
+    /// When a pass last covered them, in UTC, as RFC 3339; absent before the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reconciled_at: Option<String>,
+    /// How often they are passed over, in seconds.
+    pub interval: u64,
 }
 
 /// What a client sends to register a directory.
@@ -217,8 +235,8 @@ pub struct Explanation {
     /// What a capture does with it.
     pub decision: Decision,
     /// With `withheld`, why: `too_large`, `reserved_name` (the directory's own `.git`), `special_file`
-    /// (a FIFO, socket or device), or `symlink` (passed over until ticket 49 stores links). An open
-    /// set, as `Withheld::reason` is.
+    /// (a FIFO, socket or device), `history_store` or `other_root`. An open set, as `Withheld::reason`
+    /// is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// The rule behind the decision: the exclude rule, the pruning ancestor's exclude rule, the
