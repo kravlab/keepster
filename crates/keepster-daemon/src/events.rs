@@ -31,18 +31,21 @@ const LAST_EVENT_ID: &str = "last-event-id";
         ("Last-Event-ID" = Option<String>, Header, description = "The identity of the last event this client saw. The events that followed it are replayed before live ones; when the daemon no longer holds it, the stream opens with `resync` instead."),
     ),
     responses(
-        (status = 200, description = "A `text/event-stream` that stays open. Each event's `event:` field is its name, its `id:` a ULID, and its `data:` one JSON `Event` whose `event` property repeats the name.\n\nThe daemon keeps the last 1000 events, none older than an hour, for replay. A client that reconnects with `Last-Event-ID` gets every kept event after that one, in order, then live ones. When that identity is no longer kept — it was evicted, the daemon restarted, or it was never one of ours — or when the client reads too slowly to keep up, the daemon sends `resync`: what the client shows may be stale, and it refetches what it displays. A `resync` carries the newest identity still kept, when there is one, so the next reconnect resumes from there. A comment line is sent every 15 seconds while nothing happens, so a dead connection is noticed.", body = Event, content_type = "text/event-stream"),
+        (status = 200, description = "A `text/event-stream` that stays open. Each event's `event:` field is its name, its `id:` a ULID, and its `data:` one JSON `Event` whose `event` property repeats the name.\n\nThe daemon keeps the last 1000 events, none older than an hour, for replay. A client that reconnects with `Last-Event-ID` gets every kept event after that one, in order, then live ones. When that identity is no longer kept — it was evicted, the daemon restarted, or it was never one of ours — or when the client reads too slowly to keep up, the daemon sends `resync`: what the client shows may be stale, and it refetches what it displays. A `resync` carries the newest identity still kept, when there is one, so the next reconnect resumes from there. A comment line is sent every 15 seconds while nothing happens, so a dead connection is noticed.\n\nA Root's state and its configuration are compared with what was announced last once a second, so `root.state_changed` and `config.*` follow the change within about a second; a Root's first state is the one `GET /v1/roots/{id}` shows after `root.registered`.\n\nEach `data:` is described by the `Event` schema in this document's components. It is not bound to the stream here: OpenAPI 3.1 can only describe a body as a whole.", content_type = "text/event-stream"),
     ),
 )]
 pub(crate) async fn stream(
     State(state): State<DaemonState>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>> {
-    // A header that is not text names no event we sent, which is what `resync` answers.
-    let last = headers
-        .get(LAST_EVENT_ID)
-        .map(|value| value.to_str().unwrap_or_default())
-        .filter(|value| !value.is_empty());
+    let last = match headers.get(LAST_EVENT_ID).map(|value| value.to_str()) {
+        // An empty identity is a client that saw nothing yet — a browser never sends one.
+        None | Some(Ok("")) => None,
+        Some(Ok(last)) => Some(last),
+        // A header that is not text names no event we sent, which is what `resync` answers: it does not
+        // parse as an identity.
+        Some(Err(_)) => Some("\u{fffd}"),
+    };
     let subscription = state.events.subscribe(last, Instant::now());
 
     let events = futures_util::stream::unfold(subscription, |subscription| async move {
@@ -65,6 +68,7 @@ pub(crate) struct Announced {
     roots: HashMap<String, Seen>,
 }
 
+/// One Root as the stream last announced it.
 #[derive(Debug, Clone, PartialEq)]
 struct Seen {
     state: RootState,
@@ -123,12 +127,20 @@ impl ConfigSeen {
 /// every holder keeps: the Registry, the configuration, the runtimes, then what was announced and the
 /// event buffer.
 pub(crate) fn announce_changes(state: &DaemonState, registry: &Registry) {
-    let Ok(reported) = crate::roots::reported(state, registry) else {
-        return;
+    // A Registry that cannot be read leaves nothing to compare; what was announced stands, and the next
+    // pass that can read it announces whatever changed meanwhile.
+    let (reported, records) = match (crate::roots::reported(state, registry), registry.readable()) {
+        (Ok(reported), Ok(records)) => (reported, records),
+        (Err(problem), _) => {
+            tracing::warn!(problem = ?problem, "the Registry could not be read to announce changes");
+            return;
+        }
+        (_, Err(error)) => {
+            tracing::warn!(%error, "the Registry could not be read to announce changes");
+            return;
+        }
     };
-    let configurations: HashMap<String, ConfigSeen> = registry
-        .readable()
-        .unwrap_or_default()
+    let configurations: HashMap<String, ConfigSeen> = records
         .into_iter()
         .map(|record| {
             let resolved = state.configuration(record.id, &record.path);
@@ -189,7 +201,7 @@ fn wire(delivered: &Delivered) -> sse::Event {
 /// How much of the past a reconnecting client can be replayed: the last thousand events, none older than
 /// an hour (ticket 07). Enough to cover a laptop lid closed over lunch on a busy Root; past it, a client
 /// refetches, which is always correct and only slower.
-pub(crate) const BOUND: Bound = Bound {
+pub(crate) const REPLAY_BOUND: Bound = Bound {
     events: 1_000,
     age: Duration::from_secs(3_600),
 };
@@ -225,8 +237,10 @@ pub(crate) struct EventBus {
     inner: Mutex<Inner>,
 }
 
+/// What the bus's one lock guards.
 #[derive(Debug)]
 struct Inner {
+    /// The recent past, oldest first, within the bound.
     kept: VecDeque<Kept>,
     /// `None` once the daemon is stopping: every open stream ends, so that a stop is not held up by a
     /// client that would listen forever.
@@ -324,6 +338,7 @@ impl EventBus {
     }
 }
 
+/// A kept event as a stream hands it out.
 fn delivered(kept: &Kept) -> Delivered {
     Delivered {
         id: Some(kept.id),

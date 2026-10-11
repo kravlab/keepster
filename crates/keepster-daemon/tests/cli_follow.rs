@@ -110,3 +110,31 @@ async fn following_a_path_prints_only_the_snapshots_that_changed_it_as_json_line
     );
     assert_eq!(next["change"], "modified");
 }
+
+#[tokio::test]
+async fn following_with_no_tail_prints_only_what_is_new() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let project = daemon.scratch("project");
+    let root = register(&daemon, &project).await;
+    edit_and_take(&daemon, &root, &project, "one").await;
+    edit_and_take(&daemon, &root, &project, "two").await;
+
+    let (_child, mut lines) = follow(&daemon, &["log", "--follow", "-n", "0", "-r", &root]);
+
+    // Nothing is printed until following starts, so Snapshots are taken until one is: whichever it is, it
+    // is one of these, never the history before them.
+    let mut new = Vec::new();
+    let printed = loop {
+        new.push(edit_and_take(&daemon, &root, &project, &format!("edit {}", new.len())).await);
+        if let Ok(printed) = tokio::time::timeout(Duration::from_secs(1), lines.next_line()).await {
+            break printed
+                .expect("standard output reads")
+                .expect("still following");
+        }
+        assert!(new.len() < 30, "nothing printed while following");
+    };
+    assert!(
+        new.iter().any(|id| printed.starts_with(id)),
+        "the history before it is not printed: {printed}"
+    );
+}

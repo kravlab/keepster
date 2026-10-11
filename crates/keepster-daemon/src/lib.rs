@@ -230,7 +230,7 @@ impl DaemonState {
                 store_base,
             ))),
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling)),
-            events: Arc::new(events::EventBus::new(events::BOUND)),
+            events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
             announced: Arc::new(Mutex::new(events::Announced::default())),
         }
     }

@@ -612,3 +612,38 @@ pub enum RootState {
     /// version to fall back on.
     Unavailable,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, RootState};
+
+    #[test]
+    fn an_events_name_is_the_tag_it_is_serialised_under() {
+        let root = || "01K6DX3QR7M2V8C9WZ4PN5YQ1A".to_owned();
+        for event in [
+            Event::SnapshotCreated {
+                root: root(),
+                snapshot: root(),
+                incomplete: false,
+                changed_paths: Some(1),
+            },
+            Event::RootRegistered { root: root() },
+            Event::RootUnregistered {
+                root: root(),
+                purged: false,
+            },
+            Event::RootMoved { root: root() },
+            Event::RootStateChanged {
+                root: root(),
+                state: RootState::Watching,
+                state_code: None,
+            },
+            Event::ConfigReloaded { root: root() },
+            Event::ConfigInvalid { root: root() },
+            Event::Resync,
+        ] {
+            let serialised = serde_json::to_value(&event).expect("JSON");
+            assert_eq!(serialised["event"], event.name());
+        }
+    }
+}

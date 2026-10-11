@@ -309,10 +309,11 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
     let document = document();
     let stream = &document["paths"]["/v1/events"]["get"];
 
-    assert_eq!(
-        stream["responses"]["200"]["content"]["text/event-stream"]["schema"]["$ref"],
-        "#/components/schemas/Event"
-    );
+    // Typed, not bound (ticket 14): OpenAPI 3.1 can only say the whole body is one schema, so the stream
+    // carries none, and binding `Event` to each item with 3.2's `itemSchema` stays an additive change.
+    let content = &stream["responses"]["200"]["content"]["text/event-stream"];
+    assert!(content.is_object(), "the stream's media type is declared");
+    assert!(content.get("schema").is_none(), "{content}");
     let parameters = stream["parameters"].as_array().expect("parameters");
     assert!(
         parameters
@@ -324,7 +325,9 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
         .as_str()
         .expect("a description");
     assert!(
-        described.contains("1000 events") && described.contains("an hour"),
+        described.contains("1000 events")
+            && described.contains("an hour")
+            && described.contains("`Event`"),
         "the replay buffer's bound is documented: {described}"
     );
 

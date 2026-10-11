@@ -43,6 +43,17 @@ pub(crate) fn base() -> OpenApi {
             .build(),
         utoipa::openapi::Paths::new(),
     )
+    .merge_from(
+        // No operation's body refers to the events, so they are named here: their shapes are contract
+        // all the same, typed today and bound to the stream once the document can say so (ticket 14).
+        utoipa::openapi::OpenApiBuilder::new()
+            .components(Some(
+                utoipa::openapi::ComponentsBuilder::new()
+                    .schema_from::<keepster_api::Event>()
+                    .build(),
+            ))
+            .build(),
+    )
 }
 
 const DESCRIPTION: &str = "\

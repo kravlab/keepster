@@ -29,13 +29,9 @@
         ],
         "responses": {
           "200": {
-            "description": "A `text/event-stream` that stays open. Each event's `event:` field is its name, its `id:` a ULID, and its `data:` one JSON `Event` whose `event` property repeats the name.\n\nThe daemon keeps the last 1000 events, none older than an hour, for replay. A client that reconnects with `Last-Event-ID` gets every kept event after that one, in order, then live ones. When that identity is no longer kept — it was evicted, the daemon restarted, or it was never one of ours — or when the client reads too slowly to keep up, the daemon sends `resync`: what the client shows may be stale, and it refetches what it displays. A `resync` carries the newest identity still kept, when there is one, so the next reconnect resumes from there. A comment line is sent every 15 seconds while nothing happens, so a dead connection is noticed.",
+            "description": "A `text/event-stream` that stays open. Each event's `event:` field is its name, its `id:` a ULID, and its `data:` one JSON `Event` whose `event` property repeats the name.\n\nThe daemon keeps the last 1000 events, none older than an hour, for replay. A client that reconnects with `Last-Event-ID` gets every kept event after that one, in order, then live ones. When that identity is no longer kept — it was evicted, the daemon restarted, or it was never one of ours — or when the client reads too slowly to keep up, the daemon sends `resync`: what the client shows may be stale, and it refetches what it displays. A `resync` carries the newest identity still kept, when there is one, so the next reconnect resumes from there. A comment line is sent every 15 seconds while nothing happens, so a dead connection is noticed.\n\nA Root's state and its configuration are compared with what was announced last once a second, so `root.state_changed` and `config.*` follow the change within about a second; a Root's first state is the one `GET /v1/roots/{id}` shows after `root.registered`.\n\nEach `data:` is described by the `Event` schema in this document's components. It is not bound to the stream here: OpenAPI 3.1 can only describe a body as a whole.",
             "content": {
-              "text/event-stream": {
-                "schema": {
-                  "$ref": "#/components/schemas/Event"
-                }
-              }
+              "text/event-stream": {}
             }
           }
         }

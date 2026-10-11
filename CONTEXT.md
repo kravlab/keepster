@@ -74,7 +74,8 @@ _Avoid_: queue, backlog
 **Reconciliation**:
 A full comparison of a Working Tree against its latest Snapshot, used to recover changes whose filesystem events
 were never delivered.
-_Avoid_: full scan, resync, refresh
+_Avoid_: full scan, resync, refresh — `resync` is the event stream's word for "refetch, you missed events", which
+is a client's business and never a Reconciliation
 
 **Capture Preview**:
 A classification of a directory's current contents against the Include Rules that would govern it, without
