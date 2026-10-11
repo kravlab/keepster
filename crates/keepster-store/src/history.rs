@@ -28,11 +28,13 @@ use crate::index::{self, Index, Observation};
 mod diff;
 mod error_name;
 mod restore;
+mod retention;
 
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
 };
 pub use restore::{LinkNames, Preflight, RestoreScope, Written, destination_naming};
+pub use retention::Retained;
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///

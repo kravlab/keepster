@@ -63,3 +63,25 @@ fn a_leap_day_is_named_as_itself() {
     // 2028-02-29T12:00:00Z: a year the calendar has to be right about.
     assert_eq!(hourly(at(1_835_438_400)).as_str(), "2028-02-29T12");
 }
+
+#[test]
+fn a_segment_s_name_reads_back_as_the_span_it_covers() {
+    let name = SegmentName::parse("2026-09-30T14").expect("an hourly name");
+    assert_eq!(name, hourly(at(1_790_779_025)));
+    assert_eq!(name.span(), (at(1_790_776_800), at(1_790_780_400)));
+
+    // Ticket 79 writes daily Segments; a store may already hold them beside hourly ones.
+    let day = SegmentName::parse("2026-09-30").expect("a daily name");
+    assert_eq!(day.span(), (at(1_790_726_400), at(1_790_812_800)));
+    assert!(day < name, "a day sorts before the hours inside it");
+
+    for foreign in [
+        "2026-09-30T24",
+        "2026-9-30",
+        "2026-09-30T14:00",
+        "latest",
+        "",
+    ] {
+        assert_eq!(SegmentName::parse(foreign), None, "{foreign}");
+    }
+}

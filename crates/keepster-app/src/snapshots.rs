@@ -1,11 +1,12 @@
 //! Taking a Snapshot of a Watched Root, and reading its history back.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId};
+use keepster_core::{CapturePolicy, Ladder, RootId, RootPath, SnapshotId};
 use keepster_store::{
     CaptureRequest, Comparison, Depth, DiffTarget, HistoryStore, Listing, Pass, RegistryError,
-    RootRecord, StoreError, TimelinePage, TimelineQuery,
+    Retained, RootRecord, StoreError, TimelinePage, TimelineQuery,
 };
 
 /// The directory inside a Root's own directory that holds its History Store.
@@ -133,6 +134,37 @@ pub fn timeline(
             snapshots: Vec::new(),
             more: false,
         }),
+    }
+}
+
+/// The newest Snapshot a Root has, or `None` when it has none.
+pub fn newest(location: &StoreLocation) -> Result<Option<SnapshotId>, StoreError> {
+    let page = timeline(
+        location,
+        &TimelineQuery {
+            path: None,
+            before: None,
+            not_before: None,
+            limit: 1,
+        },
+    )?;
+
+    Ok(page.snapshots.first().map(|snapshot| snapshot.id))
+}
+
+/// One Retention pass over a Root's history at `now` under `ladder` (ticket 51): what survives is
+/// planned from the Segments as they are, and carried out. A Root never captured has nothing to keep.
+///
+/// The caller holds the store's lock, as for a capture: re-chaining a Segment while a capture appends
+/// to the same store would leave one of them unreferenced (ticket 06).
+pub fn retain(
+    location: &StoreLocation,
+    ladder: &Ladder,
+    now: SystemTime,
+) -> Result<Retained, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.retain(ladder, now),
+        None => Ok(Retained::default()),
     }
 }
 

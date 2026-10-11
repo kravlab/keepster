@@ -16,8 +16,8 @@ use std::io::Write;
 use std::time::Duration;
 
 use keepster_core::{
-    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, ModeChoice, PathGlob,
-    RootId, RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify,
+    CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Keep, Ladder, Level, ModeChoice,
+    PathGlob, RootId, RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify,
     WithheldReason, ignore_file_rules, parse_duration, parse_size,
 };
 use serde::Deserialize;
@@ -130,6 +130,14 @@ pub const SCHEMA: &[KeySpec] = &[
         live: true,
         classifies: false,
     },
+    // How much history is kept is a decision about the user's data: a file arriving in someone else's
+    // repository must not be able to shorten their history to an hour (ticket 51).
+    KeySpec {
+        name: "retention.tier",
+        root_settable: false,
+        live: true,
+        classifies: false,
+    },
 ];
 
 /// A key deciding when and how a Root is captured rather than what a capture holds: settable per Root,
@@ -180,6 +188,8 @@ pub enum Value {
     Words(Vec<String>),
     /// One name out of a closed set.
     Name(String),
+    /// The Retention ladder.
+    Ladder(Ladder),
     /// A pattern, exactly as written.
     Pattern(String),
     /// A pattern with the size cap it sets; a negated pattern sets none, returning its paths to the
@@ -272,6 +282,8 @@ pub struct Effective {
     /// Which permission bits a Restore leaves where the Snapshot's and the disk's differ and the
     /// request does not say; `None` asks (ticket 50).
     pub restore_modes: Option<ModeChoice>,
+    /// Which Snapshots survive (ticket 51).
+    pub retention: Ladder,
     /// Every key of the schema, in schema order, with its provenance.
     pub keys: Vec<EffectiveKey>,
     /// What was defined but almost certainly not meant.
@@ -308,6 +320,7 @@ struct Layer {
     reconcile_at_start: Option<Entry>,
     verify: Option<Entry>,
     restore_modes: Option<Entry>,
+    retention: Option<Entry>,
 }
 
 impl Layer {
@@ -333,6 +346,7 @@ impl Layer {
             "reconcile.at_start" => self.reconcile_at_start.take().is_some(),
             "reconcile.verify" => self.verify.take().is_some(),
             "restore.modes" => self.restore_modes.take().is_some(),
+            "retention.tier" => self.retention.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -621,6 +635,13 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         |layer| layer.restore_modes.as_ref(),
         Value::Name(ASK.to_owned()),
     );
+    let retention = scalar(
+        |layer| layer.retention.as_ref(),
+        Value::Ladder(Ladder::default()),
+    );
+    let Value::Ladder(ladder) = retention.value.clone() else {
+        unreachable!("the ladder is only ever set as a ladder")
+    };
     let modes_default = match &restore_modes.value {
         Value::Name(name) => mode_choice(name).flatten(),
         _ => unreachable!("the Restore modes answer is only ever set as a name"),
@@ -654,6 +675,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         ("reconcile.at_start", Setting::Scalar(at_start)),
         ("reconcile.verify", Setting::Scalar(verify)),
         ("restore.modes", Setting::Scalar(restore_modes)),
+        ("retention.tier", Setting::Scalar(retention)),
     ];
     let keys = settings
         .into_iter()
@@ -671,6 +693,7 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         triggers,
         reconcile,
         restore_modes: modes_default,
+        retention: ladder,
         keys,
         warnings,
     }
@@ -761,6 +784,8 @@ struct GlobalDocument {
     #[serde(default)]
     restore: RestoreTable,
     #[serde(default)]
+    retention: RetentionTable,
+    #[serde(default)]
     root: BTreeMap<String, Settings>,
     #[serde(default)]
     roots: Vec<PatternBlock>,
@@ -778,6 +803,8 @@ struct Settings {
     reconcile: ReconcileTable,
     #[serde(default)]
     restore: RestoreTable,
+    #[serde(default)]
+    retention: RetentionTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -793,6 +820,8 @@ struct PatternBlock {
     reconcile: ReconcileTable,
     #[serde(default)]
     restore: RestoreTable,
+    #[serde(default)]
+    retention: RetentionTable,
 }
 
 /// The tables of the schema, wherever a block holds them.
@@ -801,6 +830,7 @@ struct Tables<'a> {
     triggers: &'a TriggerTable,
     reconcile: &'a ReconcileTable,
     restore: &'a RestoreTable,
+    retention: &'a RetentionTable,
 }
 
 /// Each block holding the whole schema hands its tables over as one.
@@ -813,6 +843,7 @@ macro_rules! holds_tables {
                     triggers: &self.triggers,
                     reconcile: &self.reconcile,
                     restore: &self.restore,
+                    retention: &self.retention,
                 }
             }
         }
@@ -820,6 +851,21 @@ macro_rules! holds_tables {
 }
 
 holds_tables!(GlobalDocument, Settings, PatternBlock);
+
+/// The `[retention]` table: the ladder, one `[[retention.tier]]` per Tier from the youngest (ticket 51).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionTable {
+    #[serde(default)]
+    tier: Vec<Spanned<TierEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TierEntry {
+    age: String,
+    keep: String,
+}
 
 /// The `[restore]` table: what a Restore does where the request does not say (ticket 50).
 #[derive(Debug, Default, Deserialize)]
@@ -880,6 +926,7 @@ fn settings_layer(
         triggers,
         reconcile,
         restore,
+        retention,
     }: Tables<'_>,
     level: Level,
     path: &Path,
@@ -954,6 +1001,37 @@ fn settings_layer(
                     modes.get_ref()
                 ),
             }),
+        })
+        .transpose()?;
+    layer.retention = retention
+        .tier
+        .first()
+        .map(|first| {
+            let invalid = |message: String| ConfigError {
+                path: path.to_path_buf(),
+                message: format!("{block}retention.tier: {message}"),
+            };
+            let tiers = retention
+                .tier
+                .iter()
+                .map(|tier| {
+                    let TierEntry { age, keep } = tier.get_ref();
+                    Ok(keepster_core::Tier {
+                        age: parse_duration(age).map_err(|error| invalid(error.to_string()))?,
+                        keep: Keep::parse(keep).ok_or_else(|| {
+                            invalid(format!(
+                                "`{keep}` is not what a Tier keeps; write `all`, `hourly`, `daily`, \
+                                 `weekly` or a period such as `6h`"
+                            ))
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let ladder = Ladder::new(tiers).map_err(|error| invalid(error.to_string()))?;
+            Ok(Entry {
+                value: Value::Ladder(ladder),
+                origin: origin(first.span()),
+            })
         })
         .transpose()?;
     layer.active = triggers

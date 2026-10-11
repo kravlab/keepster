@@ -789,6 +789,19 @@ pub enum Event {
         /// How many could not be written.
         failed: u64,
     },
+    /// A Retention pass removed Snapshots the ladder no longer keeps (ticket 51). Sent only when it
+    /// removed something; a client showing the timeline refetches it.
+    #[serde(rename = "retention.completed")]
+    RetentionCompleted {
+        /// The Root.
+        root: String,
+        /// How many Segments were deleted whole.
+        deleted_segments: u64,
+        /// How many were re-chained with fewer Snapshots.
+        thinned_segments: u64,
+        /// How many Snapshots are gone.
+        removed_snapshots: u64,
+    },
     /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
     /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
     #[serde(rename = "resync")]
@@ -807,6 +820,7 @@ impl Event {
             Self::ConfigReloaded { .. } => "config.reloaded",
             Self::ConfigInvalid { .. } => "config.invalid",
             Self::RestoreCompleted { .. } => "restore.completed",
+            Self::RetentionCompleted { .. } => "retention.completed",
             Self::Resync => "resync",
         }
     }
@@ -1056,6 +1070,12 @@ mod tests {
                 restored: 1,
                 created: 0,
                 failed: 0,
+            },
+            Event::RetentionCompleted {
+                root: root(),
+                deleted_segments: 1,
+                thinned_segments: 2,
+                removed_snapshots: 30,
             },
             Event::Resync,
         ] {

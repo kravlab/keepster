@@ -168,5 +168,15 @@ fn wire(value: &Value) -> serde_json::Value {
         Value::Name(name) => json!(name),
         Value::Pattern(pattern) => json!(pattern),
         Value::SizePattern { pattern, max } => json!({ "pattern": pattern, "max": max }),
+        Value::Ladder(ladder) => json!(
+            ladder
+                .tiers()
+                .iter()
+                .map(|tier| json!({
+                    "age": keepster_core::format_duration(tier.age),
+                    "keep": tier.keep.name(),
+                }))
+                .collect::<Vec<_>>()
+        ),
     }
 }

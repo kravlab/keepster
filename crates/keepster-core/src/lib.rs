@@ -9,6 +9,7 @@ mod identity;
 mod path;
 mod policy;
 mod restore;
+mod retention;
 mod root;
 mod rules;
 mod segment;
@@ -26,6 +27,9 @@ pub use policy::{
 pub use restore::{
     Ancestry, Confirmation, Confirmed, Existing, Found, Issue, ModeChoice, Modes, NameCase, Naming,
     PathPlan, Plan, Resolution, Step, Unrecoverable, plan, target_of,
+};
+pub use retention::{
+    InvalidLadder, Keep, Ladder, RetentionPlan, SegmentContents, Thinning, Tier, plan_retention,
 };
 pub use root::{RootId, containing, overlapping};
 pub use rules::{

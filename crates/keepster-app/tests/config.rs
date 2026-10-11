@@ -522,3 +522,81 @@ fn a_restore_asks_about_modes_unless_the_configuration_answers() {
         .expect_err("an unknown answer");
     assert!(error.message.contains("restore.modes"), "{}", error.message);
 }
+
+#[test]
+fn the_retention_ladder_is_the_users_to_set_and_must_be_one() {
+    use keepster_core::{Keep, Ladder, Tier};
+    use std::time::Duration;
+
+    let hour = Duration::from_secs(3600);
+    let defaults = merged(&global(""), None);
+    assert_eq!(defaults.retention, Ladder::default());
+
+    let ladder = "[[retention.tier]]\nage = \"2d\"\nkeep = \"all\"\n\n\
+                  [[retention.tier]]\nage = \"14d\"\nkeep = \"6h\"\n\n\
+                  [[retention.tier]]\nage = \"90d\"\nkeep = \"weekly\"\n";
+    let effective = merged(&global(ladder), None);
+    assert_eq!(
+        effective.retention.tiers(),
+        [
+            Tier {
+                age: 48 * hour,
+                keep: Keep::All
+            },
+            Tier {
+                age: 14 * 24 * hour,
+                keep: Keep::Every(6 * hour)
+            },
+            Tier {
+                age: 90 * 24 * hour,
+                keep: Keep::Every(7 * 24 * hour)
+            },
+        ]
+    );
+    assert_eq!(
+        scalar(&effective, "retention.tier").origin.level,
+        Level::Global
+    );
+
+    let file = own("[[retention.tier]]\nage = \"1h\"\nkeep = \"all\"\n");
+    let shortened = merged(&global(""), Some(&file));
+    assert_eq!(
+        shortened.retention,
+        Ladder::default(),
+        "a Root's own file cannot shorten the history"
+    );
+    assert!(
+        shortened
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("retention.tier")),
+        "{:?}",
+        shortened.warnings
+    );
+
+    for (written, said) in [
+        (
+            "[[retention.tier]]\nage = \"7d\"\nkeep = \"all\"\n\n[[retention.tier]]\nage = \"1d\"\nkeep = \"daily\"\n",
+            "older",
+        ),
+        (
+            "[[retention.tier]]\nage = \"7d\"\nkeep = \"daily\"\n",
+            "first Tier must keep `all`",
+        ),
+        (
+            "[[retention.tier]]\nage = \"7d\"\nkeep = \"fortnightly\"\n",
+            "not what a Tier keeps",
+        ),
+        (
+            "[[retention.tier]]\nage = \"1d\"\nkeep = \"all\"\n\n[[retention.tier]]\nage = \"7d\"\nkeep = \"2h\"\n\n[[retention.tier]]\nage = \"9d\"\nkeep = \"3h\"\n",
+            "whole periods",
+        ),
+    ] {
+        let error = GlobalConfig::parse(Path::new(GLOBAL), written, None).expect_err(said);
+        assert!(
+            error.message.contains("retention.tier") && error.message.contains(said),
+            "{}",
+            error.message
+        );
+    }
+}

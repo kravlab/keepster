@@ -100,7 +100,6 @@ struct Unindexed {
     id: SnapshotId,
     segment: String,
     commit: git2::Oid,
-    tree: git2::Oid,
     trigger: String,
     omitted: u64,
 }
@@ -303,13 +302,16 @@ impl Index {
         transaction.commit().map_err(&failed)
     }
 
-    /// Bring the index up to date with the Segment refs, rebuilding it where it cannot simply catch up.
+    /// Bring the index up to date with the Segment refs, re-reading only what changed.
     ///
     /// A Segment whose tip still equals its watermark costs nothing; one whose watermark is an ancestor
-    /// of its tip costs only the new commits. Anything else — a Segment that vanished, or one whose
-    /// commits were recreated so the watermark is no longer in its chain, or a Snapshot that sorts
-    /// before one already indexed — invalidates the predecessors the change rows were computed against,
-    /// and the whole index is rebuilt by the same loop with every watermark treated as absent.
+    /// of its tip costs only the new commits. A Segment that vanished, or whose commits were recreated
+    /// so the watermark is no longer in its chain — what Retention does to every Segment it thins —
+    /// loses its rows and is read again from its root (ticket 51). Each Snapshot's changes are counted
+    /// against the Snapshot before it in identity order, across Segments, so besides every row written
+    /// here the one after each row written or removed is counted again: it has a new predecessor. That
+    /// also places a Snapshot sorting before ones already indexed — a clock that went backwards —
+    /// without rebuilding anything else.
     pub(crate) fn catch_up(&mut self, repository: &git2::Repository) -> Result<(), StoreError> {
         // A read path calls this on every request, so the common answer — nothing to do — must not
         // take the write lock.
@@ -328,79 +330,63 @@ impl Index {
         // only ever moves before its index write, and every writer reads its tips under this lock, so
         // tips read here are at least as new as any watermark already committed. Tips read before the
         // lock could be older than the watermarks a capture wrote meanwhile — which would look like a
-        // rewritten Segment and rebuild the whole index back to the older state.
+        // rewritten Segment and read it again back to the older state.
         let tips = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
+        // Read inside the write lock: a capture or another read may have caught up meanwhile.
+        let marks = read_watermarks(&transaction).map_err(index_failed(&path, "read"))?;
+        if marks == tips {
+            return transaction.commit().map_err(index_failed(&path, "written"));
+        }
 
-        let mut rebuild = false;
-        loop {
-            // Read inside the write lock: a capture or another read may have caught up meanwhile.
-            let marks = read_watermarks(&transaction).map_err(index_failed(&path, "read"))?;
-            if marks == tips {
-                break;
-            }
-
-            let invalidated = marks.iter().any(|(segment, mark)| match tips.get(segment) {
+        let mut from = marks.clone();
+        let mut removed = Vec::new();
+        for (segment, mark) in &marks {
+            let rewritten = match tips.get(segment) {
                 None => true,
                 Some(tip) => {
                     tip != mark && !repository.graph_descendant_of(*tip, *mark).unwrap_or(false)
                 }
-            });
-            rebuild |= invalidated;
-            if rebuild {
-                transaction
-                    .execute_batch(
-                        "DELETE FROM changes; DELETE FROM snapshots; DELETE FROM watermarks;",
-                    )
-                    .map_err(index_failed(&path, "written"))?;
-            }
-            let marks = if rebuild { BTreeMap::new() } else { marks };
-
-            let mut found =
-                unindexed(repository, &tips, &marks).map_err(git_failed_at(repository, "read"))?;
-            found.sort_by_key(|snapshot| snapshot.id);
-
-            let newest = newest_indexed(&transaction).map_err(index_failed(&path, "read"))?;
-            // A Snapshot that sorts before one already indexed changes the predecessor of the ones
-            // after it, so their rows would be wrong. Only a clock that went backwards produces this,
-            // and a rebuild — which starts from an empty index, so cannot meet this again — is the
-            // honest answer to it.
-            if let (Some((newest_id, _)), Some(first)) = (&newest, found.first()) {
-                if first.id <= *newest_id {
-                    rebuild = true;
-                    continue;
-                }
-            }
-
-            let mut previous = match newest {
-                Some((_, commit)) => Some(
-                    repository
-                        .find_commit(commit)
-                        .and_then(|commit| commit.tree())
-                        .map(|tree| tree.id())
-                        .map_err(git_failed_at(repository, "read"))?,
-                ),
-                None => None,
             };
-
-            for snapshot in &found {
-                let changes = changes_between(repository, previous, snapshot.tree)
-                    .map_err(git_failed_at(repository, "read"))?;
-                insert(&transaction, snapshot, &changes).map_err(index_failed(&path, "written"))?;
-                previous = Some(snapshot.tree);
+            if rewritten {
+                removed.extend(
+                    remove_segment(&transaction, segment)
+                        .map_err(index_failed(&path, "written"))?,
+                );
+                from.remove(segment);
             }
+        }
 
+        let found =
+            unindexed(repository, &tips, &from).map_err(git_failed_at(repository, "read"))?;
+        let mut recount: BTreeSet<SnapshotId> = BTreeSet::new();
+        for snapshot in &found {
+            insert(&transaction, snapshot).map_err(index_failed(&path, "written"))?;
+            recount.insert(snapshot.id);
+        }
+        for moved in removed
+            .iter()
+            .chain(found.iter().map(|snapshot| &snapshot.id))
+        {
+            if let Some(next) =
+                successor(&transaction, *moved).map_err(index_failed(&path, "written"))?
+            {
+                recount.insert(next);
+            }
+        }
+        for id in recount {
+            recount_changes(repository, &transaction, &path, id)?;
+        }
+
+        transaction
+            .execute("DELETE FROM watermarks", [])
+            .map_err(index_failed(&path, "written"))?;
+        for (segment, tip) in &tips {
             transaction
-                .execute("DELETE FROM watermarks", [])
+                .execute(
+                    "INSERT INTO watermarks (segment, tip) VALUES (?1, ?2)",
+                    params![segment, tip.to_string()],
+                )
                 .map_err(index_failed(&path, "written"))?;
-            for (segment, tip) in &tips {
-                transaction
-                    .execute(
-                        "INSERT INTO watermarks (segment, tip) VALUES (?1, ?2)",
-                        params![segment, tip.to_string()],
-                    )
-                    .map_err(index_failed(&path, "written"))?;
-            }
-            break;
         }
 
         transaction.commit().map_err(index_failed(&path, "written"))
@@ -695,7 +681,6 @@ fn unindexed(
                 id: trailers.id,
                 segment: segment.clone(),
                 commit: commit.id(),
-                tree: commit.tree_id(),
                 trigger: trailers.trigger,
                 omitted: trailers.omitted,
             });
@@ -705,41 +690,98 @@ fn unindexed(
     Ok(found)
 }
 
-fn insert(
-    transaction: &rusqlite::Transaction<'_>,
-    snapshot: &Unindexed,
-    changes: &[(String, ChangeKind)],
-) -> rusqlite::Result<()> {
+/// Index one Snapshot, its changes still to be counted. A Segment read again lost its rows first, so an
+/// identity already indexed is two commits claiming one Snapshot, and refused.
+fn insert(transaction: &rusqlite::Transaction<'_>, snapshot: &Unindexed) -> rusqlite::Result<()> {
     transaction.execute(
         "INSERT INTO snapshots (id, segment, commit_id, trigger, omitted, changed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
         params![
             snapshot.id.to_string(),
             snapshot.segment,
             snapshot.commit.to_string(),
             snapshot.trigger,
             i64::try_from(snapshot.omitted).unwrap_or(i64::MAX),
-            i64::try_from(changes.len()).unwrap_or(i64::MAX),
         ],
     )?;
-
-    let mut statement =
-        transaction.prepare("INSERT INTO changes (path, snapshot, kind) VALUES (?1, ?2, ?3)")?;
-    for (path, kind) in changes {
-        statement.execute(params![path, snapshot.id.to_string(), kind.as_str()])?;
-    }
 
     Ok(())
 }
 
-fn newest_indexed(connection: &Connection) -> rusqlite::Result<Option<(SnapshotId, git2::Oid)>> {
+/// Drop every row of `segment`, returning the identities it held.
+fn remove_segment(
+    transaction: &rusqlite::Transaction<'_>,
+    segment: &str,
+) -> rusqlite::Result<Vec<SnapshotId>> {
+    let mut statement = transaction.prepare("SELECT id FROM snapshots WHERE segment = ?1")?;
+    let ids = statement
+        .query_map([segment], |row| parse_id(row, 0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    transaction.execute("DELETE FROM snapshots WHERE segment = ?1", [segment])?;
+
+    Ok(ids)
+}
+
+/// The first indexed Snapshot after `id`.
+fn successor(connection: &Connection, id: SnapshotId) -> rusqlite::Result<Option<SnapshotId>> {
     connection
         .query_row(
-            "SELECT id, commit_id FROM snapshots ORDER BY id DESC LIMIT 1",
-            [],
-            |row| Ok((parse_id(row, 0)?, parse_oid(row, 1)?)),
+            "SELECT id FROM snapshots WHERE id > ?1 ORDER BY id LIMIT 1",
+            [id.to_string()],
+            |row| parse_id(row, 0),
         )
         .optional()
+}
+
+/// Count again what the Snapshot `id` changed, against the indexed Snapshot before it — or against
+/// nothing, when it is the first.
+fn recount_changes(
+    repository: &git2::Repository,
+    transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
+    id: SnapshotId,
+) -> Result<(), StoreError> {
+    let tree_of = |commit: git2::Oid| {
+        repository
+            .find_commit(commit)
+            .map(|commit| commit.tree_id())
+            .map_err(git_failed_at(repository, "read"))
+    };
+    let commit_of = |query: &str| {
+        transaction
+            .query_row(query, [id.to_string()], |row| parse_oid(row, 0))
+            .optional()
+            .map_err(index_failed(path, "read"))
+    };
+
+    let Some(commit) = commit_of("SELECT commit_id FROM snapshots WHERE id = ?1")? else {
+        return Ok(());
+    };
+    let previous =
+        commit_of("SELECT commit_id FROM snapshots WHERE id < ?1 ORDER BY id DESC LIMIT 1")?
+            .map(tree_of)
+            .transpose()?;
+    let changes = changes_between(repository, previous, tree_of(commit)?)
+        .map_err(git_failed_at(repository, "read"))?;
+
+    let written = || -> rusqlite::Result<()> {
+        transaction.execute("DELETE FROM changes WHERE snapshot = ?1", [id.to_string()])?;
+        transaction.execute(
+            "UPDATE snapshots SET changed = ?2 WHERE id = ?1",
+            params![
+                id.to_string(),
+                i64::try_from(changes.len()).unwrap_or(i64::MAX)
+            ],
+        )?;
+        let mut statement = transaction
+            .prepare("INSERT INTO changes (path, snapshot, kind) VALUES (?1, ?2, ?3)")?;
+        for (path, kind) in &changes {
+            statement.execute(params![path, id.to_string(), kind.as_str()])?;
+        }
+        Ok(())
+    };
+
+    written().map_err(index_failed(path, "written"))
 }
 
 fn read_watermarks(connection: &Connection) -> rusqlite::Result<BTreeMap<String, git2::Oid>> {

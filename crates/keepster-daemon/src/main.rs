@@ -71,6 +71,7 @@ async fn run_daemon(
         config_path,
         watch_ceiling: None,
         retry_after: None,
+        retention: None,
     })
     .await
     {

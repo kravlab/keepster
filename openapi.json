@@ -2058,6 +2058,47 @@
           },
           {
             "type": "object",
+            "description": "A Retention pass removed Snapshots the ladder no longer keeps (ticket 51). Sent only when it\nremoved something; a client showing the timeline refetches it.",
+            "required": [
+              "root",
+              "deleted_segments",
+              "thinned_segments",
+              "removed_snapshots",
+              "event"
+            ],
+            "properties": {
+              "deleted_segments": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many Segments were deleted whole.",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "retention.completed"
+                ]
+              },
+              "removed_snapshots": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many Snapshots are gone.",
+                "minimum": 0
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root."
+              },
+              "thinned_segments": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many were re-chained with fewer Snapshots.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon\nrestarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.",
             "required": [
               "event"
