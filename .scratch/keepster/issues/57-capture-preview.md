@@ -25,3 +25,9 @@ unknowable without hashing every file — that being the capture.
       rather than refusing
 - [ ] Pending paths and the age of the oldest pending change are reported in `status` instead of listing the debounce
       queue
+
+## Comments
+
+- Ticket 43 delivered this ticket's status criterion: every Root carries `pending_paths` and
+  `oldest_pending_seconds` (absent when nothing is pending), from the trigger policy's own state. What is left
+  here is the CLI rendering, if `status` should print them.

@@ -113,7 +113,7 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         // No further Trigger is accepted; the captures in flight finish and every pending debounce
         // window is captured before the daemon is done (ticket 05).
         ticker.abort();
-        state.triggers.stop().await;
+        state.runtimes.stop().await;
         served
     });
 
@@ -186,7 +186,7 @@ struct DaemonState {
     /// The configuration in force for every Root, re-read whenever its files change.
     config: Arc<Mutex<keepster_app::config::Configuration>>,
     /// Every Root's automatic capture.
-    triggers: Arc<triggers::Triggers>,
+    runtimes: Arc<triggers::Runtimes>,
 }
 
 impl DaemonState {
@@ -200,7 +200,7 @@ impl DaemonState {
                 std::env::home_dir(),
                 store_base,
             ))),
-            triggers: Arc::default(),
+            runtimes: Arc::default(),
         }
     }
 
@@ -233,7 +233,7 @@ impl DaemonState {
     /// The configuration, held for the length of one resolution.
     ///
     /// Taken after the Registry wherever both are held, never before, so the two locks cannot
-    /// deadlock. A panic while it is held loses nothing that matters: every file is compared with what
+    /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes. A panic while it is held loses nothing that matters: every file is compared with what
     /// was read last, so the next resolution reads again whatever a panic left half-done.
     fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config

@@ -37,3 +37,7 @@ index costs one full hashing pass. Git's racy rule applies to entries touched du
   were written). Nothing takes it yet; the reload occasion here is "take the queue and walk each Root in it",
   and the end-to-end test for ticket 42's last criterion — a reload changing the rules queues a full
   comparison — belongs here.
+- Ticket 43 hands over two more seams: `keepster_watch::WatchEvent::Rescan` (a platform overflow or a watch
+  error) is today mapped to an ordinary change, and should become a Reconciliation of the named subtree or
+  the whole Root; and a Root captured automatically reports `coverage_not_guaranteed`, which this ticket
+  turns into `Watching` once the startup walk runs. The policy kernel has no `Reconcile` action yet.

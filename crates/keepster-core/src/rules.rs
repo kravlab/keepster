@@ -482,6 +482,12 @@ impl RuleSet {
             .find(|rule| rule.matches(path, kind))
     }
 
+    /// Whether the rules let `path` itself in, its ancestors aside: no rule matches it, or the last one
+    /// that does re-includes it.
+    pub fn admits(&self, path: &RootPath, kind: Kind) -> bool {
+        self.last_match(path, kind).is_none_or(|rule| rule.negated)
+    }
+
     /// What the rules say about `path`, ancestors included.
     pub fn classify(&self, path: &RootPath, kind: Kind) -> Classification<'_> {
         let pruned_by = path.ancestors().find_map(|ancestor| {

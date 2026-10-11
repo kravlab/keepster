@@ -105,12 +105,16 @@ pub enum PolicyEvent {
     Changed(Vec<RootPath>),
     /// A timer the policy armed has fired — or the daemon asks what is due, as it does once at the start.
     Timer,
-    /// The capture last asked for has been written, or found nothing to write.
+    /// The capture last asked for has been written.
     CaptureFinished,
-    /// The capture last asked for failed; what it covered is still owed.
+    /// The capture last asked for found nothing to write. No Snapshot was taken, so the rate limit does
+    /// not count from it.
+    CaptureUnchanged,
+    /// The capture last asked for failed; what it covered is still owed — unless the daemon is stopping,
+    /// when the one flush it gets has been spent.
     CaptureFailed,
     /// The capture last asked for could not start because the store's lock is held — by a manual capture
-    /// or a maintenance pass. It is neither blocked on nor dropped: it waits for [`Self::LockReleased`].
+    /// or a Maintenance Pass. It is neither blocked on nor dropped: it waits for [`Self::LockReleased`].
     LockBusy,
     /// The lock a deferred capture was waiting for is free.
     LockReleased,
@@ -200,6 +204,7 @@ impl PolicyState {
 /// owed again if it does not happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InFlight {
+    trigger: Trigger,
     paths: BTreeSet<RootPath>,
     asked: Duration,
     pending_since: Option<Duration>,
@@ -226,10 +231,17 @@ pub fn decide(
                 state.last_capture = Some(in_flight.asked);
             }
         }
+        PolicyEvent::CaptureUnchanged => {
+            state.in_flight = None;
+        }
         PolicyEvent::CaptureFailed => {
             if let Some(in_flight) = state.in_flight.take() {
                 state.last_capture = Some(in_flight.asked);
-                owe(&mut state, in_flight);
+                // A capture failing while the daemon stops would fail again at once, and the stop would
+                // never finish; Reconciliation at the next start covers what it missed.
+                if !state.stopping {
+                    owe(&mut state, in_flight);
+                }
             }
         }
         PolicyEvent::LockBusy => {
@@ -253,8 +265,18 @@ pub fn decide(
     (actions, state)
 }
 
-/// Put what a capture that did not happen covered back among what is pending, owed at once.
+/// Owe again, at once, what a capture that did not happen was for: its changes, or the periodic floor
+/// it was — which stays a periodic capture, so a Trigger the user switched off never fires instead.
 fn owe(state: &mut PolicyState, in_flight: InFlight) {
+    if in_flight.trigger == Trigger::Periodic && in_flight.paths.is_empty() {
+        state.next_periodic = Some(
+            state
+                .next_periodic
+                .map_or(in_flight.asked, |next| next.min(in_flight.asked)),
+        );
+        return;
+    }
+
     state
         .pending
         .get_or_insert_default()
@@ -285,11 +307,16 @@ fn due(state: &mut PolicyState, now: Duration) -> Vec<Action> {
     let allowed = state
         .last_capture
         .map_or(Duration::ZERO, |last| last + state.settings.rate_limit);
-    let quiet = state
-        .pending
-        .as_ref()
-        .and(state.last_change)
-        .map(|last| last + state.settings.debounce);
+    // The window closes once the Root has been quiet for the debounce — or, for a file that is never
+    // quiet, such as a log or a watch-mode build, once its oldest change has waited as long as the rate
+    // limit would make it wait anyway. The rate limit is what caps how often; the debounce only gathers.
+    let longest = state.settings.debounce.max(state.settings.rate_limit);
+    let quiet = state.pending.as_ref().and(state.last_change).map(|last| {
+        let gathered = last + state.settings.debounce;
+        state
+            .pending_since
+            .map_or(gathered, |since| gathered.min(since + longest))
+    });
     let candidates = [
         quiet.map(|at| (at.max(allowed), Trigger::Watcher)),
         state
@@ -322,6 +349,7 @@ fn capture(
 ) -> Action {
     state.last_change = None;
     state.in_flight = Some(InFlight {
+        trigger,
         paths: paths.clone(),
         asked: now,
         pending_since: state.pending_since.take(),

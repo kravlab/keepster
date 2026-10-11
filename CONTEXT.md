@@ -55,6 +55,21 @@ _Avoid_: backup, cache, repo
 A rule that decides when a Snapshot is taken. Which Triggers are active is the user's choice.
 _Avoid_: schedule, hook, watcher event
 
+**Debounce window**:
+How long a Root must stay quiet after its last change before the watcher Trigger captures it, so that a burst of
+saves becomes one Snapshot. A change waits no longer than the rate limit would make it wait anyway.
+_Avoid_: delay, grace period
+
+**Rate limit**:
+The shortest time between two Snapshots of one Root, always in force whatever the Triggers. A stopping daemon's
+flush of pending changes is the one capture that ignores it.
+_Avoid_: throttle, cooldown
+
+**Pending change**:
+A change the watcher reported that no Snapshot holds yet — waiting for its debounce window, the rate limit, or a
+store lock. Reported as a count and the age of the oldest, never as a listing.
+_Avoid_: queue, backlog
+
 **Reconciliation**:
 A full comparison of a Working Tree against its latest Snapshot, used to recover changes whose filesystem events
 were never delivered.

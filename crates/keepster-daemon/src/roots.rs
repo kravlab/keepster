@@ -162,6 +162,15 @@ pub(crate) async fn deregister(
         )
     })?;
     let id = parse_id(&id)?;
+    // Erasing waits for a capture already in the store, and a capture that waited for this re-checks the
+    // Registry before it opens the store, so an erased store never comes back as an orphan. The store's
+    // lock is taken before the Registry, the one order every holder of both keeps.
+    let store = state.store_lock(id);
+    let _held = query.purge.then(|| {
+        store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     let registry = state.registry();
     roots::deregister(&registry, id, query.purge).map_err(root_problem)?;
     configuration::reload_with(&state, &registry);
@@ -248,7 +257,7 @@ pub(crate) fn parse_id(segment: &str) -> Result<RootId, ProblemResponse> {
     segment.parse().map_err(|_| not_found(segment))
 }
 
-fn not_found(segment: &str) -> ProblemResponse {
+pub(crate) fn not_found(segment: &str) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::NOT_FOUND,
         ErrorCode::RootNotFound,
@@ -334,7 +343,7 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 /// known-good in force, `Degraded`. Otherwise the Root is captured automatically but without the
 /// guarantee Reconciliation gives (ticket 44) — or not automatically at all, when every Trigger is off.
 fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
-    let activity = daemon.triggers.activity(record.id).unwrap_or_default();
+    let activity = daemon.runtimes.activity(record.id).unwrap_or_default();
     let (state, state_code) = if !record.path.is_dir() {
         (RootState::Unavailable, "root_missing")
     } else if let Some(state) =

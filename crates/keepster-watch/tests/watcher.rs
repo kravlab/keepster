@@ -116,3 +116,38 @@ fn an_excluded_directory_is_never_watched() {
         .collect();
     assert_eq!(watched, ["", "src", "src/deep"]);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_directory_ignored_by_a_gitignore_is_not_watched_when_ignore_files_are_honoured() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path().canonicalize().expect("the root");
+    std::fs::create_dir_all(root.join("src")).expect("a directory");
+    std::fs::create_dir_all(root.join("target/debug")).expect("a build directory");
+    std::fs::write(root.join(".gitignore"), b"target/\n").expect("an ignore file");
+
+    let (watcher, _events) = watching(&root, &excluding(&[]).honouring_ignore_files(true));
+
+    let watched: Vec<String> = watcher
+        .watched()
+        .into_iter()
+        .map(|path| path.as_str().to_owned())
+        .collect();
+    assert_eq!(watched, ["", "src"]);
+}
+
+#[test]
+fn a_directory_removed_and_created_again_is_watched_again() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path().canonicalize().expect("the root");
+    std::fs::create_dir_all(root.join("build")).expect("a directory");
+    let (_watcher, events) = watching(&root, &CapturePolicy::default());
+
+    std::fs::remove_dir_all(root.join("build")).expect("removed");
+    eventually_names(&events, "build");
+    std::fs::create_dir_all(root.join("build")).expect("created again");
+    eventually_names(&events, "build");
+    std::fs::write(root.join("build/out.txt"), b"rebuilt").expect("a file in it");
+
+    eventually_names(&events, "build/out.txt");
+}

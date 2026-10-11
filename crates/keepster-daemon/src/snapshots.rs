@@ -76,6 +76,11 @@ pub(crate) async fn create(
     let _held = store
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Deregistered — and perhaps erased — while this capture waited for the store: opening it now would
+    // bring an erased store back as an orphan.
+    if !state.registry().contains(id) {
+        return Err(roots::not_found(&id.to_string()));
+    }
 
     let captured = snapshots::capture(&root, &location, &loaded.policy, Trigger::Manual, now)
         .map_err(capture_problem)?;
@@ -519,7 +524,7 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
     }
 }
 
-pub(crate) fn capture_problem(error: CaptureError) -> ProblemResponse {
+fn capture_problem(error: CaptureError) -> ProblemResponse {
     match error {
         CaptureError::NotFound { id } => ProblemResponse::new(
             StatusCode::NOT_FOUND,

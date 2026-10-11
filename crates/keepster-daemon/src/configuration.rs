@@ -147,7 +147,7 @@ pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Regist
         })
         .collect();
     state.forget_configuration_except(&records);
-    state.triggers.sync(state, resolved);
+    state.runtimes.sync(state, resolved);
 }
 
 /// A value as the wire types it.

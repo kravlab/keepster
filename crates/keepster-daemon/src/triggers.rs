@@ -23,9 +23,18 @@ use tokio::task::JoinHandle;
 
 use crate::DaemonState;
 
+/// How often a capture waiting for its store's lock looks again.
+const LOCK_POLL: Duration = Duration::from_millis(500);
+
+/// How long a stopping daemon waits for its runtimes to finish the capture in flight and flush what is
+/// pending, inside the service manager's stop timeout of about ten seconds (ticket 05). Past it the
+/// remaining runtimes are abandoned, which is as survivable as being killed: at worst an unreferenced
+/// object and a lagging index, both repaired at the next start.
+const STOP_DRAIN: Duration = Duration::from_secs(8);
+
 /// Every Root's runtime.
 #[derive(Debug, Default)]
-pub(crate) struct Triggers {
+pub(crate) struct Runtimes {
     runtimes: Mutex<HashMap<RootId, Runtime>>,
     /// Set once the daemon is stopping, after which no runtime is started.
     closed: AtomicBool,
@@ -56,25 +65,29 @@ enum Message {
     Event(PolicyEvent),
     /// The Root's configuration as it stands now.
     Refresh(Box<Effective>),
+    /// The Root is no longer captured automatically: deregistered, gone, or without a configuration
+    /// to apply. Whatever is pending is dropped with it.
+    Stop,
 }
 
-impl Triggers {
+impl Runtimes {
     /// Bring the runtimes in line with the Registry: start one for every Root that can be captured
     /// automatically, hand every running one its current configuration, and stop the rest.
     ///
     /// `roots` is every registered Root with its configuration in force, `None` when it has none — which
     /// leaves the Root uncaptured rather than captured by the defaults (ticket 04).
     pub(crate) fn sync(&self, state: &DaemonState, roots: Vec<(RootRecord, Option<Effective>)>) {
+        let mut runtimes = self.runtimes();
+        // Checked under the lock `stop` sets it under, so no runtime starts after the stop drained them.
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
-        let mut runtimes = self.runtimes();
 
         let keep: Vec<RootId> = roots.iter().map(|(record, _)| record.id).collect();
         runtimes.retain(|id, runtime| {
             let kept = keep.contains(id);
             if !kept {
-                runtime.task.abort();
+                let _ = runtime.inbox.send(Message::Stop);
             }
             kept
         });
@@ -87,7 +100,7 @@ impl Triggers {
                 }
                 (_, Some(effective)) if capturable => {
                     if let Some(old) = runtimes.remove(&record.id) {
-                        old.task.abort();
+                        let _ = old.inbox.send(Message::Stop);
                     }
                     runtimes.insert(record.id, start(state, record, effective));
                 }
@@ -95,7 +108,7 @@ impl Triggers {
                     // A Root that cannot be captured — its directory is gone, or its configuration never
                     // had a valid version — has nothing for a runtime to do until that changes.
                     if let Some(old) = runtimes.remove(&record.id) {
-                        old.task.abort();
+                        let _ = old.inbox.send(Message::Stop);
                     }
                 }
             }
@@ -112,18 +125,26 @@ impl Triggers {
     /// Stop every runtime as a stopping daemon must: no further Trigger is accepted, the capture in
     /// flight finishes, and every debounce window still counting down is captured now (ticket 05).
     pub(crate) async fn stop(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-        let runtimes: Vec<Runtime> = self
-            .runtimes()
-            .drain()
-            .map(|(_, runtime)| runtime)
-            .collect();
+        let runtimes: Vec<Runtime> = {
+            let mut runtimes = self.runtimes();
+            self.closed.store(true, Ordering::SeqCst);
+            runtimes.drain().map(|(_, runtime)| runtime).collect()
+        };
 
         for runtime in &runtimes {
             let _ = runtime.inbox.send(Message::Event(PolicyEvent::Shutdown));
         }
-        for runtime in runtimes {
-            let _ = runtime.task.await;
+        let aborts: Vec<_> = runtimes
+            .iter()
+            .map(|runtime| runtime.task.abort_handle())
+            .collect();
+        let drained =
+            futures_util::future::join_all(runtimes.into_iter().map(|runtime| runtime.task));
+        if tokio::time::timeout(STOP_DRAIN, drained).await.is_err() {
+            tracing::warn!("stopping before every pending change was captured");
+            for abort in aborts {
+                abort.abort();
+            }
         }
     }
 
@@ -194,13 +215,13 @@ async fn run(
                 );
                 tokio::select! {
                     message = inbox.recv() => match message {
-                        None => break,
+                        None | Some(Message::Stop) => break,
                         Some(Message::Event(event)) => event,
                         Some(Message::Refresh(effective)) => {
                             // A change to what classifies paths, or to whether the watcher is on, means
                             // different watches; the policy only needs the intervals.
                             if effective.policy != rules || effective.triggers.watcher != settings.watcher {
-                                drop(watcher.take());
+                                release(watcher.take()).await;
                                 rules = effective.policy.clone();
                                 watcher = watch(&record.path, &rules, effective.triggers.watcher, &outbox).await;
                             }
@@ -224,7 +245,8 @@ async fn run(
         policy = decided;
         for action in actions {
             match action {
-                Action::Capture { trigger, .. } => {
+                Action::Capture { trigger, paths } => {
+                    tracing::debug!(root = %record.id, %trigger, changed = paths.len(), "capturing");
                     capture(state.clone(), record.id, trigger, outbox.clone());
                 }
                 Action::ArmTimer { at } => deadline = Some(origin + at),
@@ -241,8 +263,12 @@ async fn run(
         }
     }
 
+    release(watcher).await;
+}
+
+/// Stop a watcher off the runtime's threads: dropping one joins its event thread.
+async fn release(watcher: Option<Watcher>) {
     if let Some(watcher) = watcher {
-        // Dropping a watcher joins its thread.
         let _ = tokio::task::spawn_blocking(move || drop(watcher)).await;
     }
 }
@@ -266,7 +292,12 @@ async fn watch(
     // Arming walks the tree, which blocks.
     let started = tokio::task::spawn_blocking(move || {
         Watcher::start(&path, &rules, move |event| {
-            let WatchEvent::Changed(paths) = event;
+            let paths = match event {
+                WatchEvent::Changed(paths) => paths,
+                // Until Reconciliation exists (ticket 44), a lost event is a change somewhere: the
+                // capture it prompts walks the whole Root anyway.
+                WatchEvent::Rescan => Vec::new(),
+            };
             let _ = outbox.send(Message::Event(PolicyEvent::Changed(paths)));
         })
     })
@@ -292,21 +323,28 @@ fn capture(
     trigger: Trigger,
     outbox: mpsc::UnboundedSender<Message>,
 ) {
-    tokio::task::spawn_blocking(move || {
-        let outcome = capture_now(&state, id, trigger);
+    let captured = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || capture_now(&state, id, trigger)
+    });
+
+    tokio::spawn(async move {
+        let outcome = captured.await.unwrap_or(PolicyEvent::CaptureFailed);
         let busy = outcome == PolicyEvent::LockBusy;
         let _ = outbox.send(Message::Event(outcome));
 
         if busy {
             // Neither blocked on nor dropped: the paths stay with the policy, and one capture covering
-            // all of them follows the release (ticket 12).
+            // all of them follows the release (ticket 12). Polled rather than waited on, so a Maintenance
+            // Pass holding the lock for minutes pins no thread; a runtime stopped meanwhile ends this too.
             let store = state.store_lock(id);
-            drop(
-                store
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
-            let _ = outbox.send(Message::Event(PolicyEvent::LockReleased));
+            while !outbox.is_closed() {
+                tokio::time::sleep(LOCK_POLL).await;
+                if !matches!(store.try_lock(), Err(TryLockError::WouldBlock)) {
+                    let _ = outbox.send(Message::Event(PolicyEvent::LockReleased));
+                    break;
+                }
+            }
         }
     });
 }
@@ -328,6 +366,11 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> PolicyEvent
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(TryLockError::WouldBlock) => return PolicyEvent::LockBusy,
     };
+    if !state.registry().contains(id) {
+        // Deregistered — and perhaps erased — since it was prepared: opening the store now would bring an
+        // erased one back as an orphan.
+        return PolicyEvent::CaptureFailed;
+    }
 
     match snapshots::capture_if_changed(&root, &location, &loaded.policy, trigger, now) {
         Ok(Some(captured)) => {
@@ -337,7 +380,7 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> PolicyEvent
             }
             PolicyEvent::CaptureFinished
         }
-        Ok(None) => PolicyEvent::CaptureFinished,
+        Ok(None) => PolicyEvent::CaptureUnchanged,
         Err(error) => {
             tracing::warn!(root = %id, %trigger, %error, "an automatic capture failed");
             PolicyEvent::CaptureFailed

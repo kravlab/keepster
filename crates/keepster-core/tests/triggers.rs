@@ -434,3 +434,93 @@ fn a_duration_is_written_with_its_unit_and_shown_the_way_it_would_be_written() {
     assert_eq!(format_duration(Duration::from_millis(1500)), "1500ms");
     assert_eq!(format_duration(Duration::ZERO), "0ms");
 }
+
+#[test]
+fn a_file_written_more_often_than_the_debounce_is_still_captured_once_per_rate_limit() {
+    // A log or a watch-mode build never goes quiet for three seconds; waiting for it to would never
+    // capture it at all. The rate limit is what caps how often, so it also bounds how long a change
+    // waits.
+    let script: Vec<(u64, PolicyEvent)> = (0..200)
+        .map(|second| (second, changed("build.log")))
+        .collect();
+
+    let run = run(defaults(), &script, 300);
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|capture| capture.0)
+            .collect::<Vec<_>>(),
+        [60, 120, 180, 240].map(secs).to_vec()
+    );
+}
+
+#[test]
+fn a_capture_that_wrote_nothing_does_not_hold_back_the_next_one() {
+    let run = run_with(
+        defaults(),
+        &[
+            (10, changed("touched.txt")),
+            // The daemon found nothing to write: the file was only touched.
+            (14, PolicyEvent::CaptureUnchanged),
+            (20, changed("edited.txt")),
+            (24, PolicyEvent::CaptureFinished),
+        ],
+        200,
+        false,
+    );
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|capture| capture.0)
+            .collect::<Vec<_>>(),
+        vec![secs(13), secs(23)],
+        "no Snapshot was taken at 13, so the rate limit does not count from it"
+    );
+}
+
+#[test]
+fn a_periodic_capture_that_could_not_happen_is_retried_as_periodic() {
+    let run = run_with(
+        Triggers {
+            watcher: false,
+            periodic: Some(secs(600)),
+            ..defaults()
+        },
+        &[
+            (600, PolicyEvent::LockBusy),
+            (700, PolicyEvent::LockReleased),
+            (705, PolicyEvent::CaptureFinished),
+        ],
+        1_000,
+        false,
+    );
+
+    assert_eq!(
+        run.captures
+            .iter()
+            .map(|capture| (capture.0, capture.1))
+            .collect::<Vec<_>>(),
+        vec![
+            (secs(600), Trigger::Periodic),
+            (secs(700), Trigger::Periodic)
+        ]
+    );
+}
+
+#[test]
+fn a_flush_that_fails_while_stopping_is_not_retried() {
+    let state = PolicyState::new(defaults(), Duration::ZERO);
+    let (_, state) = decide(state, changed("a.txt"), secs(0));
+    let (actions, state) = decide(state, PolicyEvent::Shutdown, secs(1));
+    assert!(matches!(actions.as_slice(), [Action::Capture { .. }]));
+
+    let (actions, state) = decide(state, PolicyEvent::CaptureFailed, secs(2));
+
+    assert!(
+        actions.is_empty(),
+        "a stopping daemon tries once, then stops"
+    );
+    assert!(state.stopped());
+}
