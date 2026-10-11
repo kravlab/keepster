@@ -11,12 +11,12 @@
 //! the tip each Segment was indexed up to — turns "the daemon was killed" into a catch-up over exactly
 //! the code path a full rebuild takes, so the rare path is the common one and cannot rot.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use keepster_core::{ChangeKind, RootPath, SnapshotId};
+use keepster_core::{ChangeKind, Record, RootPath, SIDECAR, Sidecar, SnapshotId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::history::StoreError;
@@ -516,6 +516,11 @@ pub(crate) fn trailers(message: &str) -> Option<Trailers> {
 ///
 /// `None` as the earlier tree is the first Snapshot a Root ever had, against which everything was
 /// added. The diff recurses, so a directory appears only through the files beneath it.
+///
+/// The sidecar is not a path of the Root, so it never appears itself; what it says does. A path that
+/// became Withheld with nothing else changing — a new pipe, a file grown past its cap — or whose record
+/// of being incomplete came or went is a change of that path, or a Snapshot written for it alone would
+/// look empty (ticket 48).
 pub(crate) fn changes_between(
     repository: &git2::Repository,
     before: Option<git2::Oid>,
@@ -531,6 +536,7 @@ pub(crate) fn changes_between(
     options.include_typechange(true);
     let diff = repository.diff_tree_to_tree(before.as_ref(), Some(&after), Some(&mut options))?;
 
+    let mut sidecar_changed = false;
     let mut changes: Vec<(String, ChangeKind)> = diff
         .deltas()
         .filter_map(|delta| {
@@ -545,13 +551,72 @@ pub(crate) fn changes_between(
                 _ => delta.new_file(),
             };
             let path = String::from_utf8_lossy(file.path_bytes()?).into_owned();
+            if path == SIDECAR {
+                sidecar_changed = true;
+                return None;
+            }
 
             Some((path, kind))
         })
         .collect();
+    if sidecar_changed {
+        let changed: BTreeSet<String> = changes.iter().map(|(path, _)| path.clone()).collect();
+        changes.extend(
+            record_changes(repository, before.as_ref(), &after)
+                .into_iter()
+                .filter(|(path, _)| !changed.contains(path)),
+        );
+    }
     changes.sort();
 
     Ok(changes)
+}
+
+/// The paths whose sidecar records differ between two trees, and how: a path that became Withheld was
+/// added to what the Snapshot names, one that stopped being Withheld went from it, and one whose
+/// incomplete record came, went or changed was modified.
+fn record_changes(
+    repository: &git2::Repository,
+    before: Option<&git2::Tree<'_>>,
+    after: &git2::Tree<'_>,
+) -> Vec<(String, ChangeKind)> {
+    let records = |tree: Option<&git2::Tree<'_>>| -> BTreeMap<String, Record> {
+        tree.and_then(|tree| tree.get_name(SIDECAR))
+            .and_then(|entry| repository.find_blob(entry.id()).ok())
+            .and_then(|blob| Sidecar::parse(blob.content()).ok())
+            .map(|parsed| {
+                parsed
+                    .sidecar
+                    .records
+                    .into_iter()
+                    .map(|record| (record.path().as_str().to_owned(), record))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (was, is) = (records(before), records(Some(after)));
+    let withheld = |record: &Record| matches!(record, Record::Withheld { .. });
+
+    let mut changes = Vec::new();
+    for (path, record) in &is {
+        match was.get(path) {
+            None if withheld(record) => changes.push((path.clone(), ChangeKind::Added)),
+            Some(previous) if previous == record => {}
+            _ => changes.push((path.clone(), ChangeKind::Modified)),
+        }
+    }
+    for (path, record) in &was {
+        if !is.contains_key(path) {
+            let kind = if withheld(record) {
+                ChangeKind::Deleted
+            } else {
+                ChangeKind::Modified
+            };
+            changes.push((path.clone(), kind));
+        }
+    }
+
+    changes
 }
 
 /// Every Segment ref and the commit at its tip.

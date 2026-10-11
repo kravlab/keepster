@@ -2,8 +2,8 @@
 //! its opt-in list, the size cap and its per-pattern overrides, and the names no rule may admit.
 
 use keepster_core::{
-    CapturePolicy, DEFAULT_MAX_SIZE, Kind, Level, RootPath, Rule, RuleOrigin, RuleSet, SizeRule,
-    Verdict, parse_size,
+    CapturePolicy, DEFAULT_MAX_SIZE, Kind, Level, RootPath, Rule, RuleOrigin, RuleSet, SIDECAR,
+    SizeRule, Verdict, WithheldReason, parse_size,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -287,5 +287,47 @@ fn explaining_says_where_the_scalar_cap_was_set() {
             .level,
         Level::Default,
         "a user who configures nothing gets the built-in cap, and is told so"
+    );
+}
+
+#[test]
+fn the_sidecar_name_is_reserved_at_the_top_of_a_root_and_nowhere_else() {
+    let policy = default_policy();
+
+    assert_eq!(policy.file(&path(SIDECAR), 10), Verdict::Reserved);
+    assert_eq!(policy.directory(&path(SIDECAR)), Verdict::Reserved);
+    assert_eq!(
+        policy.file(&path(&format!("sub/{SIDECAR}")), 10),
+        Verdict::Captured,
+        "only the tree root's own name collides with the sidecar"
+    );
+}
+
+#[test]
+fn a_fenced_directory_is_withheld_with_its_reason_and_so_is_everything_beneath_it() {
+    let policy = default_policy().with_fences(vec![
+        (path(".local/share/keepster"), WithheldReason::HistoryStore),
+        (path("work/other"), WithheldReason::OtherRoot),
+    ]);
+
+    assert_eq!(
+        policy.directory(&path(".local/share/keepster")),
+        Verdict::Fenced(WithheldReason::HistoryStore)
+    );
+    assert_eq!(
+        policy.directory(&path("work/other")),
+        Verdict::Fenced(WithheldReason::OtherRoot)
+    );
+    assert_eq!(policy.directory(&path("work")), Verdict::Captured);
+    assert_eq!(
+        policy
+            .explain(
+                &path(".local/share/keepster/1/history.git/HEAD"),
+                Kind::File,
+                Some(1)
+            )
+            .verdict,
+        Verdict::Fenced(WithheldReason::HistoryStore),
+        "explain names the fence above a path, as it names a pruning ancestor"
     );
 }

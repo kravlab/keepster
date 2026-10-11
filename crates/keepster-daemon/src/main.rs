@@ -70,6 +70,7 @@ async fn run_daemon(
         store_base,
         config_path,
         watch_ceiling: None,
+        retry_after: None,
     })
     .await
     {

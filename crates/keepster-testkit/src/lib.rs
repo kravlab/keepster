@@ -5,6 +5,7 @@
 //! own. Dev-only, never published, and allowed to depend on anything.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use keepster_cli::{DaemonClient, EventStream, Response};
 use keepster_daemon::{DaemonConfig, RunningDaemon};
@@ -40,8 +41,8 @@ pub struct Harness {
     /// directory a CLI reports name the same place: on macOS the temporary directory sits under
     /// `/var`, a link to `/private/var`, and a process started inside it reports the latter.
     base: PathBuf,
-    /// The daemon-wide watch ceiling this daemon runs under, kept across a restart.
-    watch_ceiling: Option<usize>,
+    /// What this daemon was started with beyond its directory, kept across a restart.
+    options: Options,
     // Dropped last, after the daemon has been asked to stop and the socket file is gone.
     directory: TempDir,
 }
@@ -50,15 +51,24 @@ pub struct Harness {
 ///
 /// The window in between is the one a reboot leaves: whatever a test changes here, no watcher sees.
 pub struct Stopped {
-    watch_ceiling: Option<usize>,
+    options: Options,
     directory: TempDir,
 }
 
 impl Stopped {
     /// Start a fresh daemon over the same control channel and the same store.
     pub async fn start(self) -> Harness {
-        Harness::start_in(self.directory, self.watch_ceiling).await
+        Harness::start_in(self.directory, self.options).await
     }
+}
+
+/// How a test's daemon differs from the default one.
+#[derive(Debug, Clone, Copy, Default)]
+struct Options {
+    /// The daemon-wide watch ceiling.
+    watch_ceiling: Option<usize>,
+    /// The first wait before an incomplete pass is retried.
+    retry_after: Option<Duration>,
 }
 
 impl Harness {
@@ -69,13 +79,28 @@ impl Harness {
     /// base is temporary too, so no test can touch the machine's real Registry.
     pub async fn start() -> Self {
         let directory = TempDir::new().expect("a temporary directory");
-        Self::start_in(directory, None).await
+        Self::start_in(directory, Options::default()).await
     }
 
     /// Start a daemon whose Roots together may hold at most `ceiling` directory watches.
     pub async fn start_with_watch_ceiling(ceiling: usize) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
-        Self::start_in(directory, Some(ceiling)).await
+        let options = Options {
+            watch_ceiling: Some(ceiling),
+            ..Options::default()
+        };
+        Self::start_in(directory, options).await
+    }
+
+    /// Start a daemon that passes over a Root again `after` an incomplete pass, rather than the
+    /// production half-minute, so a test can see the retry happen.
+    pub async fn start_with_retry_after(after: Duration) -> Self {
+        let directory = TempDir::new().expect("a temporary directory");
+        let options = Options {
+            retry_after: Some(after),
+            ..Options::default()
+        };
+        Self::start_in(directory, options).await
     }
 
     /// Start a daemon whose global configuration already holds `content` when it first reads it.
@@ -84,7 +109,7 @@ impl Harness {
         std::fs::write(resolved(directory.path()).join("config.toml"), content)
             .expect("the global configuration");
 
-        Self::start_in(directory, None).await
+        Self::start_in(directory, Options::default()).await
     }
 
     /// Stop this daemon, keeping everything it wrote, so that a test can change the Working Tree while
@@ -93,16 +118,13 @@ impl Harness {
         let Self {
             daemon,
             directory,
-            watch_ceiling,
+            options,
             ..
         } = self;
 
         daemon.shutdown().await.expect("the daemon stops cleanly");
 
-        Stopped {
-            watch_ceiling,
-            directory,
-        }
+        Stopped { options, directory }
     }
 
     /// Stop this daemon and start a fresh one over the same control channel and the same store.
@@ -113,7 +135,7 @@ impl Harness {
         self.stop().await.start().await
     }
 
-    async fn start_in(directory: TempDir, watch_ceiling: Option<usize>) -> Self {
+    async fn start_in(directory: TempDir, options: Options) -> Self {
         let base = resolved(directory.path());
         let control_path = control_path(&base);
         let store_base = base.join("store");
@@ -123,7 +145,8 @@ impl Harness {
             control_path: control_path.clone(),
             store_base,
             config_path: Some(config_path),
-            watch_ceiling,
+            watch_ceiling: options.watch_ceiling,
+            retry_after: options.retry_after,
         })
         .await
         .expect("the daemon binds its control channel");
@@ -132,7 +155,7 @@ impl Harness {
             client: DaemonClient::new(control_path),
             daemon,
             base,
-            watch_ceiling,
+            options,
             directory,
         }
     }

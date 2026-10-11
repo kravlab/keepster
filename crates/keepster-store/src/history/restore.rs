@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use keepster_core::{
-    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Naming, Plan, RootPath, SnapshotId,
-    Step, Unrecoverable, Verdict, ignore_file_rules,
+    Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Naming, Plan, Record, RootPath,
+    SnapshotId, Step, Unrecoverable, Verdict, WithheldReason, ignore_file_rules,
 };
 
-use super::{Content, HistoryStore, StoreError, WirePath};
+use super::{Content, HistoryStore, StoreError, WirePath, is_beneath, nothing_at, withheld_at};
 
 /// What a Restore covers and where it writes.
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +42,8 @@ pub type LinkNames = fn(&Path) -> io::Result<Vec<PathBuf>>;
 pub struct Preflight {
     /// What is on disk where each file would go, in path order.
     pub found: Vec<Found>,
-    sources: Vec<Source>,
+    /// The version of each, or `None` for a Withheld path, which has none.
+    sources: Vec<Option<Source>>,
 }
 
 /// What happened to one path.
@@ -69,6 +70,15 @@ struct Source {
     executable: bool,
 }
 
+/// What the Snapshot has for one path of a Restore.
+#[derive(Debug, Clone)]
+enum Version {
+    /// A file's content.
+    Held(Source),
+    /// Nothing, on purpose, and why.
+    Withheld(WithheldReason),
+}
+
 /// Every temporary name this process hands out is different, without a clock (ADR 0012).
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
@@ -78,14 +88,30 @@ impl HistoryStore {
         let sources = self.restore_sources(scope)?;
         let mut found = Vec::with_capacity(sources.len());
         let mut kept = Vec::with_capacity(sources.len());
-        for (path, source) in sources {
+        for (path, version) in sources {
             let target = scope
                 .renamed
                 .get(&path)
                 .cloned()
                 .unwrap_or_else(|| path.clone());
-            found.push(facts(scope, &path, &target, &source));
-            kept.push(source);
+            match version {
+                Version::Held(source) => {
+                    found.push(facts(scope, &path, &target, &source));
+                    kept.push(Some(source));
+                }
+                // Nothing to write, so nothing on disk to look at.
+                Version::Withheld(reason) => {
+                    found.push(Found {
+                        path,
+                        target,
+                        ancestry: Ancestry::Present,
+                        existing: Existing::Absent,
+                        case_variant: None,
+                        withheld: Some(reason),
+                    });
+                    kept.push(None);
+                }
+            }
         }
         fill_links_inside(scope, &mut found);
 
@@ -114,6 +140,9 @@ impl HistoryStore {
                 Step::Unchanged => Written::Unchanged,
                 Step::Skipped | Step::Blocked => Written::Skipped,
                 Step::Restore | Step::Create => {
+                    let Some(source) = source else {
+                        return Written::Skipped;
+                    };
                     let mut now = facts(scope, &before.path, &before.target, source);
                     fill_links_inside(scope, std::slice::from_mut(&mut now));
                     if !still_as_planned(before, &now) {
@@ -131,12 +160,16 @@ impl HistoryStore {
             .collect()
     }
 
-    /// Every file of the Snapshot under the paths asked for, in path order, each once.
+    /// Every file of the Snapshot under the paths asked for, in path order, each once — with every
+    /// Withheld path beneath a directory asked for, which the answer names as passed over.
+    ///
+    /// A Withheld path asked for by name is refused, as ticket 10 decided: there is nothing to restore.
     fn restore_sources(
         &self,
         scope: &RestoreScope<'_>,
-    ) -> Result<Vec<(RootPath, Source)>, StoreError> {
+    ) -> Result<Vec<(RootPath, Version)>, StoreError> {
         let root = self.snapshot_tree(scope.from)?;
+        let sidecar = self.sidecar(&root)?.sidecar;
         let whole = [RootPath::root()];
         let asked = if scope.paths.is_empty() {
             &whole[..]
@@ -146,11 +179,39 @@ impl HistoryStore {
 
         let mut sources = BTreeMap::new();
         for path in asked {
+            let withheld_beneath = |sources: &mut BTreeMap<RootPath, Version>| {
+                let mut any = false;
+                for record in &sidecar.records {
+                    if let Record::Withheld {
+                        path: withheld,
+                        reason,
+                    } = record
+                    {
+                        if is_beneath(withheld, path) {
+                            sources.insert(withheld.clone(), Version::Withheld(*reason));
+                            any = true;
+                        }
+                    }
+                }
+                any
+            };
+
             if path.is_root() {
                 self.collect_sources(&root, &RootPath::root(), &mut sources)?;
+                withheld_beneath(&mut sources);
                 continue;
             }
-            let entry = self.entry_at(&root, path)?;
+            let entry = match self.entry_at(&root, path) {
+                Ok(entry) => entry,
+                Err(StoreError::PathNotFound(path)) => {
+                    // A directory holding only Withheld paths, which git holds no tree for.
+                    if withheld_at(&sidecar, &path).is_none() && withheld_beneath(&mut sources) {
+                        continue;
+                    }
+                    return Err(nothing_at(&sidecar, path));
+                }
+                Err(error) => return Err(error),
+            };
             match entry.kind() {
                 Some(git2::ObjectType::Tree) => {
                     let tree = self
@@ -158,10 +219,11 @@ impl HistoryStore {
                         .find_tree(entry.id())
                         .map_err(self.failed("read"))?;
                     self.collect_sources(&tree, path, &mut sources)?;
+                    withheld_beneath(&mut sources);
                 }
                 Some(git2::ObjectType::Blob) => {
                     if let Some(source) = self.source(&entry)? {
-                        sources.insert(path.clone(), source);
+                        sources.insert(path.clone(), Version::Held(source));
                     }
                 }
                 _ => return Err(StoreError::NotAFile(path.clone())),
@@ -175,10 +237,14 @@ impl HistoryStore {
         &self,
         tree: &git2::Tree<'_>,
         under: &RootPath,
-        sources: &mut BTreeMap<RootPath, Source>,
+        sources: &mut BTreeMap<RootPath, Version>,
     ) -> Result<(), StoreError> {
         for entry in tree.iter() {
             let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
+            // The sidecar is the Snapshot's own record, not a file of the Root.
+            if under.is_root() && name == keepster_core::SIDECAR {
+                continue;
+            }
             let path = under.child(&name);
             match entry.kind() {
                 Some(git2::ObjectType::Tree) => {
@@ -190,7 +256,7 @@ impl HistoryStore {
                 }
                 Some(git2::ObjectType::Blob) => {
                     if let Some(source) = self.source(&entry)? {
-                        sources.insert(path, source);
+                        sources.insert(path, Version::Held(source));
                     }
                 }
                 _ => {}
@@ -397,6 +463,7 @@ fn facts(scope: &RestoreScope<'_>, path: &RootPath, target: &RootPath, source: &
         ancestry,
         existing,
         case_variant,
+        withheld: None,
     }
 }
 

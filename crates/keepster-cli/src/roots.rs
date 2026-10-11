@@ -132,9 +132,11 @@ fn exit_code_for(problem: Option<&Problem>, status: u16) -> u8 {
 /// compile here until someone decides what a script should see, rather than silently becoming `1`.
 fn exit_code_for_known(code: ErrorCode) -> u8 {
     match code {
-        ErrorCode::RootNotFound | ErrorCode::SnapshotNotFound | ErrorCode::PathNotFound => {
-            exit::NOT_FOUND
-        }
+        // A Withheld path has no content in that Snapshot, which is what "not found" tells a script.
+        ErrorCode::RootNotFound
+        | ErrorCode::SnapshotNotFound
+        | ErrorCode::PathNotFound
+        | ErrorCode::Withheld => exit::NOT_FOUND,
         // A configuration that cannot be read is a state the Root is in until someone edits a file.
         // A Restore waiting for an answer is in a state only the person can move it out of.
         ErrorCode::RootOverlaps

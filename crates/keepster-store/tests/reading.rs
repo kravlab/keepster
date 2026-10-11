@@ -296,7 +296,8 @@ fn entries_list_a_directory_shallowly_by_default_and_in_full_on_request() {
 
     let shallow = store
         .entries(snapshot, &RootPath::root(), Depth::One)
-        .expect("the Root's children");
+        .expect("the Root's children")
+        .entries;
     let listed: Vec<_> = shallow
         .iter()
         .map(|entry| (entry.path.as_str(), entry.kind))
@@ -318,7 +319,8 @@ fn entries_list_a_directory_shallowly_by_default_and_in_full_on_request() {
 
     let full = store
         .entries(snapshot, &path("src"), Depth::Infinity)
-        .expect("everything under src");
+        .expect("everything under src")
+        .entries;
     let listed: Vec<_> = full.iter().map(|entry| entry.path.as_str()).collect();
     assert_eq!(
         listed,

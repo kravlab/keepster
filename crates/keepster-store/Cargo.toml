@@ -17,6 +17,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
 toml = "1.1.6"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
 [dev-dependencies]
 memmap2 = "0.9.11"
 tempfile = "3.27.0"

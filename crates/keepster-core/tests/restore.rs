@@ -21,6 +21,7 @@ fn absent(path: &str) -> Found {
         ancestry: Ancestry::Present,
         existing: Existing::Absent,
         case_variant: None,
+        withheld: None,
     }
 }
 
@@ -468,4 +469,34 @@ fn a_new_name_must_be_free_and_two_files_cannot_take_the_same_one() {
             .all(|path| matches!(path.issues[..], [Issue::NameCollision { .. }])),
         "even where case is significant: {planned:?}"
     );
+}
+
+#[test]
+fn a_withheld_path_inside_what_was_asked_for_is_passed_over_with_its_reason() {
+    let withheld = Found {
+        withheld: Some(keepster_core::WithheldReason::TooLarge),
+        ..absent("videos/big.mp4")
+    };
+
+    let planned = plan(
+        vec![withheld, absent("videos/small.mp4")],
+        LINUX,
+        &Confirmed::all(),
+        &BTreeMap::new(),
+        false,
+    );
+
+    assert!(
+        planned.proceeds(),
+        "a Withheld path does not stop the others"
+    );
+    assert_eq!(planned.paths[0].step, Step::Skipped);
+    assert_eq!(
+        planned.paths[0].issues,
+        [Issue::Withheld {
+            reason: keepster_core::WithheldReason::TooLarge
+        }]
+    );
+    assert_eq!(planned.paths[0].issues[0].code(), "withheld");
+    assert_eq!(planned.paths[1].step, Step::Create);
 }

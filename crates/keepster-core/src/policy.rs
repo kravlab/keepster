@@ -9,6 +9,7 @@
 
 use crate::path::RootPath;
 use crate::rules::{Kind, Level, Rule, RuleOrigin, RuleSet};
+use crate::sidecar::{SIDECAR, WithheldReason};
 
 /// The size cap a user who configures nothing gets: 100 MiB (ticket 10).
 ///
@@ -109,6 +110,9 @@ pub enum Verdict<'a> {
     },
     /// The built-in denylist refuses it as a likely secret, and no opt-in admits it.
     Secret(&'a Rule),
+    /// A directory this Root does not own — a History Store, or another Root — fenced off by the daemon,
+    /// so it is Withheld with that reason and never entered.
+    Fenced(WithheldReason),
     /// It is over its cap, so it is Withheld `too_large`: present, but without its content.
     TooLarge {
         /// Its size.
@@ -157,6 +161,8 @@ pub struct CapturePolicy {
     /// Off by default: `.gitignore` is an option rather than the law (ticket 04).
     honour_ignore_files: bool,
     secrets: RuleSet,
+    /// Directories inside the Root that are not the Root's to capture, and why.
+    fences: Vec<(RootPath, WithheldReason)>,
 }
 
 impl CapturePolicy {
@@ -181,6 +187,7 @@ impl CapturePolicy {
             size_rules,
             honour_ignore_files: false,
             secrets: secret_denylist(),
+            fences: Vec::new(),
         }
     }
 
@@ -193,6 +200,16 @@ impl CapturePolicy {
     /// This policy, honouring the watched directory's own ignore files or not.
     pub fn honouring_ignore_files(mut self, honour: bool) -> Self {
         self.honour_ignore_files = honour;
+        self
+    }
+
+    /// This policy, withholding each of `fences` — a directory inside the Root that something else owns —
+    /// with its reason, whatever any rule says.
+    ///
+    /// The daemon knows where its History Stores and the other Roots are; a walk only knows names, so it
+    /// is told rather than left to find out by capturing history into history.
+    pub fn with_fences(mut self, fences: Vec<(RootPath, WithheldReason)>) -> Self {
+        self.fences = fences;
         self
     }
 
@@ -233,6 +250,8 @@ impl CapturePolicy {
 
         let verdict = if path.ancestors().any(|ancestor| is_reserved(&ancestor)) {
             Verdict::Reserved
+        } else if let Some(reason) = path.ancestors().find_map(|ancestor| self.fence(&ancestor)) {
+            Verdict::Fenced(reason)
         } else if let Some((ancestor, rule)) = classified.pruned_by {
             Verdict::Pruned { ancestor, rule }
         } else {
@@ -261,6 +280,9 @@ impl CapturePolicy {
         if is_reserved(path) {
             return Verdict::Reserved;
         }
+        if let Some(reason) = self.fence(path) {
+            return Verdict::Fenced(reason);
+        }
         if let Some(rule) = self.rules.last_match(path, kind) {
             if !rule.negated {
                 return Verdict::Excluded(rule);
@@ -281,6 +303,14 @@ impl CapturePolicy {
             Some(size) if size > max => Verdict::TooLarge { size, max, rule },
             _ => Verdict::Captured,
         }
+    }
+
+    /// Why `path` is fenced off, if it is.
+    fn fence(&self, path: &RootPath) -> Option<WithheldReason> {
+        self.fences
+            .iter()
+            .find(|(fenced, _)| fenced == path)
+            .map(|(_, reason)| *reason)
     }
 
     /// The opt-in admitting `path` past the denylist, if one does.
@@ -346,7 +376,11 @@ fn secret_denylist() -> RuleSet {
 /// `.git` and its platform aliases: libgit2's owner-less index refuses such a path on every platform,
 /// and the map rules out any interaction with a watched directory's own git, so it is not entered
 /// either — every git command would otherwise churn its index and objects into history (ticket 10).
+/// And the sidecar's own name at the top of the Root, where the Snapshot keeps its records (ticket 48).
 pub fn is_reserved(path: &RootPath) -> bool {
+    if path.as_str() == SIDECAR {
+        return true;
+    }
     let Some(name) = path.as_str().rsplit('/').next() else {
         return false;
     };

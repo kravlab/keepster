@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::path::{InvalidPath, RootPath};
+use crate::sidecar::WithheldReason;
 
 /// A structural change a request must agree to before it is made. The blanket force agrees to all four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -207,6 +208,9 @@ pub struct Found {
     /// The name of an entry beside the target that the destination takes for the same name, in another
     /// case or spelling — gathered only where the destination folds names.
     pub case_variant: Option<String>,
+    /// Why the Snapshot holds no version of it, for a Withheld path beneath a directory asked for: there
+    /// is nothing to write, and the answer says so rather than leaving it out (ticket 48).
+    pub withheld: Option<WithheldReason>,
 }
 
 /// Why a path is not simply written.
@@ -251,6 +255,11 @@ pub enum Issue {
         /// Which.
         at: RootPath,
     },
+    /// The Snapshot holds no version of it, on purpose. Passed over.
+    Withheld {
+        /// Why.
+        reason: WithheldReason,
+    },
 }
 
 impl Issue {
@@ -266,6 +275,7 @@ impl Issue {
             Self::NameCase { .. } => "name_case",
             Self::TypeConflict => "type_conflict",
             Self::LinkCheckFailed { .. } => "link_check_failed",
+            Self::Withheld { .. } => "withheld",
         }
     }
 
@@ -409,9 +419,20 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
         ancestry,
         existing,
         case_variant,
+        withheld,
     } = found;
     let mut issues = Vec::new();
     let mut replaces = None;
+
+    if let Some(reason) = withheld {
+        return PathPlan {
+            path,
+            target,
+            replaces,
+            step: Step::Skipped,
+            issues: vec![Issue::Withheld { reason }],
+        };
+    }
 
     let renamed = matches!(resolution, Some(Resolution::RenameTo(_)));
     if (naming.windows_names && !valid_on_windows(&target))
@@ -495,7 +516,12 @@ fn on_its_own(found: Found, naming: Naming, resolution: Option<&Resolution>) -> 
 /// Where the destination folds nothing, only identical targets collide — two files renamed to one name.
 fn collide(paths: &mut [PathPlan], naming: Naming, resolutions: &BTreeMap<RootPath, Resolution>) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (position, path) in paths.iter().enumerate() {
+    // A path already passed over writes nothing, so it takes no name from another.
+    for (position, path) in paths
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| path.step != Step::Skipped)
+    {
         groups
             .entry(fold(path.target.as_str(), naming))
             .or_default()

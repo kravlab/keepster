@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use keepster_core::{
     CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Level, PathGlob, RootId,
-    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify, ignore_file_rules,
-    parse_duration, parse_size,
+    RootPath, Rule, RuleOrigin, RuleSet, SizeRule, Trigger, Triggers, Verify, WithheldReason,
+    ignore_file_rules, parse_duration, parse_size,
 };
 use serde::Deserialize;
 use toml::Spanned;
@@ -1061,6 +1061,11 @@ impl Configuration {
             return self.unresolved(id);
         };
         let mut effective = effective(global, id, root_path, own.as_ref());
+        effective.policy = std::mem::take(&mut effective.policy).with_fences(
+            history_fence(&self.state_dir, root_path)
+                .into_iter()
+                .collect(),
+        );
 
         if let Some(started) = &self.at_start {
             let now = self.daemon_settings();
@@ -1377,4 +1382,20 @@ fn describe(origin: &RuleOrigin) -> String {
 fn line_of(text: &str, offset: usize) -> u32 {
     let before = &text[..offset.min(text.len())];
     u32::try_from(before.matches('\n').count() + 1).unwrap_or(u32::MAX)
+}
+
+/// Where the History Stores live, as a path inside the Root at `root_path` — when they are inside it, as
+/// they are in a Root that is a whole home directory — so a capture withholds them as `history_store`
+/// rather than capturing history into history, and the watcher never watches its own writes.
+fn history_fence(state_dir: &Path, root_path: &Path) -> Option<(RootPath, WithheldReason)> {
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let state_dir = resolved(state_dir);
+    let inside = state_dir.strip_prefix(resolved(root_path)).ok()?;
+
+    let mut fenced = RootPath::root();
+    for component in inside.components() {
+        fenced = fenced.child(component.as_os_str().to_str()?);
+    }
+
+    (!fenced.is_root()).then_some((fenced, WithheldReason::HistoryStore))
 }

@@ -53,7 +53,9 @@ _Avoid_: backup, cache, repo
 
 **Trigger**:
 A rule that decides when a Snapshot is taken. Which Triggers are active is the user's choice — except
-Reconciliation, which runs whenever the guarantee needs it and is recorded as a Trigger of its own.
+Reconciliation, which runs whenever the guarantee needs it and is recorded as a Trigger of its own, and the
+retry of an incomplete pass, which follows one with a growing backoff for as long as a Root is captured
+automatically.
 _Avoid_: schedule, hook, watcher event
 
 **Debounce window**:

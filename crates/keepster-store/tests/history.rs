@@ -458,10 +458,10 @@ fn an_unreadable_file_does_not_cost_the_whole_snapshot() {
         .expect("a Snapshot is still taken");
 
     assert_eq!(
-        captured.unreadable.len(),
+        captured.incomplete.len(),
         1,
         "and it names what it could not read: {:?}",
-        captured.unreadable
+        captured.incomplete
     );
 
     let repository = git2::Repository::open_bare(store.path()).expect("the store");
@@ -540,10 +540,10 @@ fn the_first_snapshot_of_a_new_hour_is_still_based_on_the_previous_one() {
         b"one"
     );
     assert_eq!(
-        second.unreadable.len(),
+        second.incomplete.len(),
         1,
         "and the Snapshot says it could not read it: {:?}",
-        second.unreadable
+        second.incomplete
     );
 }
 

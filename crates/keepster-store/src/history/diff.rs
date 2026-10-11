@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, RootPath, SegmentName, SnapshotId};
+use keepster_core::{CapturePolicy, Record, RootPath, SIDECAR, SegmentName, SnapshotId};
 
-use super::{HistoryStore, SEGMENT_REFS, StoreError, WithheldReason};
+use super::{HistoryStore, IncompletePath, SEGMENT_REFS, StoreError, WithheldReason};
 
 /// The size past which a file's versions are not compared line by line: 8 MiB, either side.
 ///
@@ -56,9 +56,9 @@ pub enum FileChange {
 pub struct Comparison {
     /// Every changed file in path order, or the one asked for.
     pub files: Vec<FileDiff>,
-    /// Working Tree files that could not be read, which keep their last content as a capture keeps
-    /// it: the comparison is not whole, and says where.
-    pub unreadable: Vec<PathBuf>,
+    /// Working Tree files that could not be read as they are, which keep their last content as a
+    /// capture keeps it: the comparison is not whole, and says where and why.
+    pub incomplete: Vec<IncompletePath>,
 }
 
 /// One file's part of a diff.
@@ -135,7 +135,16 @@ struct Compared<'store> {
 #[derive(Default)]
 struct Working {
     withheld: HashMap<RootPath, WithheldReason>,
-    unreadable: Vec<PathBuf>,
+    incomplete: Vec<IncompletePath>,
+}
+
+impl Working {
+    /// Why the newer side withholds `path`: itself, or a directory above it withheld whole.
+    fn withheld_at(&self, path: &RootPath) -> Option<WithheldReason> {
+        std::iter::once(path.clone())
+            .chain(path.ancestors())
+            .find_map(|candidate| self.withheld.get(&candidate).copied())
+    }
 }
 
 /// Which deltas a request is about.
@@ -170,7 +179,7 @@ impl HistoryStore {
 
         Ok(Comparison {
             files,
-            unreadable: compared.working.unreadable,
+            incomplete: compared.working.incomplete,
         })
     }
 
@@ -230,13 +239,38 @@ impl HistoryStore {
     fn compared(&self, from: SnapshotId, to: &DiffTarget<'_>) -> Result<Compared<'_>, StoreError> {
         let from = self.snapshot_tree(from)?;
         let (to, working) = match *to {
-            DiffTarget::Snapshot(snapshot) => (self.snapshot_tree(snapshot)?, Working::default()),
+            DiffTarget::Snapshot(snapshot) => {
+                let tree = self.snapshot_tree(snapshot)?;
+                // What the newer Snapshot says it withheld, so a file that became Withheld reads as
+                // that and not as deleted — exactly as against the Working Tree.
+                let withheld = self
+                    .sidecar(&tree)?
+                    .sidecar
+                    .records
+                    .into_iter()
+                    .filter_map(|record| match record {
+                        Record::Withheld { path, reason } => Some((path, reason)),
+                        Record::Incomplete { .. } => None,
+                    })
+                    .collect();
+                (
+                    tree,
+                    Working {
+                        withheld,
+                        incomplete: Vec::new(),
+                    },
+                )
+            }
             DiffTarget::WorkingTree {
                 root_path,
                 policy,
                 now,
             } => self.working_tree(root_path, policy, now)?,
         };
+        // The sidecar is the Snapshot's own record, never a file of the Root, so neither side has it:
+        // taking it out before comparing also keeps it from ever pairing with a file as a rename.
+        let from = self.without_sidecar(from)?;
+        let to = self.without_sidecar(to)?;
 
         let mut options = git2::DiffOptions::new();
         options
@@ -301,7 +335,7 @@ impl HistoryStore {
                 .into_iter()
                 .map(|withheld| (withheld.path, withheld.reason))
                 .collect(),
-            unreadable: walked.unreadable,
+            incomplete: walked.incomplete,
         };
         let tree = self
             .repository
@@ -309,6 +343,27 @@ impl HistoryStore {
             .map_err(self.failed("read"))?;
 
         Ok((tree, working))
+    }
+
+    /// `tree` without the sidecar at its root — `tree` itself when it has none, which is most Snapshots.
+    fn without_sidecar<'store>(
+        &'store self,
+        tree: git2::Tree<'store>,
+    ) -> Result<git2::Tree<'store>, StoreError> {
+        if tree.get_name(SIDECAR).is_none() {
+            return Ok(tree);
+        }
+
+        let mut builder = self
+            .repository
+            .treebuilder(Some(&tree))
+            .map_err(self.failed("read"))?;
+        builder.remove(SIDECAR).map_err(self.failed("written"))?;
+        let stripped = builder.write().map_err(self.failed("written"))?;
+
+        self.repository
+            .find_tree(stripped)
+            .map_err(self.failed("read"))
     }
 
     /// Whether an added or deleted file — a rename candidate — is larger than the diff threshold.
@@ -352,7 +407,7 @@ impl HistoryStore {
             _ => (new, None),
         };
         let withheld = match change {
-            FileChange::Deleted => compared.working.withheld.get(&path).copied(),
+            FileChange::Deleted => compared.working.withheld_at(&path),
             _ => None,
         };
         let (old_mode, new_mode) = match (

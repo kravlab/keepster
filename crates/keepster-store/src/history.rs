@@ -13,18 +13,20 @@
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
-    CapturePolicy, ChangeKind, IGNORE_FILE, RootId, RootPath, SegmentName, SnapshotId, Trigger,
-    Verdict, Verify, ignore_file_rules,
+    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Parsed, Record, RootId, RootPath,
+    SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger, Verdict, Verify,
+    WithheldReason, ignore_file_rules,
 };
 
 use crate::index::{self, Index, Observation};
 
 mod diff;
+mod error_name;
 mod restore;
 
 pub use diff::{
@@ -145,6 +147,14 @@ pub enum StoreError {
     /// The path names a file where a directory was asked for.
     #[error("`{0}` is a file in this Snapshot, not a directory")]
     NotADirectory(RootPath),
+    /// The Snapshot holds no content at that path on purpose (ADR 0009).
+    #[error("`{path}` is Withheld in this Snapshot ({}), so it holds no content for it", reason.as_str())]
+    Withheld {
+        /// The path asked for.
+        path: RootPath,
+        /// Why the Snapshot does not hold it.
+        reason: WithheldReason,
+    },
     /// Content read from the store could not be handed on, usually because the reader went away.
     #[error("the content could not be delivered")]
     Delivery(#[source] io::Error),
@@ -162,19 +172,18 @@ pub struct CapturedSnapshot {
     pub segment: SegmentName,
     /// The Trigger that caused it.
     pub trigger: Trigger,
-    /// Paths that were meant to be captured and could not be read.
+    /// Paths that were meant to be captured and are not as they are now, and why.
     ///
     /// The Snapshot is taken anyway — one unreadable artefact must not freeze a Root's history
     /// (ticket 05) — and it says what it omitted, because a Snapshot that omits silently is the one
-    /// thing this product forbids. Each path keeps its previous content, which ADR 0004 requires of a
-    /// carried-forward entry; the commit records how many there were, and ticket 48 is where each one
-    /// becomes a record of the Snapshot itself.
-    pub unreadable: Vec<PathBuf>,
-    /// Files present in the Working Tree whose content the Snapshot deliberately does not hold.
+    /// thing this product forbids. Each path keeps its previous content where there was one, which
+    /// ADR 0004 requires of a carried-forward entry; each is a record in the sidecar, and the commit
+    /// counts them.
+    pub incomplete: Vec<IncompletePath>,
+    /// Paths present in the Working Tree whose content the Snapshot deliberately does not hold.
     ///
     /// Withholding is policy, not failure, so it does not make the Snapshot incomplete; and the path has
-    /// no tree entry at all (ADR 0009). Ticket 48 makes this a record of the Snapshot itself, in the
-    /// sidecar; until then the capture's own answer is where it is named.
+    /// no tree entry at all (ADR 0009). Each is a record in the sidecar.
     pub withheld: Vec<WithheldPath>,
     /// How many paths differ from the Snapshot before it, counted exactly as the index counts them —
     /// or why they could not be counted.
@@ -199,20 +208,14 @@ pub struct WithheldPath {
     pub reason: WithheldReason,
 }
 
-/// Why a Snapshot holds no content for a path that is there (ticket 10). Ticket 48 adds the others.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WithheldReason {
-    /// Over its size cap.
-    TooLarge,
-}
-
-impl WithheldReason {
-    /// The reason as the wire spells it (ticket 10).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::TooLarge => "too_large",
-        }
-    }
+/// A path a Snapshot meant to hold and does not hold as it is now, and why — which makes the Snapshot
+/// incomplete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompletePath {
+    /// Where it is, relative to the Root.
+    pub path: RootPath,
+    /// Why it is not held as it is.
+    pub why: Incomplete,
 }
 
 /// A Snapshot as the timeline lists it.
@@ -265,6 +268,13 @@ pub struct Pass {
     pub index_lag: Option<String>,
     /// When no Snapshot was written because nothing changed, the one the Working Tree is identical to.
     pub unchanged_since: Option<SnapshotId>,
+    /// How many paths the pass meant to capture and could not hold as they are — whether or not a
+    /// Snapshot was written, since an unchanged tree can be an unchanged failure. Non-zero owes a retry
+    /// (ADR 0004).
+    pub incomplete: u64,
+    /// Records of the previous Snapshot's sidecar this build does not know — a later build's facts —
+    /// which this pass could not carry into its own: to be reported, never dropped in silence.
+    pub unrecognized: Vec<String>,
 }
 
 /// Which part of a Root's chronology to list.
@@ -308,6 +318,20 @@ pub enum EntryKind {
     Directory,
     /// A symbolic link, held as a link.
     Symlink,
+    /// Present when the Snapshot was taken, and deliberately not held: [`Entry::withheld`] says why.
+    Withheld,
+    /// Meant to be held, and not read, with no earlier version to keep: [`Entry::incomplete`] says why.
+    Omitted,
+}
+
+/// What a listing of a Snapshot's entries found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    /// The entries, in path order.
+    pub entries: Vec<Entry>,
+    /// Records of the Snapshot's sidecar this build does not know, skipped — to be reported, since a
+    /// later build wrote facts this one cannot show.
+    pub unrecognized: Vec<String>,
 }
 
 /// One path a Snapshot holds.
@@ -326,6 +350,26 @@ pub struct Entry {
     pub mode: Option<u32>,
     /// Whether its content is binary by git's rule; absent for anything but a file.
     pub binary: Option<bool>,
+    /// Why the Snapshot does not hold it, for a Withheld path.
+    pub withheld: Option<WithheldReason>,
+    /// Why it is not held as it was when the Snapshot was taken: an `Omitted` path, or a file whose
+    /// previous version was kept.
+    pub incomplete: Option<Incomplete>,
+}
+
+impl Entry {
+    /// An entry with its path and kind and nothing else known yet.
+    fn bare(path: RootPath, kind: EntryKind) -> Self {
+        Self {
+            path,
+            kind,
+            size: None,
+            mode: None,
+            binary: None,
+            withheld: None,
+            incomplete: None,
+        }
+    }
 }
 
 /// One version's content, located and sized but not yet read.
@@ -632,7 +676,7 @@ impl HistoryStore {
              {ROOT_TRAILER}: {root_id}\n\
              {TRIGGER_TRAILER}: {trigger}\n\
              {OMITTED_TRAILER}: {}\n",
-            walked.unreadable.len()
+            walked.incomplete.len()
         );
         let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
 
@@ -665,7 +709,7 @@ impl HistoryStore {
             id,
             segment,
             trigger,
-            unreadable: walked.unreadable.clone(),
+            incomplete: walked.incomplete.clone(),
             withheld: walked.withheld.clone(),
             changed_paths,
             index_lag: index_lag.clone(),
@@ -717,14 +761,71 @@ impl HistoryStore {
             index.read_tree(tree).map_err(self.failed("read"))?;
         }
 
-        let walked =
+        let mut walked =
             self.add_working_tree(&mut index, baseline_tree, root_path, policy, vouching, now)?;
         remove_vanished(&mut index, &walked)?;
+        walked.unrecognized = self.write_sidecar(&mut index, baseline_tree, &walked)?;
         let tree_id = index
             .write_tree_to(&self.repository)
             .map_err(self.failed("written"))?;
 
         Ok((tree_id, walked))
+    }
+
+    /// Put the walk's records in the sidecar at the tree root, or take the sidecar out when it would
+    /// say nothing (ADR 0006), returning the baseline sidecar's records this build could not carry.
+    ///
+    /// Only when there is something to say: most Snapshots hold no Withheld or incomplete path and keep
+    /// the default header, and a Snapshot whose tree is just the Root's files is the one a person reading
+    /// the store with git expects. The header is carried forward from the baseline's sidecar, since the
+    /// modal defaults it names are ticket 50's to compute; and the entry is left alone when the bytes
+    /// did not change, for the TREE cache's sake (ADR 0004).
+    ///
+    /// The records come from this walk alone, so whatever the baseline's sidecar held that this build
+    /// does not know — a later build's facts — is not written again, and is handed back to be reported
+    /// rather than dropped in silence.
+    fn write_sidecar(
+        &self,
+        index: &mut git2::Index,
+        baseline: Option<&git2::Tree<'_>>,
+        walked: &Walked,
+    ) -> Result<Vec<String>, StoreError> {
+        let recorded = baseline.and_then(|tree| tree.get_name(SIDECAR).map(|entry| entry.id()));
+        let Parsed { sidecar, unknown } = match baseline {
+            Some(tree) => self.sidecar(tree)?,
+            None => Parsed {
+                sidecar: Sidecar::with_records(Vec::new()),
+                unknown: Vec::new(),
+            },
+        };
+
+        let records = walked.records();
+        if records.is_empty() && sidecar.header == Header::default() {
+            if recorded.is_some() {
+                index
+                    .remove_path(Path::new(SIDECAR))
+                    .map_err(self.failed("written"))?;
+            }
+            return Ok(unknown);
+        }
+
+        let mut written = Sidecar::with_records(records);
+        written.header = sidecar.header;
+        let blob = self
+            .repository
+            .blob(&written.to_bytes())
+            .map_err(self.failed("written"))?;
+        if recorded != Some(blob) {
+            index
+                .add(&entry_for(
+                    &WirePath(SIDECAR.to_owned()),
+                    blob,
+                    REGULAR_MODE,
+                ))
+                .map_err(self.failed("written"))?;
+        }
+
+        Ok(unknown)
     }
 
     /// One page of the Root's chronology, newest first.
@@ -756,31 +857,77 @@ impl HistoryStore {
         })
     }
 
-    /// The paths a Snapshot holds under `directory`, in path order.
+    /// The paths a Snapshot holds under `directory`, in path order — and the paths it names without
+    /// holding them: Withheld, or meant to be held and not read (ticket 48).
+    ///
+    /// The sidecar is the Snapshot's own record and never one of the Root's paths, so it is not listed;
+    /// what it says is joined in instead. A directory that holds only Withheld paths has no tree in git,
+    /// which holds no empty directories, and is listed all the same — or the paths beneath it could not
+    /// be reached.
     pub fn entries(
         &self,
         snapshot: SnapshotId,
         directory: &RootPath,
         depth: Depth,
-    ) -> Result<Vec<Entry>, StoreError> {
+    ) -> Result<Listing, StoreError> {
         let root = self.snapshot_tree(snapshot)?;
+        let Parsed { sidecar, unknown } = self.sidecar(&root)?;
+        let records: Vec<&Record> = sidecar
+            .records
+            .iter()
+            .filter(|record| is_beneath(record.path(), directory))
+            .collect();
+
         let tree = if directory.is_root() {
-            root
+            Some(root)
         } else {
-            let entry = self.entry_at(&root, directory)?;
-            if entry.kind() != Some(git2::ObjectType::Tree) {
-                return Err(StoreError::NotADirectory(directory.clone()));
+            match self.entry_at(&root, directory) {
+                Ok(entry) if entry.kind() == Some(git2::ObjectType::Tree) => Some(
+                    self.repository
+                        .find_tree(entry.id())
+                        .map_err(self.failed("read"))?,
+                ),
+                Ok(_) => return Err(StoreError::NotADirectory(directory.clone())),
+                Err(StoreError::PathNotFound(_)) if !records.is_empty() => None,
+                Err(StoreError::PathNotFound(path)) => return Err(nothing_at(&sidecar, path)),
+                Err(error) => return Err(error),
             }
-            self.repository
-                .find_tree(entry.id())
-                .map_err(self.failed("read"))?
         };
 
         let mut entries = Vec::new();
+        if let Some(tree) = tree {
+            self.list(&tree, directory, depth, &mut entries)?;
+        }
+        join_records(&mut entries, &records, directory, depth);
+
+        // Byte order of the full path — not git's tree order, which sorts a directory as if its name
+        // ended in `/` and so would interleave differently from what a client sorts by.
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+        Ok(Listing {
+            entries,
+            unrecognized: unknown,
+        })
+    }
+
+    /// What `tree`, the tree of `directory`, holds — the sidecar left out at the tree root.
+    fn list(
+        &self,
+        tree: &git2::Tree<'_>,
+        directory: &RootPath,
+        depth: Depth,
+        entries: &mut Vec<Entry>,
+    ) -> Result<(), StoreError> {
+        let is_sidecar =
+            |prefix: &str, name: &str| directory.is_root() && prefix.is_empty() && name == SIDECAR;
+
         match depth {
             Depth::One => {
                 for entry in tree.iter() {
                     let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
+                    if is_sidecar("", &name) {
+                        continue;
+                    }
                     if let Some(entry) = self.describe(directory.child(&name), &entry)? {
                         entries.push(entry);
                     }
@@ -790,6 +937,9 @@ impl HistoryStore {
                 let mut failure = None;
                 tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
                     let name = String::from_utf8_lossy(entry.name_bytes());
+                    if is_sidecar(prefix, &name) {
+                        return git2::TreeWalkResult::Skip;
+                    }
                     let mut path = directory.clone();
                     for component in prefix.split('/').filter(|part| !part.is_empty()) {
                         path = path.child(component);
@@ -815,11 +965,38 @@ impl HistoryStore {
             }
         }
 
-        // Byte order of the full path — not git's tree order, which sorts a directory as if its name
-        // ended in `/` and so would interleave differently from what a client sorts by.
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(())
+    }
 
-        Ok(entries)
+    /// What a Snapshot's sidecar says, or nothing when it has none.
+    ///
+    /// A sidecar in a grammar newer than this build is read as saying nothing this build understands,
+    /// and its header is reported as the record that could not be read.
+    fn sidecar(&self, root: &git2::Tree<'_>) -> Result<Parsed, StoreError> {
+        let empty = || Sidecar::with_records(Vec::new());
+        let Some(entry) = root.get_name(SIDECAR) else {
+            return Ok(Parsed {
+                sidecar: empty(),
+                unknown: Vec::new(),
+            });
+        };
+        let blob = self
+            .repository
+            .find_blob(entry.id())
+            .map_err(self.failed("read"))?;
+
+        Ok(Sidecar::parse(blob.content()).unwrap_or_else(|_| Parsed {
+            sidecar: empty(),
+            unknown: vec![
+                String::from_utf8_lossy(
+                    blob.content()
+                        .split(|byte| *byte == b'\n')
+                        .next()
+                        .unwrap_or_default(),
+                )
+                .into_owned(),
+            ],
+        }))
     }
 
     /// One version of a file: what a Snapshot holds at `path`, located and sized.
@@ -833,7 +1010,15 @@ impl HistoryStore {
         }
 
         let root = self.snapshot_tree(snapshot)?;
-        let entry = self.entry_at(&root, path)?;
+        if path.as_str() == SIDECAR {
+            return Err(StoreError::PathNotFound(path.clone()));
+        }
+        let entry = match self.entry_at(&root, path) {
+            Err(StoreError::PathNotFound(path)) => {
+                return Err(nothing_at(&self.sidecar(&root)?.sidecar, path));
+            }
+            found => found?,
+        };
         if entry.kind() != Some(git2::ObjectType::Blob) {
             return Err(StoreError::NotAFile(path.clone()));
         }
@@ -888,26 +1073,16 @@ impl HistoryStore {
 
         let mode = entry.filemode();
         let described = match mode {
-            DIRECTORY => Entry {
-                path,
-                kind: EntryKind::Directory,
-                size: None,
-                mode: None,
-                binary: None,
-            },
+            DIRECTORY => Entry::bare(path, EntryKind::Directory),
             SYMLINK => Entry {
-                path,
-                kind: EntryKind::Symlink,
                 size: Some(self.blob_size(entry.id())?),
-                mode: None,
-                binary: None,
+                ..Entry::bare(path, EntryKind::Symlink)
             },
             _ if entry.kind() == Some(git2::ObjectType::Blob) => Entry {
-                path,
-                kind: EntryKind::File,
                 size: Some(self.blob_size(entry.id())?),
                 mode: Some(if mode == EXECUTABLE { 0o755 } else { 0o644 }),
                 binary: Some(self.is_binary(entry.id())?),
+                ..Entry::bare(path, EntryKind::File)
             },
             // A submodule link: a Snapshot never holds one, so it is not described as anything.
             _ => return Ok(None),
@@ -974,48 +1149,74 @@ impl HistoryStore {
 
         let started = nanos_since_epoch(now);
         let mut sub_second = false;
-        let paths = std::mem::take(&mut walked.paths);
+        let mut paths = std::mem::take(&mut walked.paths);
+        // Paths that are no longer regular files by the time they are read: deleted since the walk, or
+        // replaced by a special file. Neither is the file the walk found, and neither is a failure.
+        let mut gone = Vec::new();
         for path in &paths {
             let absolute = root_path.join(path.as_filesystem_path());
 
             let metadata = match fs::symlink_metadata(&absolute) {
                 Ok(metadata) => metadata,
-                // Gone between the walk and the read, or unreadable: carry the baseline entry forward
-                // and say so, rather than losing the whole Snapshot (ticket 05).
-                Err(_) => {
-                    walked.unreadable.push(absolute);
+                // A file already gone is simply deleted (ticket 10).
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    gone.push(path.clone());
+                    continue;
+                }
+                // Unreadable: carry the baseline entry forward and say so, rather than losing the whole
+                // Snapshot (ticket 05).
+                Err(error) => {
+                    walked.incomplete(path, Incomplete::Error(error_name::of(&error)));
                     continue;
                 }
             };
-            let mode = mode_for(&metadata);
-            let size = metadata.len();
-            let mtime = metadata.modified().ok().map(nanos_since_epoch);
-            sub_second |= mtime.is_some_and(|mtime| mtime % 1_000_000_000 != 0);
             let recorded = baseline_entry(baseline, path);
 
             // The filter: the last pass read this very size and mtime and found the content the baseline
             // holds. Any doubt — no row, a different size or mtime, a baseline that disagrees — reads.
+            let mtime = metadata.modified().ok().map(nanos_since_epoch);
             let vouched = match (observations.get(&path.0), mtime, recorded) {
                 (Some(seen), Some(mtime), Some((oid, _)))
-                    if seen.size == size && seen.mtime == mtime && seen.oid == oid =>
+                    if seen.size == metadata.len() && seen.mtime == mtime && seen.oid == oid =>
                 {
                     Some(oid)
                 }
                 _ => None,
             };
-            let oid = match vouched {
-                Some(oid) => oid,
-                None => match self.repository.blob_path(&absolute) {
-                    Ok(oid) => {
+            // What was read is described by the `stat` taken while it was open, which is what the next
+            // pass's filter must compare against.
+            let (oid, metadata) = match vouched {
+                Some(oid) => (oid, metadata),
+                None => match self.read_settled(&absolute)? {
+                    Settled::Held(oid, metadata) => {
                         walked.hashed += 1;
-                        oid
+                        (oid, metadata)
                     }
-                    Err(_) => {
-                        walked.unreadable.push(absolute);
+                    // Whatever the baseline holds stays — it is already in the index — and a path it
+                    // does not hold stays absent; either way the record names it.
+                    Settled::Unstable => {
+                        walked.incomplete(path, Incomplete::Unstable);
+                        continue;
+                    }
+                    Settled::Failed(error) if error.kind() == io::ErrorKind::NotFound => {
+                        gone.push(path.clone());
+                        continue;
+                    }
+                    Settled::Failed(error) => {
+                        walked.incomplete(path, Incomplete::Error(error_name::of(&error)));
+                        continue;
+                    }
+                    Settled::Special(kind) => {
+                        walked.withhold(path.to_root_path(), WithheldReason::SpecialFile(kind));
+                        gone.push(path.clone());
                         continue;
                     }
                 },
             };
+            let mode = mode_for(&metadata);
+            let size = metadata.len();
+            let mtime = metadata.modified().ok().map(nanos_since_epoch);
+            sub_second |= mtime.is_some_and(|mtime| mtime % 1_000_000_000 != 0);
 
             if let Some(mtime) = mtime {
                 walked
@@ -1033,6 +1234,8 @@ impl HistoryStore {
                 .add(&entry_for(path, oid, mode))
                 .map_err(self.failed("written"))?;
         }
+        // `gone` was collected in the order of `paths`, so both stay sorted.
+        paths.retain(|path| gone.binary_search(path).is_err());
         walked.paths = paths;
         walked.coarse_mtime = walked.seen > 0 && !sub_second;
 
@@ -1048,6 +1251,81 @@ impl HistoryStore {
             .retain(|(_, observation)| observation.mtime + COARSE_TICK_NANOS < started);
 
         Ok(walked)
+    }
+
+    /// Read one file into the object database, trying again while it changes under the read.
+    ///
+    /// A file being written is read again rather than captured half-written; one that never settles is
+    /// `unstable`, and the caller carries its previous version forward (ticket 48).
+    fn read_settled(&self, path: &Path) -> Result<Settled, StoreError> {
+        for _ in 0..=READ_RETRIES {
+            match self.read_once(path)? {
+                Attempt::Settled(settled) => return Ok(settled),
+                Attempt::Changed => {}
+            }
+        }
+
+        Ok(Settled::Unstable)
+    }
+
+    /// One attempt at reading a file whole, streamed into the object database so a file is never held
+    /// in memory.
+    ///
+    /// The file is opened without following a link and without blocking, so a link or a pipe that took
+    /// its place since the walk can neither redirect the read nor stall the capture; it must still be a
+    /// regular file once open. It counts as read only if the bytes are exactly as many as its `stat`
+    /// said, and nothing about it — size, mtime, change time, identity — moved while it was read.
+    fn read_once(&self, path: &Path) -> Result<Attempt, StoreError> {
+        let failed = |error| Ok(Attempt::Settled(Settled::Failed(error)));
+        let file = match open_unfollowed(path) {
+            Ok(file) => file,
+            Err(error) => return failed(error),
+        };
+        let before = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => return failed(error),
+        };
+        if !before.is_file() {
+            // A pipe or a device took its place since the walk: never read, as the walk would have it.
+            return Ok(match special_kind(&before) {
+                Some(kind) => Attempt::Settled(Settled::Special(kind)),
+                None => Attempt::Changed,
+            });
+        }
+
+        let mut writer = self
+            .repository
+            .blob_writer(None)
+            .map_err(self.failed("written"))?;
+        // One byte past the size, to see a file that grew without reading all it grew by.
+        let mut source = (&file).take(before.len().saturating_add(1));
+        let mut buffer = vec![0; CHUNK];
+        let mut total: u64 = 0;
+        loop {
+            let read = match source.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return failed(error),
+            };
+            total += read as u64;
+            writer.write_all(&buffer[..read]).map_err(|error| {
+                self.failed("written")(git2::Error::from_str(&error.to_string()))
+            })?;
+        }
+
+        let after = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => return failed(error),
+        };
+        let still_there = fs::symlink_metadata(path)
+            .is_ok_and(|there| Stamp::of(&there).identity == Stamp::of(&after).identity);
+        if total != before.len() || Stamp::of(&before) != Stamp::of(&after) || !still_there {
+            return Ok(Attempt::Changed);
+        }
+
+        let oid = writer.commit().map_err(self.failed("written"))?;
+        Ok(Attempt::Settled(Settled::Held(oid, after)))
     }
 
     /// Replace the evidence the next pass compares against with what this one saw. A failure costs the
@@ -1200,6 +1478,15 @@ impl WirePath {
     fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The same path as the domain names it.
+    fn to_root_path(&self) -> RootPath {
+        // Built from components rather than parsed: every one came from the filesystem as one name.
+        self.0
+            .split('/')
+            .filter(|name| !name.is_empty())
+            .fold(RootPath::root(), |path, name| path.child(name))
+    }
 }
 
 /// What the walk found.
@@ -1207,13 +1494,16 @@ impl WirePath {
 struct Walked {
     /// Every regular file, as the index names it.
     paths: Vec<WirePath>,
-    /// Paths that were meant to be captured and could not be read.
-    unreadable: Vec<PathBuf>,
-    /// Directories whose contents could not be listed, so whatever the baseline holds beneath them must
-    /// be carried forward rather than read as a deletion.
-    opaque: Vec<WirePath>,
-    /// Files present but deliberately not held.
+    /// Paths that were meant to be captured and are not held as they are now.
+    incomplete: Vec<IncompletePath>,
+    /// Paths that could not be looked at — a directory that could not be listed, an entry that could
+    /// not be `stat`ed — so whatever the baseline holds at or beneath them is carried forward rather
+    /// than read as a deletion.
+    carried: Vec<WirePath>,
+    /// Paths present but deliberately not held.
     withheld: Vec<WithheldPath>,
+    /// What the baseline's sidecar said that this build does not know, and so did not carry.
+    unrecognized: Vec<String>,
     /// What this pass observed of each file it read or vouched for, for the next pass to compare with.
     observed: Vec<(String, Observation)>,
     /// How many files were read and hashed.
@@ -1233,24 +1523,139 @@ impl Walked {
             coarse_mtime: self.coarse_mtime,
             index_lag,
             unchanged_since: None,
+            incomplete: u64::try_from(self.incomplete.len()).unwrap_or(u64::MAX),
+            unrecognized: self.unrecognized.clone(),
         }
+    }
+
+    /// Name a path the Snapshot does not hold as it is now.
+    fn incomplete(&mut self, path: &WirePath, why: Incomplete) {
+        self.incomplete.push(IncompletePath {
+            path: path.to_root_path(),
+            why,
+        });
+    }
+
+    /// Name a path that could not be looked at, and keep what the baseline holds there.
+    fn could_not_look(&mut self, path: WirePath, error: &io::Error) {
+        self.incomplete(&path, Incomplete::Error(error_name::of(error)));
+        self.carried.push(path);
+    }
+
+    /// Hold back a path, with its reason.
+    fn withhold(&mut self, path: RootPath, reason: WithheldReason) {
+        self.withheld.push(WithheldPath { path, reason });
+    }
+
+    /// What the sidecar says of this walk.
+    fn records(&self) -> Vec<Record> {
+        self.withheld
+            .iter()
+            .map(|withheld| Record::Withheld {
+                path: withheld.path.clone(),
+                reason: withheld.reason,
+            })
+            .chain(self.incomplete.iter().map(|incomplete| Record::Incomplete {
+                path: incomplete.path.clone(),
+                why: incomplete.why.clone(),
+            }))
+            .collect()
     }
 
     /// Whether an index path from the baseline should survive this capture.
     ///
-    /// A path that was walked survives because it is still there; a path beneath a directory that could
-    /// not be listed survives because its absence was never observed. Everything else is gone, and a
-    /// Snapshot that kept it would claim content the Working Tree no longer has.
+    /// A path that was walked survives because it is still there; a path at or beneath one that could
+    /// not be looked at survives because its absence was never observed. The sidecar is written after
+    /// this, from this walk's records. Everything else is gone, and a Snapshot that kept it would claim
+    /// content the Working Tree no longer has.
     fn keeps(&self, path: &str) -> bool {
         // `paths` is sorted by the time the baseline is compared against it.
-        self.paths
-            .binary_search_by(|walked| walked.as_str().cmp(path))
-            .is_ok()
+        path == SIDECAR
             || self
-                .opaque
-                .iter()
-                .any(|prefix| path.starts_with(&format!("{}/", prefix.as_str())))
+                .paths
+                .binary_search_by(|walked| walked.as_str().cmp(path))
+                .is_ok()
+            || self.carried.iter().any(|carried| {
+                path == carried.as_str() || path.starts_with(&format!("{}/", carried.as_str()))
+            })
     }
+}
+
+/// How many times a file that changes while it is read is read again before it is called `unstable`
+/// (ticket 10).
+const READ_RETRIES: usize = 3;
+
+/// What reading a file came to.
+enum Settled {
+    /// Its content, and its `stat` as it was read.
+    Held(git2::Oid, fs::Metadata),
+    /// It changed under every attempt.
+    Unstable,
+    /// Reading it failed.
+    Failed(io::Error),
+    /// A special file is there now, which is Withheld rather than read.
+    Special(SpecialKind),
+}
+
+/// What one attempt at reading a file came to.
+enum Attempt {
+    /// An answer.
+    Settled(Settled),
+    /// It changed while it was read.
+    Changed,
+}
+
+/// What must not move while a file is read for its content to be the file's.
+#[derive(Debug, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: Option<SystemTime>,
+    /// The change time, which moves on any write even when a writer restores the mtime.
+    changed: Option<(i64, i64)>,
+    /// Which file it is, so a file renamed over it is not mistaken for it.
+    identity: Option<(u64, u64)>,
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            Self {
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+                changed: Some((metadata.ctime(), metadata.ctime_nsec())),
+                identity: Some((metadata.dev(), metadata.ino())),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            Self {
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+                changed: None,
+                identity: None,
+            }
+        }
+    }
+}
+
+/// Open a file to read it for a capture: never through a link, and never waiting on a pipe.
+fn open_unfollowed(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // And never as a terminal that would become the daemon's own.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+
+    options.open(path)
 }
 
 /// Drop every baseline entry whose path is no longer in the Working Tree.
@@ -1287,6 +1692,104 @@ fn baseline_entry(baseline: Option<&git2::Tree<'_>>, path: &WirePath) -> Option<
     let entry = baseline?.get_path(&path.as_filesystem_path()).ok()?;
 
     Some((entry.id(), u32::try_from(entry.filemode()).ok()?))
+}
+
+/// Whether `path` is strictly beneath `directory`.
+fn is_beneath(path: &RootPath, directory: &RootPath) -> bool {
+    if directory.is_root() {
+        return !path.is_root();
+    }
+
+    path.as_str()
+        .strip_prefix(directory.as_str())
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Why `sidecar` says its Snapshot holds no content at `path`, if it says so — of the path itself, or of a
+/// directory above it that was Withheld whole and never entered.
+fn withheld_at(sidecar: &Sidecar, path: &RootPath) -> Option<WithheldReason> {
+    sidecar.records.iter().find_map(|record| match record {
+        Record::Withheld {
+            path: withheld,
+            reason,
+        } if withheld == path || is_beneath(path, withheld) => Some(*reason),
+        _ => None,
+    })
+}
+
+/// What to answer for a `path` the Snapshot's tree has no entry for: Withheld, if `sidecar` says so,
+/// and otherwise not found.
+fn nothing_at(sidecar: &Sidecar, path: RootPath) -> StoreError {
+    match withheld_at(sidecar, &path) {
+        Some(reason) => StoreError::Withheld { path, reason },
+        None => StoreError::PathNotFound(path),
+    }
+}
+
+/// Join the sidecar's `records` beneath `directory` into a listing of it: a file kept from an earlier
+/// version is marked, a path with no tree entry is added, and so is every directory above one that git
+/// holds no tree for.
+fn join_records(entries: &mut Vec<Entry>, records: &[&Record], directory: &RootPath, depth: Depth) {
+    // Indexed by path, since one unreadable directory can name thousands of paths (ADR 0009).
+    let mut at: HashMap<RootPath, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| (entry.path.clone(), position))
+        .collect();
+    fn add(entries: &mut Vec<Entry>, at: &mut HashMap<RootPath, usize>, entry: Entry) {
+        at.insert(entry.path.clone(), entries.len());
+        entries.push(entry);
+    }
+
+    for record in records {
+        let path = record.path();
+        let leaf = depth == Depth::Infinity || path.parent() == *directory;
+
+        let mut above: Vec<RootPath> = path
+            .ancestors()
+            .filter(|ancestor| is_beneath(ancestor, directory))
+            .collect();
+        if depth == Depth::One {
+            above.truncate(1);
+        }
+        for ancestor in above {
+            if !at.contains_key(&ancestor) {
+                add(
+                    entries,
+                    &mut at,
+                    Entry::bare(ancestor, EntryKind::Directory),
+                );
+            }
+        }
+        if !leaf {
+            continue;
+        }
+
+        match (record, at.get(path).copied()) {
+            (Record::Incomplete { why, .. }, Some(kept)) => {
+                entries[kept].incomplete = Some(why.clone());
+            }
+            (Record::Incomplete { why, .. }, None) => add(
+                entries,
+                &mut at,
+                Entry {
+                    incomplete: Some(why.clone()),
+                    ..Entry::bare(path.clone(), EntryKind::Omitted)
+                },
+            ),
+            (Record::Withheld { reason, .. }, None) => add(
+                entries,
+                &mut at,
+                Entry {
+                    withheld: Some(*reason),
+                    ..Entry::bare(path.clone(), EntryKind::Withheld)
+                },
+            ),
+            // A tree entry where the sidecar says there is none was not written by this build's
+            // rule (ADR 0009); the entry is what can be read, so it stands.
+            (Record::Withheld { .. }, Some(_)) => {}
+        }
+    }
 }
 
 /// The coarsest mtime tick a filesystem this product meets keeps: FAT and exFAT record two seconds.
@@ -1335,8 +1838,7 @@ fn collect_files(
                 });
             }
 
-            walked.unreadable.push(directory);
-            walked.opaque.push(relative);
+            walked.could_not_look(relative, &source);
 
             return Ok(());
         }
@@ -1362,17 +1864,28 @@ fn collect_files(
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => {
-                walked.unreadable.push(directory.clone());
-                continue;
+            // The listing broke off: what it did not reach was never observed to be gone.
+            Err(source) => {
+                if relative.as_str().is_empty() {
+                    return Err(StoreError::WorkingTree {
+                        path: directory,
+                        source,
+                    });
+                }
+                walked.could_not_look(relative, &source);
+                return Ok(());
             }
         };
 
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
-            // A name that is not UTF-8 needs the byte-exact representation ticket 48 brings; until then
-            // it cannot be recorded honestly, so it is reported rather than passed over in silence.
-            walked.unreadable.push(directory.join(entry.file_name()));
+            // A name that is not UTF-8 needs the byte-exact representation of ticket 74; until then it
+            // is named, as nearly as text can name it, with the error that says why it cannot be held.
+            let lossy = here.child(&entry.file_name().to_string_lossy());
+            walked.incomplete.push(IncompletePath {
+                path: lossy,
+                why: Incomplete::Error(error_name::UNREPRESENTABLE.to_owned()),
+            });
             continue;
         };
 
@@ -1381,37 +1894,92 @@ fn collect_files(
         let rooted = here.child(name);
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
-            Err(_) => {
-                walked.unreadable.push(directory.join(name));
+            Err(error) => {
+                walked.could_not_look(WirePath(rooted.as_str().to_owned()), &error);
                 continue;
             }
         };
 
+        // Present, but without content: no tree entry at all (ADR 0009), and a record in the sidecar.
+        // A reserved or fenced directory is one record, and is never entered.
         if metadata.is_dir() {
-            if policy.directory(&rooted) == Verdict::Captured {
-                collect_files(root, &rooted, policy, walked)?;
+            match Judged::from(policy.directory(&rooted)) {
+                Judged::Held => collect_files(root, &rooted, policy, walked)?,
+                Judged::Withheld(reason) => walked.withhold(rooted, reason),
+                Judged::Left => {}
             }
         } else if metadata.is_file() {
-            match policy.file(&rooted, metadata.len()) {
-                Verdict::Captured => walked.paths.push(WirePath(rooted.as_str().to_owned())),
-                // Present, but without its content: no tree entry at all (ADR 0009), and the capture
-                // names it. Ticket 48 makes the record part of the Snapshot itself.
-                Verdict::TooLarge { .. } => walked.withheld.push(WithheldPath {
-                    path: rooted,
-                    reason: WithheldReason::TooLarge,
-                }),
-                Verdict::Reserved
-                | Verdict::Excluded(_)
-                | Verdict::Pruned { .. }
-                | Verdict::Secret(_) => {}
+            match Judged::from(policy.file(&rooted, metadata.len())) {
+                Judged::Held => walked.paths.push(WirePath(rooted.as_str().to_owned())),
+                Judged::Withheld(reason) => walked.withhold(rooted, reason),
+                Judged::Left => {}
+            }
+        } else if let Some(kind) = special_kind(&metadata) {
+            // Never opened: a pipe without a writer would block the capture, and a device has no content
+            // that is the user's. What the rules exclude stays excluded.
+            match Judged::from(policy.file(&rooted, 0)) {
+                Judged::Held => walked.withhold(rooted, WithheldReason::SpecialFile(kind)),
+                Judged::Withheld(reason) => walked.withhold(rooted, reason),
+                Judged::Left => {}
             }
         }
-        // Anything else — a symlink, a socket, a device — waits for tickets 48 and 49, which decide how
-        // a Snapshot says that it holds no content for a path.
+        // A symlink waits for ticket 49, which stores links as links.
     }
 
     Ok(())
 }
+
+/// What a walk does with a path, by the policy's verdict on it.
+enum Judged {
+    /// Its content is held: a file is read, a directory entered.
+    Held,
+    /// It is recorded as there, without its content, and why.
+    Withheld(WithheldReason),
+    /// The rules leave it out, which is the user's choice and no record of the Snapshot's.
+    Left,
+}
+
+impl From<Verdict<'_>> for Judged {
+    fn from(verdict: Verdict<'_>) -> Self {
+        match verdict {
+            Verdict::Captured => Self::Held,
+            Verdict::TooLarge { .. } => Self::Withheld(WithheldReason::TooLarge),
+            Verdict::Reserved => Self::Withheld(WithheldReason::ReservedName),
+            Verdict::Fenced(reason) => Self::Withheld(reason),
+            Verdict::Excluded(_) | Verdict::Pruned { .. } | Verdict::Secret(_) => Self::Left,
+        }
+    }
+}
+
+/// What kind of special file this is, if it is one.
+fn special_kind(metadata: &fs::Metadata) -> Option<SpecialKind> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+
+        let kind = metadata.file_type();
+        if kind.is_fifo() {
+            Some(SpecialKind::Fifo)
+        } else if kind.is_socket() {
+            Some(SpecialKind::Socket)
+        } else if kind.is_char_device() {
+            Some(SpecialKind::CharDevice)
+        } else if kind.is_block_device() {
+            Some(SpecialKind::BlockDevice)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// The mode a sidecar, or any regular file that is not executable, is held with.
+const REGULAR_MODE: u32 = 0o100_644;
 
 /// The tree mode for a file.
 ///
@@ -1419,8 +1987,6 @@ fn collect_files(
 /// bit comes from `stat`; elsewhere there is nothing to read it from, and ticket 49 is where a Windows
 /// Snapshot learns to carry the bit forward from the Snapshot before it.
 fn mode_for(metadata: &fs::Metadata) -> u32 {
-    const REGULAR: u32 = 0o100_644;
-
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1428,7 +1994,7 @@ fn mode_for(metadata: &fs::Metadata) -> u32 {
         const EXECUTABLE: u32 = 0o100_755;
 
         if metadata.permissions().mode() & 0o111 == 0 {
-            REGULAR
+            REGULAR_MODE
         } else {
             EXECUTABLE
         }
@@ -1437,7 +2003,7 @@ fn mode_for(metadata: &fs::Metadata) -> u32 {
     #[cfg(not(unix))]
     {
         let _ = metadata;
-        REGULAR
+        REGULAR_MODE
     }
 }
 

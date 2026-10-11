@@ -55,6 +55,9 @@ pub struct DaemonConfig {
     /// How many directory watches all Roots together may hold, or `None` for the platform's own ceiling.
     /// A Root that would exceed it is reconciled periodically instead of watched (ticket 44).
     pub watch_ceiling: Option<usize>,
+    /// How long after an incomplete pass a Root is first passed over again, or `None` for
+    /// [`keepster_core::RETRY_AFTER`]. Only a test has reason to set it.
+    pub retry_after: Option<std::time::Duration>,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -112,7 +115,13 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     let ceiling = config
         .watch_ceiling
         .or_else(keepster_watch::default_ceiling);
-    let state = DaemonState::new(registry, config.config_path, config.store_base, ceiling);
+    let state = DaemonState::new(
+        registry,
+        config.config_path,
+        config.store_base,
+        ceiling,
+        config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
+    );
     // The daemon's first look at the Registry happens before any request is served, so that the start's
     // Reconciliation is told apart from the one a registration owes: a Root registered a moment later is
     // a Registry change, never the start.
@@ -221,6 +230,7 @@ impl DaemonState {
         config_path: Option<PathBuf>,
         store_base: PathBuf,
         watch_ceiling: Option<usize>,
+        retry_after: std::time::Duration,
     ) -> Self {
         Self {
             started: Instant::now(),
@@ -231,7 +241,7 @@ impl DaemonState {
                 std::env::home_dir(),
                 store_base,
             ))),
-            runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling)),
+            runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling, retry_after)),
             events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
             announced: Arc::new(Mutex::new(events::Announced::default())),
         }

@@ -597,3 +597,92 @@ fn a_reconciliation_that_could_not_happen_is_retried_as_one() {
         ]
     );
 }
+
+/// Feed one event, returning what it asked for.
+fn step(state: PolicyState, event: PolicyEvent, at: u64) -> (Vec<Action>, PolicyState) {
+    decide(state, event, secs(at))
+}
+
+#[test]
+fn an_incomplete_pass_is_retried_with_a_doubling_backoff_until_one_is_complete() {
+    // ADR 0004: a carried-forward entry looks unchanged and no second event is coming, so the Root is
+    // passed over again — whatever Triggers are active, as Reconciliation is.
+    let quiet = Triggers {
+        watcher: false,
+        ..defaults()
+    };
+    let state = PolicyState::new(quiet, Duration::ZERO);
+
+    let (actions, state) = step(state, PolicyEvent::PassOutcome { incomplete: true }, 0);
+    assert_eq!(actions, [Action::ArmTimer { at: secs(30) }]);
+
+    let (actions, state) = step(state, PolicyEvent::Timer, 30);
+    assert!(
+        matches!(
+            &actions[..],
+            [Action::Capture {
+                trigger: Trigger::Retry,
+                ..
+            }]
+        ),
+        "{actions:?}"
+    );
+
+    let (actions, state) = step(state, PolicyEvent::PassOutcome { incomplete: true }, 31);
+    assert!(actions.is_empty(), "the capture is still being reported");
+    let (actions, state) = step(state, PolicyEvent::CaptureUnchanged, 31);
+    assert_eq!(
+        actions,
+        [Action::ArmTimer { at: secs(91) }],
+        "still incomplete: twice as long"
+    );
+
+    let (_, state) = step(state, PolicyEvent::Timer, 91);
+    let (_, state) = step(state, PolicyEvent::PassOutcome { incomplete: false }, 92);
+    let (actions, _) = step(state, PolicyEvent::CaptureUnchanged, 92);
+    assert!(
+        actions.is_empty(),
+        "a complete pass owes nothing: {actions:?}"
+    );
+}
+
+#[test]
+fn the_retry_backoff_stops_doubling_at_an_hour_and_starts_again_after_a_complete_pass() {
+    let quiet = Triggers {
+        watcher: false,
+        ..defaults()
+    };
+    let mut state = PolicyState::new(quiet, Duration::ZERO);
+    let mut now = 0;
+    let mut waits = Vec::new();
+    for _ in 0..10 {
+        let (_, next) = step(state, PolicyEvent::PassOutcome { incomplete: true }, now);
+        let (actions, next) = step(next, PolicyEvent::CaptureUnchanged, now);
+        let [Action::ArmTimer { at }] = actions[..] else {
+            panic!("a retry is armed: {actions:?}");
+        };
+        waits.push(at.as_secs() - now);
+        now = at.as_secs();
+        let (_, next) = step(next, PolicyEvent::Timer, now);
+        state = next;
+    }
+    assert_eq!(waits, [30, 60, 120, 240, 480, 960, 1920, 3600, 3600, 3600]);
+
+    let (_, state) = step(state, PolicyEvent::PassOutcome { incomplete: false }, now);
+    let (_, state) = step(state, PolicyEvent::CaptureUnchanged, now);
+    let (actions, _) = step(
+        state,
+        PolicyEvent::PassOutcome { incomplete: true },
+        now + 1,
+    );
+    assert_eq!(actions, [Action::ArmTimer { at: secs(now + 31) }]);
+}
+
+#[test]
+fn the_daemon_can_shorten_the_first_retry() {
+    let state = PolicyState::new(defaults(), Duration::ZERO).retrying_after(secs(1));
+
+    let (actions, _) = step(state, PolicyEvent::PassOutcome { incomplete: true }, 0);
+
+    assert_eq!(actions, [Action::ArmTimer { at: secs(1) }]);
+}

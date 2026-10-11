@@ -126,7 +126,20 @@ pub enum PolicyEvent {
     Settings(Triggers),
     /// The daemon is stopping: no further change is accepted, and what is pending is captured now.
     Shutdown,
+    /// A pass over the Root finished — whoever asked for it — and either read everything it meant to or
+    /// did not. One that did not is retried, with a backoff that doubles while passes stay incomplete
+    /// and starts again after one that is complete (ADR 0004). Reported before the capture's own outcome.
+    PassOutcome {
+        /// Whether something it meant to read could not be read.
+        incomplete: bool,
+    },
 }
+
+/// How long after an incomplete pass the Root is passed over again, at first.
+pub const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// The longest the backoff between retries grows to.
+pub const RETRY_CEILING: Duration = Duration::from_secs(60 * 60);
 
 /// What the daemon should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +182,19 @@ pub struct PolicyState {
     waiting_for_lock: bool,
     /// Whether the daemon is stopping.
     stopping: bool,
+    /// The first wait before an incomplete pass is retried.
+    retry_after: Duration,
+    /// The retry owed after an incomplete pass, if one is.
+    retry: Option<Retry>,
+}
+
+/// A pass owed because the last one was incomplete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Retry {
+    /// When it is due.
+    at: Duration,
+    /// How long it waited, which the next one doubles.
+    backoff: Duration,
 }
 
 impl PolicyState {
@@ -185,7 +211,16 @@ impl PolicyState {
             reconcile: false,
             waiting_for_lock: false,
             stopping: false,
+            retry_after: RETRY_AFTER,
+            retry: None,
         }
+    }
+
+    /// This policy, retrying an incomplete pass first after `first` rather than [`RETRY_AFTER`] — which
+    /// only a test has reason to want.
+    pub fn retrying_after(mut self, first: Duration) -> Self {
+        self.retry_after = first;
+        self
     }
 
     /// Whether a stopping Root has nothing left to capture, so the daemon may finish stopping it.
@@ -271,6 +306,20 @@ pub fn decide(
             state.settings = settings;
         }
         PolicyEvent::Shutdown => state.stopping = true,
+        PolicyEvent::PassOutcome { incomplete } => {
+            state.retry = (incomplete && !state.stopping).then(|| {
+                let backoff = state.retry.map_or(state.retry_after, |retry| {
+                    // Never below the first wait, which a test may set past the ceiling.
+                    (retry.backoff * 2)
+                        .min(RETRY_CEILING)
+                        .max(state.retry_after)
+                });
+                Retry {
+                    at: now + backoff,
+                    backoff,
+                }
+            });
+        }
     }
 
     let actions = due(&mut state, now);
@@ -342,6 +391,9 @@ fn due(state: &mut PolicyState, now: Duration) -> Vec<Action> {
         state
             .next_periodic
             .map(|at| (at.max(allowed), Trigger::Periodic)),
+        state
+            .retry
+            .map(|retry| (retry.at.max(allowed), Trigger::Retry)),
     ];
 
     match candidates.into_iter().flatten().min_by_key(|(at, _)| *at) {

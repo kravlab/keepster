@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
 use keepster_api::{
     Change, Entries, Entry, EntryKind, ErrorCode, Event, Problem, Reconciled, Snapshot, Timeline,
-    Withheld,
+    Withheld, WithheldReason,
 };
 use keepster_app::config::Effective;
 use keepster_app::snapshots::{self, CaptureError, StoreLocation};
@@ -126,9 +126,6 @@ pub(crate) async fn reconcile(
     });
 
     let pass = run_pass(&state, id, Trigger::Reconcile, verify, false)?;
-    state
-        .runtimes
-        .passed(id, Trigger::Reconcile, pass.coarse_mtime);
 
     Ok(Json(Reconciled {
         snapshot: pass.snapshot.as_ref().map(describe_captured),
@@ -192,8 +189,24 @@ fn run_pass(
         // lags, every read catches it up, and so does the next start.
         tracing::warn!(root = %id, %reason, "the history index lags");
     }
+    report_unrecognized(id, &pass);
+    state
+        .runtimes
+        .passed(id, trigger, pass.coarse_mtime, pass.incomplete > 0);
 
     Ok(pass)
+}
+
+/// Say what of the previous Snapshot's own records a pass over the Root `id` could not carry forward,
+/// because a later build wrote them: never dropped in silence.
+pub(crate) fn report_unrecognized(id: RootId, pass: &keepster_store::Pass) {
+    if !pass.unrecognized.is_empty() {
+        tracing::warn!(
+            root = %id,
+            records = ?pass.unrecognized,
+            "the previous Snapshot's metadata holds records this build does not know; they were not carried forward"
+        );
+    }
 }
 
 /// Tell every open event stream that the Root `id` has a new Snapshot.
@@ -204,7 +217,7 @@ pub(crate) fn announce(state: &DaemonState, id: RootId, captured: &CapturedSnaps
     state.publish(Event::SnapshotCreated {
         root: id.to_string(),
         snapshot: captured.id.to_string(),
-        incomplete: !captured.unreadable.is_empty(),
+        incomplete: !captured.incomplete.is_empty(),
         changed_paths: captured.changed_paths.as_ref().ok().copied(),
     });
 }
@@ -372,7 +385,7 @@ pub(crate) struct EntriesParameters {
     tag = "snapshots",
     params(SnapshotAddress, EntriesParameters),
     responses(
-        (status = 200, description = "The paths the Snapshot holds under the directory, in byte order.", body = Entries),
+        (status = 200, description = "The paths the Snapshot holds under the directory, in byte order — with those it names without holding them: Withheld, or omitted from an incomplete Snapshot.", body = Entries),
         (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such Root, Snapshot or path.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The Root is unavailable, or the path is not a directory.", body = Problem, content_type = "application/problem+json"),
@@ -402,9 +415,18 @@ pub(crate) async fn entries(
 
     let found =
         blocking(move || snapshots::entries(&location, snapshot, &directory, depth)).await?;
+    if !found.unrecognized.is_empty() {
+        tracing::warn!(
+            root = %id,
+            %snapshot,
+            records = ?found.unrecognized,
+            "the Snapshot's metadata holds records this build does not know; they were skipped"
+        );
+    }
 
     Ok(Json(Entries {
         entries: found
+            .entries
             .into_iter()
             .map(|entry| Entry {
                 path: entry.path.as_str().to_owned(),
@@ -412,12 +434,17 @@ pub(crate) async fn entries(
                     keepster_store::EntryKind::File => EntryKind::File,
                     keepster_store::EntryKind::Directory => EntryKind::Dir,
                     keepster_store::EntryKind::Symlink => EntryKind::Symlink,
+                    keepster_store::EntryKind::Withheld => EntryKind::Withheld,
+                    keepster_store::EntryKind::Omitted => EntryKind::Omitted,
                 },
                 size: entry.size,
                 mode: entry.mode,
                 binary: entry.binary,
+                withheld: entry.withheld.map(withheld_reason),
+                incomplete: entry.incomplete.map(|why| why.as_str().to_owned()),
             })
             .collect(),
+        unrecognized: found.unrecognized,
     }))
 }
 
@@ -457,7 +484,7 @@ pub(crate) struct ContentParameters {
             ("ETag" = String, description = "The tag that matched."),
         )),
         (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "No such Root, Snapshot or path.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root, Snapshot or path — or the path is Withheld in the Snapshot (`withheld`), which holds no content for it.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The Root is unavailable, or the path is not a file.", body = Problem, content_type = "application/problem+json"),
         (status = 416, description = "The range lies outside the content. No body.", headers(
             ("Content-Range" = String, description = "The content's size, as `bytes */size`."),
@@ -559,18 +586,18 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
         segment: captured.segment.as_str().to_owned(),
         taken_at: taken_at(captured.id),
         trigger: captured.trigger.as_str().to_owned(),
-        incomplete: !captured.unreadable.is_empty(),
+        incomplete: !captured.incomplete.is_empty(),
         omitted: captured
-            .unreadable
+            .incomplete
             .iter()
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|incomplete| incomplete.path.as_str().to_owned())
             .collect(),
         withheld: captured
             .withheld
             .iter()
             .map(|withheld| Withheld {
                 path: withheld.path.as_str().to_owned(),
-                reason: withheld.reason.as_str().to_owned(),
+                why: withheld_reason(withheld.reason),
             })
             .collect(),
         changed_paths: captured.changed_paths.clone().ok(),
@@ -606,6 +633,14 @@ pub(crate) fn snapshot_not_found(segment: &str) -> ProblemResponse {
     .with_detail("snapshot", segment)
 }
 
+/// Why a path is Withheld, as the wire spells it.
+fn withheld_reason(reason: keepster_store::WithheldReason) -> WithheldReason {
+    WithheldReason {
+        reason: reason.as_str().to_owned(),
+        kind: reason.kind().map(|kind| kind.as_str().to_owned()),
+    }
+}
+
 /// A store failure as the one response shape every endpoint uses.
 pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
     match error {
@@ -626,6 +661,20 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
             error.to_string(),
         )
         .with_detail("path", path.as_str()),
+        StoreError::Withheld { ref path, reason } => {
+            let problem = ProblemResponse::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::Withheld,
+                error.to_string(),
+            )
+            .with_detail("path", path.as_str());
+            let WithheldReason { reason, kind } = withheld_reason(reason);
+            let problem = problem.with_detail("reason", reason);
+            match kind {
+                Some(kind) => problem.with_detail("kind", kind),
+                None => problem,
+            }
+        }
         StoreError::Git { .. }
         | StoreError::Index { .. }
         | StoreError::IndexUnusable { .. }

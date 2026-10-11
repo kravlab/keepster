@@ -34,7 +34,7 @@ use crate::snapshots::{announce, capture_problem, parse_path, prepare, store_pro
     responses(
         (status = 200, description = "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place; a replaced file keeps its permission bits with the Snapshot's executable bit applied, and a new one starts from the umask. A file that changed between the plan and its write fails without being touched.", body = Restored),
         (status = 400, description = "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, which the blanket force never gives), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "No such Root, Snapshot or path in the Snapshot.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root, Snapshot or path in the Snapshot — or a path asked for by name is Withheld there (`withheld`), so there is nothing to restore.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The Root is unavailable, or its configuration has never been valid.", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
@@ -289,6 +289,7 @@ fn issue(issue: &Issue) -> RestoreIssue {
             wire.links_outside = Some(*outside);
         }
         Issue::OverwriteUnrecoverable { why } => wire.why = Some(why.as_str().to_owned()),
+        Issue::Withheld { reason } => wire.why = Some(reason.as_str().to_owned()),
         Issue::NameCollision { with } => wire.paths = names(with),
         Issue::NameCase { existing } => wire.existing = Some(existing.clone()),
         Issue::ParentMissing | Issue::NameInvalid | Issue::TypeConflict => {}

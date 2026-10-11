@@ -152,17 +152,18 @@ pub struct Snapshot {
     /// A Snapshot is taken anyway — an honest partial Snapshot beats no Snapshot (ticket 05) — so every
     /// shape that returns one has to be able to say that it is not whole.
     pub incomplete: bool,
-    /// The paths that could not be read, each one the reason this Snapshot is incomplete.
+    /// The Root-relative paths that were meant to be captured and are not held as they are, each one
+    /// the reason this Snapshot is incomplete.
     ///
-    /// Named by the answer to a capture. The timeline carries the flag but not the list, which ticket
-    /// 48 makes a record of the Snapshot itself and `entries` the place to read it.
+    /// Named by the answer to a capture. The timeline carries the flag but not the list: each is a
+    /// record of the Snapshot itself, which `entries` lists with why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
-    /// Files present in the Working Tree whose content this Snapshot deliberately does not hold, and
+    /// Paths present in the Working Tree whose content this Snapshot deliberately does not hold, and
     /// why. Withholding is policy, not failure, so it does not make a Snapshot incomplete.
     ///
-    /// Named by the answer to a capture. Ticket 48 makes each one a record of the Snapshot itself, which
-    /// `entries` will then list.
+    /// Named by the answer to a capture; each is also a record of the Snapshot itself, which `entries`
+    /// lists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub withheld: Vec<Withheld>,
     /// How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.
@@ -182,12 +183,24 @@ pub struct Snapshot {
 pub struct Withheld {
     /// Where it is, relative to the Root.
     pub path: String,
-    /// Why its content was not held: `too_large` in this version.
+    /// Why its content was not held, and for a special file what kind it is.
+    #[serde(flatten)]
+    pub why: WithheldReason,
+}
+
+/// Why a Snapshot holds no content for a path that is there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WithheldReason {
+    /// `too_large`, `special_file`, `reserved_name` (the directory's own `.git`, or `.keepster-meta` at
+    /// its top), `unrepresentable_path`, `other_root`, `history_store` or `cloud_placeholder`.
     ///
-    /// A string rather than a closed enum, for the reason ADR 0005 gives for error codes: ticket 48
-    /// adds `special_file`, `reserved_name`, `unrepresentable_path` and the rest inside `/v1`, so a
-    /// client must accept a reason it does not know.
+    /// A string rather than a closed enum, for the reason ADR 0005 gives for error codes: the set grows
+    /// inside `/v1`, so a client must accept a reason it does not know.
     pub reason: String,
+    /// With `special_file`: `fifo`, `socket`, `char_device` or `block_device` — an open set too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// Whether one path is captured, and which rule decided it — the answer of `GET …/explain`.
@@ -858,6 +871,11 @@ pub struct Timeline {
 pub struct Entries {
     /// One per path, in byte order of the path.
     pub entries: Vec<Entry>,
+    /// Records of the Snapshot's own metadata this build does not know, as they are written — skipped,
+    /// and reported, because a later build recorded facts this one cannot show. Absent when there are
+    /// none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unrecognized: Vec<String>,
 }
 
 /// One path a Snapshot holds.
@@ -879,6 +897,15 @@ pub struct Entry {
     /// they are (ticket 10). Absent for anything but a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<bool>,
+    /// With `withheld`: why the Snapshot holds no content for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<WithheldReason>,
+    /// Why it is not held as it was when the Snapshot was taken, which makes the Snapshot incomplete:
+    /// `unstable` (it kept changing while read) or the read error's symbolic name — `eacces` on Unix,
+    /// `sharing_violation` on Windows. With `omitted` nothing is held; on a file, its previous version
+    /// was kept. An open set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete: Option<String>,
 }
 
 /// What kind of thing a Snapshot holds at a path.
@@ -892,6 +919,10 @@ pub enum EntryKind {
     Dir,
     /// A symbolic link, held as a link.
     Symlink,
+    /// There when the Snapshot was taken, and deliberately not held; `withheld` says why.
+    Withheld,
+    /// Meant to be held and not read, with no earlier version to keep; `incomplete` says why.
+    Omitted,
 }
 
 /// A failure, in the one shape every endpoint uses.

@@ -64,6 +64,7 @@ error_codes! {
     FormatInvalid = "format_invalid": "`format` is neither `json` nor `unified`.",
     ConfirmationRequired = "confirmation_required": "A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.",
     ResolutionInvalid = "resolution_invalid": "A resolution sets no answer or more than one, or names a new name that is not a bare name.",
+    Withheld = "withheld": "The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.",
 }
 
 impl ErrorCode {

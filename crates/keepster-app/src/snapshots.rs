@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use keepster_core::{CapturePolicy, RootId, RootPath, SnapshotId};
 use keepster_store::{
-    CaptureRequest, Comparison, Depth, DiffTarget, Entry, HistoryStore, Pass, RegistryError,
+    CaptureRequest, Comparison, Depth, DiffTarget, HistoryStore, Listing, Pass, RegistryError,
     RootRecord, StoreError, TimelinePage, TimelineQuery,
 };
 
@@ -142,7 +142,7 @@ pub fn entries(
     snapshot: SnapshotId,
     directory: &RootPath,
     depth: Depth,
-) -> Result<Vec<Entry>, StoreError> {
+) -> Result<Listing, StoreError> {
     match open_for_reading(location)? {
         Some(store) => store.entries(snapshot, directory, depth),
         None => Err(StoreError::SnapshotNotFound(snapshot)),

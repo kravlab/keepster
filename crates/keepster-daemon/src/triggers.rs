@@ -45,6 +45,8 @@ pub(crate) struct Runtimes {
     /// Held while a Root arms its watcher and checks it against the ceiling, so that Roots arming at
     /// the same moment — every Root, at the daemon's start — count each other's watches.
     arming: tokio::sync::Mutex<()>,
+    /// How long after an incomplete pass a Root is first passed over again.
+    retry_after: Duration,
     /// Whether the daemon's first look at the Registry is done. A runtime started by that look owes the
     /// start's Reconciliation only if the Root asks for one; any runtime started later owes one always,
     /// because a Root registered, moved or come back is exactly the change ADR 0009 queues it for.
@@ -109,11 +111,12 @@ enum Message {
 
 impl Runtimes {
     /// No runtimes yet, under a daemon-wide watch ceiling where the platform has one.
-    pub(crate) fn new(ceiling: Option<usize>) -> Self {
+    pub(crate) fn new(ceiling: Option<usize>, retry_after: Duration) -> Self {
         Self {
             runtimes: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             ceiling,
+            retry_after,
             arming: tokio::sync::Mutex::new(()),
             settled: AtomicBool::new(false),
         }
@@ -175,10 +178,19 @@ impl Runtimes {
     }
 
     /// Record what a pass over the Root `id` saw, when the pass ran outside its runtime — one someone asked
-    /// for.
-    pub(crate) fn passed(&self, id: RootId, trigger: Trigger, coarse_mtime: bool) {
+    /// for — and whether it owes a retry.
+    pub(crate) fn passed(
+        &self,
+        id: RootId,
+        trigger: Trigger,
+        coarse_mtime: bool,
+        incomplete: bool,
+    ) {
         if let Some(runtime) = self.runtimes().get(&id) {
             record_pass(&mut lock(&runtime.activity), trigger, coarse_mtime);
+            let _ = runtime
+                .inbox
+                .send(Message::Event(PolicyEvent::PassOutcome { incomplete }));
         }
     }
 
@@ -320,7 +332,8 @@ async fn run(
     let mut watching = effective.triggers.watcher;
     let mut watcher = watch(&state, &record, &rules, watching, &outbox, &activity).await;
     let mut settings = settings_for(&effective, lock(&activity).watch);
-    let mut policy = PolicyState::new(settings, origin.elapsed());
+    let mut policy =
+        PolicyState::new(settings, origin.elapsed()).retrying_after(state.runtimes.retry_after);
     let mut deadline: Option<Instant> = None;
     // A daemon that was down saw nothing of what happened meanwhile, and neither did one that just
     // learned of this Root, so the first act is a pass over the whole Root (ticket 02) — unless the user
@@ -383,8 +396,13 @@ async fn run(
         };
 
         // A Root nothing captures automatically is passed over only when someone asks
-        // (`keepster reconcile`): an automatic Snapshot would contradict its `capture_unavailable`.
-        if matches!(event, PolicyEvent::Reconcile) && !lock(&activity).automatic {
+        // (`keepster reconcile`): an automatic Snapshot would contradict its `capture_unavailable`. Nor
+        // is a pass someone asked for retried there, for the same reason.
+        if matches!(
+            event,
+            PolicyEvent::Reconcile | PolicyEvent::PassOutcome { .. }
+        ) && !lock(&activity).automatic
+        {
             continue;
         }
         let (actions, decided) = decide(policy, event, origin.elapsed());
@@ -505,9 +523,16 @@ fn capture(
     });
 
     tokio::spawn(async move {
-        let (outcome, coarse_mtime) = captured.await.unwrap_or((PolicyEvent::CaptureFailed, None));
-        if let Some(coarse_mtime) = coarse_mtime {
+        let (outcome, passed) = captured.await.unwrap_or((PolicyEvent::CaptureFailed, None));
+        if let Some(Passed {
+            coarse_mtime,
+            incomplete,
+        }) = passed
+        {
             record_pass(&mut lock(&activity), trigger, coarse_mtime);
+            // Before the capture's own outcome, so the retry it owes is armed when the policy next asks
+            // what is due.
+            let _ = outbox.send(Message::Event(PolicyEvent::PassOutcome { incomplete }));
         }
         let busy = outcome == PolicyEvent::LockBusy;
         let _ = outbox.send(Message::Event(outcome));
@@ -528,9 +553,17 @@ fn capture(
     });
 }
 
-/// One automatic capture, as the event that reports how it went — with what the pass saw of the
-/// filesystem's mtimes, when a pass ran.
-fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEvent, Option<bool>) {
+/// What a pass that ran saw, beyond whether it wrote a Snapshot.
+struct Passed {
+    /// Whether every mtime fell on a whole second.
+    coarse_mtime: bool,
+    /// Whether something it meant to read could not be read.
+    incomplete: bool,
+}
+
+/// One automatic capture, as the event that reports how it went — with what the pass saw, when a pass
+/// ran.
+fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEvent, Option<Passed>) {
     let now = crate::roots::now();
     let (root, location, loaded) = match crate::snapshots::prepare(state, id) {
         Ok(prepared) => prepared,
@@ -560,6 +593,7 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
     };
     match snapshots::pass(&root, &location, &loaded.policy, &request) {
         Ok(pass) => {
+            crate::snapshots::report_unrecognized(id, &pass);
             if let Some(reason) = &pass.index_lag {
                 tracing::warn!(root = %id, %reason, "the history index lags");
             }
@@ -571,7 +605,13 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
                 }
                 None => PolicyEvent::CaptureUnchanged,
             };
-            (event, Some(pass.coarse_mtime))
+            (
+                event,
+                Some(Passed {
+                    coarse_mtime: pass.coarse_mtime,
+                    incomplete: pass.incomplete > 0,
+                }),
+            )
         }
         Err(error) => {
             tracing::warn!(root = %id, %trigger, %error, "an automatic capture failed");

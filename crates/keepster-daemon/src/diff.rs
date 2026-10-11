@@ -147,9 +147,9 @@ pub(crate) async fn diff(
             to: to.name(),
             files: comparison.files.into_iter().map(wire).collect(),
             omitted: comparison
-                .unreadable
+                .incomplete
                 .iter()
-                .map(|path| path.to_string_lossy().into_owned())
+                .map(|incomplete| incomplete.path.as_str().to_owned())
                 .collect(),
         })
         .into_response(),

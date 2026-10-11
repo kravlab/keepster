@@ -503,7 +503,13 @@ fn a_working_file_that_cannot_be_read_is_named() {
         .diff(before, &fixture.working(), None)
         .expect("a diff");
 
-    assert_eq!(comparison.unreadable, [fixture.root.join("locked.txt")]);
+    assert_eq!(
+        comparison.incomplete,
+        [keepster_store::IncompletePath {
+            path: RootPath::parse("locked.txt").expect("a path"),
+            why: keepster_core::Incomplete::Error("eacces".to_owned()),
+        }]
+    );
     assert!(
         comparison.files.is_empty(),
         "its last content is kept, as a capture keeps it: {:?}",

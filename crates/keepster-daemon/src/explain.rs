@@ -82,6 +82,7 @@ pub(crate) async fn explain(
             None,
         ),
         Verdict::Reserved => (withheld("reserved_name"), None, None),
+        Verdict::Fenced(reason) => (withheld(reason.as_str()), None, None),
         Verdict::Excluded(rule) => ((Decision::Excluded, None), Some(*rule), None),
         Verdict::Pruned { ancestor, rule } => (
             (Decision::Pruned, None),
