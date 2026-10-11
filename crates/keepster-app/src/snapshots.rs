@@ -152,6 +152,11 @@ pub fn newest(location: &StoreLocation) -> Result<Option<SnapshotId>, StoreError
     Ok(page.snapshots.first().map(|snapshot| snapshot.id))
 }
 
+/// When the last Maintenance Pass over a Root's history finished, if it is recorded (ticket 52).
+pub fn maintained_at(location: &StoreLocation) -> Option<SystemTime> {
+    HistoryStore::maintained_at(&location.store)
+}
+
 /// One Retention pass over a Root's history at `now` under `ladder` (ticket 51): what survives is
 /// planned from the Segments as they are, and carried out. A Root never captured has nothing to keep.
 ///

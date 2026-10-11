@@ -366,6 +366,7 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
         [
             "config.invalid",
             "config.reloaded",
+            "maintenance.completed",
             "restore.completed",
             "resync",
             "retention.completed",

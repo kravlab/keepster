@@ -600,3 +600,32 @@ fn the_retention_ladder_is_the_users_to_set_and_must_be_one() {
         );
     }
 }
+
+#[test]
+fn the_git_maintenance_runs_with_is_named_at_the_top_of_the_global_file_alone() {
+    let named = GlobalConfig::parse(
+        Path::new(GLOBAL),
+        "[git]\npath = \"/opt/git/bin/git\"\n",
+        None,
+    );
+    assert!(named.is_ok(), "{named:?}");
+
+    let relative = GlobalConfig::parse(Path::new(GLOBAL), "[git]\npath = \"git\"\n", None)
+        .expect_err("a relative path would be looked up");
+    assert!(
+        relative.message.contains("absolute"),
+        "{}",
+        relative.message
+    );
+
+    let in_a_block = GlobalConfig::parse(
+        Path::new(GLOBAL),
+        "[root.01K6DX3QR7M2V8C9WZ4PN5YQ1A.git]\npath = \"/usr/bin/git\"\n",
+        None,
+    );
+    assert!(in_a_block.is_err(), "one daemon runs one git");
+    assert!(
+        RootConfig::parse(Path::new(".keepster.toml"), "[git]\npath = \"/tmp/evil\"\n").is_err(),
+        "a Root's own file never chooses what the daemon runs"
+    );
+}

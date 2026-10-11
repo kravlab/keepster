@@ -4,13 +4,13 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{ErrorCode, Problem, RegisterRoot, Root};
+use keepster_api::{ErrorCode, Problem, RegisterRoot, Reported, Root, Status};
 use serde::de::DeserializeOwned;
 
 use crate::client::{ClientError, DaemonClient, Response};
 use crate::command::{MoveArgs, UnwatchArgs, WatchArgs};
 use crate::exit;
-use crate::render::write_roots;
+use crate::render::{write_git, write_roots};
 
 /// Register a directory as a Watched Root.
 pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
@@ -28,7 +28,8 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
     };
 
     let body = serde_json::json!({ "path": path.to_string_lossy() });
-    let answer = DaemonClient::new(control_path)
+    let client = DaemonClient::new(control_path);
+    let answer = client
         .post(
             "/v1/roots",
             &serde_json::to_vec(&body).expect("a JSON body"),
@@ -36,9 +37,34 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
         .await;
 
     match answered::<Root>(answer) {
-        Ok(root) => print_roots(std::slice::from_ref(&root)),
+        Ok(root) => {
+            let code = print_roots(std::slice::from_ref(&root));
+            notice_unmaintained(&client).await;
+            code
+        }
         Err(code) => code,
     }
+}
+
+/// Say, without failing the command, that the history just started will never be reclaimed until the
+/// daemon has a `git` — the notice that reaches someone who installed without a package manager to
+/// declare the prerequisite (ticket 11). Whatever goes wrong asking is left to `status`.
+async fn notice_unmaintained(client: &DaemonClient) {
+    let Ok(response) = client.get("/v1/status").await else {
+        return;
+    };
+    let Ok(status) = serde_json::from_slice::<Status>(&response.body) else {
+        return;
+    };
+    if status.daemon.maintenance != Reported::Unavailable {
+        return;
+    }
+
+    let mut notice = b"keepster: store maintenance is unavailable\n".to_vec();
+    let shell_git = crate::status::shell_git();
+    write_git(&status.daemon.git, shell_git.as_deref(), &mut notice)
+        .expect("writing to a buffer in memory");
+    let _ = io::stderr().lock().write_all(&notice);
 }
 
 /// List every Watched Root.

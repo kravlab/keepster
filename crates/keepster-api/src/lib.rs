@@ -78,9 +78,49 @@ pub struct DaemonStatus {
     /// Whether coverage survives logout. Filled by ticket 61, and on macOS it reads as unavailable
     /// because a LaunchAgent dies at logout.
     pub linger: Reported,
-    /// Whether store maintenance can run at all, which depends on the external `git`. Filled by
-    /// ticket 52.
+    /// Whether store maintenance can run at all, which depends on the external `git` (ticket 52). While
+    /// it cannot, nothing Retention removes is reclaimed, and `keepster status` exits non-zero.
     pub maintenance: Reported,
+    /// The external `git` maintenance runs with, or why there is none.
+    pub git: GitStatus,
+}
+
+/// The external `git` store maintenance runs with (ticket 52). Capture never needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GitStatus {
+    /// Where it is: found in configuration (`git.path`) or a stable place — never an inherited `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The version it reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The oldest version maintenance runs with.
+    pub minimum: String,
+    /// Why maintenance cannot run: `missing`, `macos_stub`, `not_executable`, `too_old` or `failed`. An
+    /// open set, as error codes are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What running it said, for `not_executable` and `failed`: its error, word for word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// How to install one, while maintenance cannot run. Keepster never runs it itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<InstallHint>,
+}
+
+/// How a person installs `git` here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct InstallHint {
+    /// The command for this platform's package manager, when it is recognised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// What to know besides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Where to read more.
+    pub link: String,
 }
 
 /// A row whose owning behaviour has not been built yet.
@@ -94,6 +134,10 @@ pub struct DaemonStatus {
 pub enum Reported {
     /// This build cannot determine the fact yet.
     Unknown,
+    /// It is in place.
+    Available,
+    /// It is not, and a field beside it says why.
+    Unavailable,
 }
 
 /// A Watched Root, as both the registry endpoints and `status` serve it.
@@ -802,6 +846,12 @@ pub enum Event {
         /// How many Snapshots are gone.
         removed_snapshots: u64,
     },
+    /// A Maintenance Pass reclaimed what nothing references any more and packed the rest (ticket 52).
+    #[serde(rename = "maintenance.completed")]
+    MaintenanceCompleted {
+        /// The Root.
+        root: String,
+    },
     /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
     /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
     #[serde(rename = "resync")]
@@ -821,6 +871,7 @@ impl Event {
             Self::ConfigInvalid { .. } => "config.invalid",
             Self::RestoreCompleted { .. } => "restore.completed",
             Self::RetentionCompleted { .. } => "retention.completed",
+            Self::MaintenanceCompleted { .. } => "maintenance.completed",
             Self::Resync => "resync",
         }
     }
@@ -959,7 +1010,8 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<u32>,
     /// Whether the content is binary by git's rule. A display flag only: binary files are stored as
-    /// they are (ticket 10). Absent for anything but a file.
+    /// they are (ticket 10). Absent for anything but a file, and for a packed file over a megabyte,
+    /// which would have to be read whole to tell (ticket 52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<bool>,
     /// With `withheld`: why the Snapshot holds no content for it.
@@ -1077,6 +1129,7 @@ mod tests {
                 thinned_segments: 2,
                 removed_snapshots: 30,
             },
+            Event::MaintenanceCompleted { root: root() },
             Event::Resync,
         ] {
             let serialised = serde_json::to_value(&event).expect("JSON");

@@ -69,8 +69,8 @@ struct Options {
     watch_ceiling: Option<usize>,
     /// The first wait before an incomplete pass is retried.
     retry_after: Option<Duration>,
-    /// How Retention is paced.
-    retention: Option<keepster_daemon::RetentionTiming>,
+    /// How Retention and maintenance are paced.
+    housekeeping: Option<keepster_daemon::HousekeepingTiming>,
 }
 
 impl Harness {
@@ -105,17 +105,17 @@ impl Harness {
         Self::start_in(directory, options).await
     }
 
-    /// Start a daemon whose global configuration already holds `content` and which paces Retention by
-    /// `timing`, so a test sees a pass in moments rather than minutes.
-    pub async fn start_with_retention(
-        timing: keepster_daemon::RetentionTiming,
+    /// Start a daemon whose global configuration already holds `content` and which paces Retention and
+    /// maintenance by `timing`, so a test sees a pass in moments rather than minutes.
+    pub async fn start_with_housekeeping(
+        timing: keepster_daemon::HousekeepingTiming,
         content: &[u8],
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
         std::fs::write(resolved(directory.path()).join("config.toml"), content)
             .expect("the global configuration");
         let options = Options {
-            retention: Some(timing),
+            housekeeping: Some(timing),
             ..Options::default()
         };
 
@@ -166,7 +166,7 @@ impl Harness {
             config_path: Some(config_path),
             watch_ceiling: options.watch_ceiling,
             retry_after: options.retry_after,
-            retention: options.retention,
+            housekeeping: options.housekeeping,
         })
         .await
         .expect("the daemon binds its control channel");

@@ -14,10 +14,11 @@ mod content;
 mod diff;
 mod events;
 mod explain;
+mod git;
+mod housekeeping;
 mod openapi;
 mod problem;
 mod restore;
-mod retention;
 mod roots;
 mod snapshots;
 mod triggers;
@@ -39,8 +40,8 @@ use tokio::task::JoinHandle;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
+pub use housekeeping::HousekeepingTiming;
 pub use openapi::openapi_json;
-pub use retention::RetentionTiming;
 
 /// How to run a daemon instance.
 #[derive(Debug, Clone)]
@@ -60,9 +61,9 @@ pub struct DaemonConfig {
     /// How long after an incomplete pass a Root is first passed over again, or `None` for
     /// [`keepster_core::RETRY_AFTER`]. Only a test has reason to set it.
     pub retry_after: Option<std::time::Duration>,
-    /// How Retention is paced, or `None` for [`RetentionTiming::default`]. Only a test has reason to set
-    /// it.
-    pub retention: Option<RetentionTiming>,
+    /// How Retention and maintenance are paced, or `None` for [`HousekeepingTiming::default`]. Only a
+    /// test has reason to set it.
+    pub housekeeping: Option<HousekeepingTiming>,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -126,20 +127,24 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         config.store_base,
         ceiling,
         config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
-        config.retention.unwrap_or_default(),
+        config.housekeeping.unwrap_or_default(),
     );
     // The daemon's first look at the Registry happens before any request is served, so that the start's
     // Reconciliation is told apart from the one a registration owes: a Root registered a moment later is
     // a Registry change, never the start.
     let starting = state.clone();
-    tokio::task::spawn_blocking(move || configuration::reload(&starting))
-        .await
-        .map_err(io::Error::other)?;
+    tokio::task::spawn_blocking(move || {
+        configuration::reload(&starting);
+        // So that the first `status` already says whether stores can be maintained (ticket 11).
+        git::refresh(&starting);
+    })
+    .await
+    .map_err(io::Error::other)?;
     // Every file is read again whenever a request needs it; the tick is what makes a reload happen
     // when nothing asks, so that what follows from one — a Root queued for a full comparison, a
     // `Degraded` state — does not wait for a client.
     let ticker = tokio::spawn(configuration::reload_continually(state.clone()));
-    let retention = tokio::spawn(retention::run_continually(state.clone()));
+    let housekeeping = tokio::spawn(housekeeping::run_continually(state.clone()));
     let task = tokio::spawn(async move {
         let events = Arc::clone(&state.events);
         let stopping = async move {
@@ -152,13 +157,13 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         // window is captured before the daemon is done (ticket 05).
         ticker.abort();
         // A pass in flight holds a store's lock, which the last captures below need: it finishes first.
-        state.retention.stop();
-        if tokio::time::timeout(RETENTION_DRAIN, retention)
+        state.housekeeping.stop();
+        if tokio::time::timeout(HOUSEKEEPING_DRAIN, housekeeping)
             .await
             .is_err()
         {
             tracing::warn!(
-                "a Retention pass is still running; the daemon stops without waiting for it"
+                "a housekeeping pass is still running; the daemon stops without waiting for it"
             );
         }
         state.runtimes.stop().await;
@@ -172,9 +177,9 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     })
 }
 
-/// How long a stopping daemon waits for a Retention pass in flight, inside the service manager's stop
-/// timeout alongside the runtimes' own drain (ticket 05).
-const RETENTION_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a stopping daemon waits for a Retention or Maintenance Pass in flight, inside the service
+/// manager's stop timeout alongside the runtimes' own drain (ticket 05).
+const HOUSEKEEPING_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Bring every Root's derived index up to date before anything is served.
 ///
@@ -239,8 +244,10 @@ struct DaemonState {
     config: Arc<Mutex<keepster_app::config::Configuration>>,
     /// Every Root's automatic capture.
     runtimes: Arc<triggers::Runtimes>,
-    /// Which Roots owe a Retention pass.
-    retention: Arc<retention::Retention>,
+    /// Which Roots owe a Retention or Maintenance Pass.
+    housekeeping: Arc<housekeeping::Housekeeping>,
+    /// The `git` maintenance runs with, once it has been looked for.
+    git: Arc<Mutex<Option<git::Found>>>,
     /// What happened, for every open event stream and the ones that reconnect.
     events: Arc<events::EventBus>,
     /// What the event stream last said about each Root's state and configuration.
@@ -254,7 +261,7 @@ impl DaemonState {
         store_base: PathBuf,
         watch_ceiling: Option<usize>,
         retry_after: std::time::Duration,
-        retention: RetentionTiming,
+        housekeeping: HousekeepingTiming,
     ) -> Self {
         Self {
             started: Instant::now(),
@@ -266,7 +273,8 @@ impl DaemonState {
                 store_base,
             ))),
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling, retry_after)),
-            retention: Arc::new(retention::Retention::new(retention)),
+            housekeeping: Arc::new(housekeeping::Housekeeping::new(housekeeping)),
+            git: Arc::new(Mutex::new(None)),
             events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
             announced: Arc::new(Mutex::new(events::Announced::default())),
         }
@@ -316,11 +324,19 @@ impl DaemonState {
     ///
     /// Taken after the Registry wherever both are held, never before, so the two locks cannot
     /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes,
-    /// Retention's table of what each Root owes, then what the event stream announced and its buffer. A
-    /// panic while it is held loses nothing that matters: every file is compared with what was read
-    /// last, so the next resolution reads again whatever a panic left half-done.
+    /// housekeeping's table of what each Root owes, the `git` found, then what the event stream announced
+    /// and its buffer. A panic while it is held loses nothing that matters: every file is compared with
+    /// what was read last, so the next resolution reads again whatever a panic left half-done.
     fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// What the daemon knows of its `git`: taken with at most a store's lock held, and never while it
+    /// runs one.
+    fn git(&self) -> MutexGuard<'_, Option<git::Found>> {
+        self.git
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -413,17 +429,18 @@ async fn status(
     State(state): State<DaemonState>,
 ) -> Result<Json<Status>, problem::ProblemResponse> {
     let registered = roots::reported(&state, &state.registry())?;
+    let (maintenance, git) = git::report(&state);
 
     Ok(Json(Status {
         daemon: DaemonStatus {
             version: version_info(),
             pid: std::process::id(),
             uptime_seconds: state.started.elapsed().as_secs(),
-            // Reported as unknown until the tickets that can determine these land: ticket 61 for
-            // autostart and linger, ticket 52 for maintenance.
+            // Reported as unknown until ticket 61 can determine them.
             autostart: Reported::Unknown,
             linger: Reported::Unknown,
-            maintenance: Reported::Unknown,
+            maintenance,
+            git,
         },
         roots: registered,
     }))

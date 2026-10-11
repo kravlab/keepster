@@ -6,7 +6,9 @@
 //! non-zero code once Roots exist.
 
 use hyper::StatusCode;
-use keepster_api::{DaemonStatus, Reported, Root, RootState, Status, VersionInfo};
+use keepster_api::{
+    DaemonStatus, GitStatus, InstallHint, Reported, Root, RootState, Status, VersionInfo,
+};
 use keepster_cli::{ClientError, Response, outcome};
 
 fn status_with(roots: Vec<Root>) -> Status {
@@ -21,7 +23,15 @@ fn status_with(roots: Vec<Root>) -> Status {
             uptime_seconds: 0,
             autostart: Reported::Unknown,
             linger: Reported::Unknown,
-            maintenance: Reported::Unknown,
+            maintenance: Reported::Available,
+            git: GitStatus {
+                path: Some("/usr/bin/git".to_owned()),
+                version: Some("2.43.0".to_owned()),
+                minimum: "2.32.0".to_owned(),
+                reason: None,
+                detail: None,
+                install: None,
+            },
         },
         roots,
     }
@@ -56,7 +66,7 @@ fn served(status: &Status) -> Result<Response, ClientError> {
 
 #[test]
 fn an_empty_registry_is_success() {
-    let result = outcome(served(&status_with(Vec::new())), false);
+    let result = outcome(served(&status_with(Vec::new())), false, None);
 
     assert_eq!(result.code, 0);
     assert_eq!(result.stderr, None);
@@ -73,7 +83,7 @@ fn every_root_watching_is_success() {
         root("01BX5ZZKBKACTAV9WEVGEMMVRZ", RootState::Watching),
     ]);
 
-    let result = outcome(served(&status), false);
+    let result = outcome(served(&status), false, None);
 
     assert_eq!(result.code, 0);
     let printed = String::from_utf8_lossy(&result.stdout);
@@ -94,7 +104,7 @@ fn one_degraded_root_among_healthy_ones_is_reported() {
         root("01BX5ZZKBKACTAV9WEVGEMMVRZ", RootState::Degraded),
     ]);
 
-    let result = outcome(served(&status), false);
+    let result = outcome(served(&status), false, None);
 
     assert_eq!(result.code, 10);
     assert!(
@@ -110,7 +120,7 @@ fn an_unavailable_root_is_reported() {
         RootState::Unavailable,
     )]);
 
-    let result = outcome(served(&status), false);
+    let result = outcome(served(&status), false, None);
 
     assert_eq!(result.code, 10);
     assert!(
@@ -126,7 +136,7 @@ fn an_unreachable_daemon_names_the_control_channel_and_exits_three() {
         source: std::io::Error::from(std::io::ErrorKind::NotFound),
     };
 
-    let result = outcome(Err(error), false);
+    let result = outcome(Err(error), false, None);
 
     assert_eq!(result.code, 3);
     assert!(result.stdout.is_empty());
@@ -149,7 +159,7 @@ fn a_malformed_request_is_not_mistaken_for_a_dead_daemon() {
         .body(())
         .expect_err("an invalid method is refused by the builder");
 
-    let result = outcome(Err(ClientError::Request(broken)), false);
+    let result = outcome(Err(ClientError::Request(broken)), false, None);
 
     assert_eq!(result.code, 1);
     assert!(result.stdout.is_empty());
@@ -160,6 +170,7 @@ fn a_refused_request_reports_the_status_and_prints_nothing() {
     let result = outcome(
         answered(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
         false,
+        None,
     );
 
     assert_eq!(result.code, 1);
@@ -174,7 +185,7 @@ fn a_refused_request_reports_the_status_and_prints_nothing() {
 fn a_payload_this_build_cannot_read_is_still_shown_verbatim() {
     let body = br#"{"daemon":"a shape this version has never seen"}"#.to_vec();
 
-    let result = outcome(answered(StatusCode::OK, body.clone()), false);
+    let result = outcome(answered(StatusCode::OK, body.clone()), false, None);
 
     assert_eq!(
         result.stdout, body,
@@ -192,7 +203,7 @@ fn json_prints_the_payload_unchanged_including_fields_this_build_does_not_know()
     // A CLI that parsed and re-serialised would drop `invented_later` and normalise the spacing.
     let body = br#"{"daemon":{"api_version":"v1","invented_later":true},  "roots":[]}"#.to_vec();
 
-    let result = outcome(answered(StatusCode::OK, body.clone()), true);
+    let result = outcome(answered(StatusCode::OK, body.clone()), true, None);
 
     assert_eq!(result.stdout, body);
 }
@@ -204,12 +215,123 @@ fn json_and_human_forms_agree_on_the_exit_code() {
         RootState::Degraded,
     )]);
 
-    let as_json = outcome(served(&status), true);
-    let as_text = outcome(served(&status), false);
+    let as_json = outcome(served(&status), true, None);
+    let as_text = outcome(served(&status), false, None);
 
     assert_eq!(as_json.code, as_text.code);
     assert_ne!(
         as_json.stdout, as_text.stdout,
         "the two forms print differently even though they report the same health"
+    );
+}
+
+#[test]
+fn without_a_git_maintenance_runs_with_status_says_how_to_install_one_and_is_not_success() {
+    let mut status = status_with(vec![root(
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        RootState::Watching,
+    )]);
+    status.daemon.maintenance = Reported::Unavailable;
+    status.daemon.git = GitStatus {
+        path: None,
+        version: None,
+        minimum: "2.32.0".to_owned(),
+        reason: Some("missing".to_owned()),
+        detail: None,
+        install: Some(InstallHint {
+            command: Some("sudo apt install git".to_owned()),
+            note: None,
+            link: "https://git-scm.com/downloads".to_owned(),
+        }),
+    };
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(
+        result.code, 11,
+        "a store that only grows is not a healthy one"
+    );
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(printed.contains("maintenance  unavailable"), "{printed}");
+    assert!(printed.contains("no git was found"), "{printed}");
+    assert!(
+        printed.contains("install it: sudo apt install git"),
+        "{printed}"
+    );
+
+    status.roots[0].state = RootState::Degraded;
+    assert_eq!(
+        outcome(served(&status), false, None).code,
+        10,
+        "a Root not watched is the graver news"
+    );
+}
+
+#[test]
+fn the_git_in_use_is_shown_with_its_version() {
+    let result = outcome(served(&status_with(Vec::new())), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(printed.contains("maintenance  available"), "{printed}");
+    assert!(
+        printed.contains("git          2.43.0 at /usr/bin/git"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_git_the_shell_finds_is_offered_as_a_line_to_paste_never_written() {
+    let mut status = status_with(Vec::new());
+    status.daemon.maintenance = Reported::Unavailable;
+    status.daemon.git = GitStatus {
+        path: None,
+        version: None,
+        minimum: "2.32.0".to_owned(),
+        reason: Some("missing".to_owned()),
+        detail: None,
+        install: None,
+    };
+
+    let result = outcome(
+        served(&status),
+        false,
+        Some(std::path::Path::new("/opt/tools/bin/git")),
+    );
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(printed.contains("[git]"), "{printed}");
+    assert!(printed.contains("path = '/opt/tools/bin/git'"), "{printed}");
+    assert_eq!(result.code, 11);
+}
+
+#[test]
+fn a_failed_pass_shows_what_git_said_and_how_it_is_looked_for_again() {
+    let mut status = status_with(Vec::new());
+    status.daemon.maintenance = Reported::Unavailable;
+    status.daemon.git.reason = Some("failed".to_owned());
+    status.daemon.git.detail = Some("fatal: bad object HEAD".to_owned());
+
+    let result = outcome(
+        served(&status),
+        false,
+        Some(std::path::Path::new("/opt/tools/bin/git")),
+    );
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("git          2.43.0 at /usr/bin/git"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("git said: fatal: bad object HEAD"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("until the daemon restarts or git.path changes"),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains("[git]"),
+        "the git that failed is the one configured or found: {printed}"
     );
 }

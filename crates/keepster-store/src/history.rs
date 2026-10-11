@@ -27,6 +27,7 @@ use crate::index::{self, Index, Observation};
 
 mod diff;
 mod error_name;
+mod maintenance;
 mod restore;
 mod retention;
 
@@ -75,6 +76,10 @@ const AUTHOR_EMAIL: &str = "keepster@localhost";
 /// git's own rule — a NUL byte in the first 8000 bytes — so a file a person sees as binary in git is
 /// binary here too.
 const BINARY_PROBE: usize = 8000;
+
+/// The largest packed blob a listing inflates to probe whether it is binary: libgit2 cannot stream a
+/// packed object, so a larger one would cost its whole size for 8000 bytes, and is left unprobed.
+const PACKED_PROBE_LIMIT: u64 = 1 << 20;
 
 /// How much of a version is handed on at a time when it is read out.
 const CHUNK: usize = 64 * 1024;
@@ -355,7 +360,8 @@ pub struct Entry {
     /// where the capture observed none — on Windows, or before modes were captured — and for anything
     /// else.
     pub permissions: Option<u32>,
-    /// Whether its content is binary by git's rule; absent for anything but a file.
+    /// Whether its content is binary by git's rule; absent for anything but a file, and for a packed
+    /// file over a megabyte, which would have to be inflated whole to tell (ticket 52).
     pub binary: Option<bool>,
     /// Why the Snapshot does not hold it, for a Withheld path.
     pub withheld: Option<WithheldReason>,
@@ -980,6 +986,8 @@ impl HistoryStore {
     ) -> Result<(), StoreError> {
         let is_sidecar =
             |prefix: &str, name: &str| directory.is_root() && prefix.is_empty() && name == SIDECAR;
+        // One handle for the whole listing, rather than one per size and per probe.
+        let odb = self.repository.odb().map_err(self.failed("read"))?;
 
         match depth {
             Depth::One => {
@@ -988,7 +996,7 @@ impl HistoryStore {
                     if is_sidecar("", &name) {
                         continue;
                     }
-                    if let Some(entry) = self.describe(directory.child(&name), &entry)? {
+                    if let Some(entry) = self.describe(&odb, directory.child(&name), &entry)? {
                         entries.push(entry);
                     }
                 }
@@ -1004,7 +1012,7 @@ impl HistoryStore {
                     for component in prefix.split('/').filter(|part| !part.is_empty()) {
                         path = path.child(component);
                     }
-                    match self.describe(path.child(&name), entry) {
+                    match self.describe(&odb, path.child(&name), entry) {
                         Ok(Some(entry)) => entries.push(entry),
                         Ok(None) => {}
                         Err(error) => {
@@ -1134,6 +1142,7 @@ impl HistoryStore {
     /// Describe one tree entry, or `None` for a kind this product never writes.
     fn describe(
         &self,
+        odb: &git2::Odb<'_>,
         path: RootPath,
         entry: &git2::TreeEntry<'_>,
     ) -> Result<Option<Entry>, StoreError> {
@@ -1145,15 +1154,18 @@ impl HistoryStore {
         let described = match mode {
             DIRECTORY => Entry::bare(path, EntryKind::Directory),
             SYMLINK => Entry {
-                size: Some(self.blob_size(entry.id())?),
+                size: Some(self.size_in(odb, entry.id())?),
                 ..Entry::bare(path, EntryKind::Symlink)
             },
-            _ if entry.kind() == Some(git2::ObjectType::Blob) => Entry {
-                size: Some(self.blob_size(entry.id())?),
-                mode: Some(if mode == EXECUTABLE { 0o755 } else { 0o644 }),
-                binary: Some(self.is_binary(entry.id())?),
-                ..Entry::bare(path, EntryKind::File)
-            },
+            _ if entry.kind() == Some(git2::ObjectType::Blob) => {
+                let size = self.size_in(odb, entry.id())?;
+                Entry {
+                    size: Some(size),
+                    mode: Some(if mode == EXECUTABLE { 0o755 } else { 0o644 }),
+                    binary: self.probe_binary(odb, entry.id(), size, PACKED_PROBE_LIMIT)?,
+                    ..Entry::bare(path, EntryKind::File)
+                }
+            }
             // A submodule link: a Snapshot never holds one, so it is not described as anything.
             _ => return Ok(None),
         };
@@ -1164,16 +1176,35 @@ impl HistoryStore {
     /// A blob's size, read from its header rather than by inflating it.
     fn blob_size(&self, blob: git2::Oid) -> Result<u64, StoreError> {
         let odb = self.repository.odb().map_err(self.failed("read"))?;
+        self.size_in(&odb, blob)
+    }
+
+    fn size_in(&self, odb: &git2::Odb<'_>, blob: git2::Oid) -> Result<u64, StoreError> {
         let (size, _) = odb.read_header(blob).map_err(self.failed("read"))?;
 
         Ok(u64::try_from(size).unwrap_or(u64::MAX))
     }
 
-    /// Whether a blob is binary by git's rule, reading only the prefix that rule looks at where the
-    /// object can be streamed.
+    /// Whether a blob is binary by git's rule, read whole if it must be — as a diff, which reads it
+    /// whole anyway, may.
     fn is_binary(&self, blob: git2::Oid) -> Result<bool, StoreError> {
         let odb = self.repository.odb().map_err(self.failed("read"))?;
 
+        Ok(self
+            .probe_binary(&odb, blob, 0, u64::MAX)?
+            .unwrap_or_default())
+    }
+
+    /// Whether a blob of `size` bytes is binary by git's rule, reading only the prefix that rule looks
+    /// at where the object can be streamed — a loose one. A packed one cannot be (libgit2 inflates it
+    /// whole), so it is probed only up to `limit` bytes and is otherwise not probed at all.
+    fn probe_binary(
+        &self,
+        odb: &git2::Odb<'_>,
+        blob: git2::Oid,
+        size: u64,
+        limit: u64,
+    ) -> Result<Option<bool>, StoreError> {
         if let Ok((reader, _, _)) = odb.reader(blob) {
             let mut prefix = Vec::with_capacity(BINARY_PROBE);
             if reader
@@ -1181,17 +1212,19 @@ impl HistoryStore {
                 .read_to_end(&mut prefix)
                 .is_ok()
             {
-                return Ok(prefix.contains(&0));
+                return Ok(Some(prefix.contains(&0)));
             }
         }
+        if size > limit {
+            return Ok(None);
+        }
 
-        let blob = self
-            .repository
-            .find_blob(blob)
-            .map_err(self.failed("read"))?;
-        let content = blob.content();
+        let object = odb.read(blob).map_err(self.failed("read"))?;
+        let content = object.data();
 
-        Ok(content[..content.len().min(BINARY_PROBE)].contains(&0))
+        Ok(Some(
+            content[..content.len().min(BINARY_PROBE)].contains(&0),
+        ))
     }
 
     /// Walk the Root, writing blobs and touching only the index entries that changed.
@@ -1549,12 +1582,9 @@ impl HistoryStore {
         };
 
         let mut config = repository.config().map_err(failed("configured"))?;
-        config
-            .set_bool("core.logAllRefUpdates", false)
-            .map_err(failed("configured"))?;
-        config
-            .set_bool("core.filemode", false)
-            .map_err(failed("configured"))?;
+        for (key, value) in crate::git::STORE_CONFIG {
+            config.set_bool(key, value).map_err(failed("configured"))?;
+        }
 
         Ok(())
     }

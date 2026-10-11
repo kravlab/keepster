@@ -1513,12 +1513,17 @@
               "uptime_seconds",
               "autostart",
               "linger",
-              "maintenance"
+              "maintenance",
+              "git"
             ],
             "properties": {
               "autostart": {
                 "$ref": "#/components/schemas/Reported",
                 "description": "Whether autostart is installed. Filled by ticket 61."
+              },
+              "git": {
+                "$ref": "#/components/schemas/GitStatus",
+                "description": "The external `git` maintenance runs with, or why there is none."
               },
               "linger": {
                 "$ref": "#/components/schemas/Reported",
@@ -1526,7 +1531,7 @@
               },
               "maintenance": {
                 "$ref": "#/components/schemas/Reported",
-                "description": "Whether store maintenance can run at all, which depends on the external `git`. Filled by\nticket 52."
+                "description": "Whether store maintenance can run at all, which depends on the external `git` (ticket 52). While\nit cannot, nothing Retention removes is reclaimed, and `keepster status` exits non-zero."
               },
               "pid": {
                 "type": "integer",
@@ -1764,7 +1769,7 @@
               "boolean",
               "null"
             ],
-            "description": "Whether the content is binary by git's rule. A display flag only: binary files are stored as\nthey are (ticket 10). Absent for anything but a file."
+            "description": "Whether the content is binary by git's rule. A display flag only: binary files are stored as\nthey are (ticket 10). Absent for anything but a file, and for a packed file over a megabyte,\nwhich would have to be read whole to tell (ticket 52)."
           },
           "incomplete": {
             "type": [
@@ -2099,6 +2104,26 @@
           },
           {
             "type": "object",
+            "description": "A Maintenance Pass reclaimed what nothing references any more and packed the rest (ticket 52).",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "maintenance.completed"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root."
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon\nrestarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.",
             "required": [
               "event"
@@ -2250,6 +2275,85 @@
               "null"
             ],
             "description": "When a pass last covered them, in UTC, as RFC 3339; absent before the first."
+          }
+        }
+      },
+      "GitStatus": {
+        "type": "object",
+        "description": "The external `git` store maintenance runs with (ticket 52). Capture never needs it.",
+        "required": [
+          "minimum"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What running it said, for `not_executable` and `failed`: its error, word for word."
+          },
+          "install": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InstallHint",
+                "description": "How to install one, while maintenance cannot run. Keepster never runs it itself."
+              }
+            ]
+          },
+          "minimum": {
+            "type": "string",
+            "description": "The oldest version maintenance runs with."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it is: found in configuration (`git.path`) or a stable place — never an inherited `PATH`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why maintenance cannot run: `missing`, `macos_stub`, `not_executable`, `too_old` or `failed`. An\nopen set, as error codes are."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version it reported."
+          }
+        }
+      },
+      "InstallHint": {
+        "type": "object",
+        "description": "How a person installs `git` here.",
+        "required": [
+          "link"
+        ],
+        "properties": {
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The command for this platform's package manager, when it is recognised."
+          },
+          "link": {
+            "type": "string",
+            "description": "Where to read more."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What to know besides."
           }
         }
       },
@@ -2476,7 +2580,9 @@
         "type": "string",
         "description": "A row whose owning behaviour has not been built yet.\n\nIt exists so that `status` can say \"not known\" instead of a comfortable default: ticket 05 forbids\nthe tool to look healthier than it is. Each variant below is added by the ticket that can actually\ndetermine the fact, and adding one is an additive change to `/v1`.",
         "enum": [
-          "unknown"
+          "unknown",
+          "available",
+          "unavailable"
         ]
       },
       "RestoreIssue": {

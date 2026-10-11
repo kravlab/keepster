@@ -58,6 +58,8 @@ pub mod exit {
     pub const PARTIAL: u8 = 6;
     /// `status` found at least one Root that is not `Watching`.
     pub const ROOT_NOT_WATCHING: u8 = 10;
+    /// `status` found every Root watched, and no `git` maintenance can run with (ticket 11).
+    pub const MAINTENANCE_UNAVAILABLE: u8 = 11;
     /// Anything else, deliberately narrow.
     pub const OTHER: u8 = 1;
 }

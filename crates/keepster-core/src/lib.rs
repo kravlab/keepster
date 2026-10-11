@@ -5,6 +5,7 @@
 //! — be tested without a disk and replayed without a daemon.
 
 mod event;
+mod git;
 mod identity;
 mod path;
 mod policy;
@@ -18,6 +19,7 @@ mod snapshot;
 mod trigger;
 
 pub use event::EventId;
+pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
 pub use identity::NotAnIdentity;
 pub use path::{InvalidPath, RootPath};
 pub use policy::{

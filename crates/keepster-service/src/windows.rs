@@ -1,4 +1,5 @@
-//! The Windows control channel: its name, and the access control that makes it the owner's alone.
+//! What only the Windows API can answer: the control channel's name and the access control that makes it
+//! the owner's alone, a file's hard-link names, and where Git for Windows is installed (ticket 52).
 //!
 //! Every `unsafe` block in the workspace that touches the Windows API is meant to live here — ticket
 //! 10 already settled that shape when it needed a link count that stable Rust does not expose. The
@@ -290,4 +291,80 @@ pub fn hard_link_names(path: &std::path::Path) -> io::Result<Vec<std::path::Path
     }
 
     Ok(names)
+}
+
+/// Where Git for Windows is installed, as `<InstallPath>\cmd\git.exe` — the one entry point its
+/// maintainers support — from `HKCU\Software\GitForWindows\InstallPath` first, then `HKLM`, each in both
+/// registry views (ticket 11). A per-user install writes `HKCU` only, which a service's environment does
+/// not see but its registry does. Nothing is run to find it.
+pub fn git_for_windows() -> Vec<std::path::PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6432KEY,
+        RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+    };
+
+    let wide = |text: &str| -> Vec<u16> { OsStr::new(text).encode_wide().chain(Some(0)).collect() };
+    let subkey = wide("Software\\GitForWindows");
+    let value = wide("InstallPath");
+
+    let read = |hive: HKEY, view: u32| -> Option<std::path::PathBuf> {
+        let flags = RRF_RT_REG_SZ | view;
+        let mut bytes = 0u32;
+        // SAFETY: both names are NUL-terminated; a null buffer asks only for the size, into `bytes`.
+        let sized = unsafe {
+            RegGetValueW(
+                hive,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                flags,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if sized != ERROR_SUCCESS || bytes == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
+        let mut length = (buffer.len() * 2) as u32;
+        // SAFETY: as above, with `buffer` holding the `length` bytes passed.
+        let read = unsafe {
+            RegGetValueW(
+                hive,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                flags,
+                ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut length,
+            )
+        };
+        if read != ERROR_SUCCESS {
+            return None;
+        }
+        let end = buffer
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(buffer.len());
+        let install = std::path::PathBuf::from(OsString::from_wide(&buffer[..end]));
+
+        (!install.as_os_str().is_empty()).then(|| install.join("cmd").join("git.exe"))
+    };
+
+    let mut found = Vec::new();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        for view in [RRF_SUBKEY_WOW6464KEY, RRF_SUBKEY_WOW6432KEY] {
+            if let Some(path) = read(hive, view) {
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+            }
+        }
+    }
+
+    found
 }

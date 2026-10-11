@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{Reported, Root, RootState, Status};
+use keepster_api::{GitStatus, Reported, Root, RootState, Status};
 
 /// Write the daemon's payload exactly as it arrived.
 ///
@@ -20,7 +20,14 @@ pub fn write_json(body: &[u8], out: &mut impl Write) -> io::Result<()> {
 ///
 /// Every row is named even when its value is not known yet, because ticket 05 forbids the tool to
 /// look healthier than it is: a missing row reads as "fine", an `unknown` one does not.
-pub fn write_human(status: &Status, out: &mut impl Write) -> io::Result<()> {
+///
+/// `shell_git` is the `git` this command's own `PATH` finds, offered as a `git.path` line when the
+/// daemon's search, which never reads a `PATH`, came up short.
+pub fn write_human(
+    status: &Status,
+    shell_git: Option<&Path>,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let daemon = &status.daemon;
 
     writeln!(
@@ -34,6 +41,7 @@ pub fn write_human(status: &Status, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "  autostart    {}", reported(daemon.autostart))?;
     writeln!(out, "  linger       {}", reported(daemon.linger))?;
     writeln!(out, "  maintenance  {}", reported(daemon.maintenance))?;
+    write_git(&daemon.git, shell_git, out)?;
 
     write_roots(&status.roots, out)
 }
@@ -84,7 +92,79 @@ const SHORT_ID_LENGTH: usize = 8;
 fn reported(value: Reported) -> &'static str {
     match value {
         Reported::Unknown => "unknown",
+        Reported::Available => "available",
+        Reported::Unavailable => "unavailable",
     }
+}
+
+/// The `git` maintenance runs with — or, without one, why and how to install one. Keepster prints the
+/// command and never runs it (ticket 11).
+/// Render what the daemon says of its `git` — the one block `status` and `watch` both print (ticket 11).
+pub fn write_git(
+    git: &GitStatus,
+    shell_git: Option<&Path>,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    match (&git.path, &git.version) {
+        (Some(path), Some(version)) => writeln!(out, "  git          {version} at {path}")?,
+        (Some(path), None) => writeln!(out, "  git          {path}")?,
+        _ => {}
+    }
+    let Some(reason) = &git.reason else {
+        return Ok(());
+    };
+    let why = match reason.as_str() {
+        "missing" => "no git was found".to_owned(),
+        "macos_stub" => {
+            "only the macOS stub is installed, without the Command Line Tools".to_owned()
+        }
+        "too_old" => format!("it is older than {}", git.minimum),
+        "not_executable" => "it could not be run".to_owned(),
+        // The daemon does not look again until `git.path` changes or it restarts: what git said
+        // stays checkable meanwhile.
+        "failed" => {
+            writeln!(
+                out,
+                "               a Maintenance Pass with it failed; nothing Retention removes is reclaimed until the daemon restarts or git.path changes"
+            )?;
+            if let Some(detail) = &git.detail {
+                writeln!(out, "               git said: {detail}")?;
+            }
+            return Ok(());
+        }
+        other => other.to_owned(),
+    };
+    writeln!(
+        out,
+        "               {why}; nothing Retention removes is reclaimed until git {} or newer is installed",
+        git.minimum
+    )?;
+    if let Some(detail) = &git.detail {
+        writeln!(out, "               git said: {detail}")?;
+    }
+    // The daemon never reads a `PATH`; this command's own is what a person's shell runs, so a `git`
+    // there is offered — never written — as the key that makes it the daemon's.
+    if let Some(shell_git) =
+        shell_git.filter(|found| git.path.as_deref() != Some(&*found.to_string_lossy()))
+    {
+        writeln!(
+            out,
+            "               or use the git your shell runs, in the global configuration:"
+        )?;
+        writeln!(out, "                 [git]")?;
+        writeln!(out, "                 path = {}", toml_string(shell_git))?;
+    }
+    if let Some(install) = &git.install {
+        if let Some(command) = &install.command {
+            writeln!(out, "               install it: {command}")?;
+        }
+        if let Some(note) = &install.note {
+            writeln!(out, "               {note}")?;
+        }
+        writeln!(out, "               {}", install.link)?;
+    }
+
+    Ok(())
 }
 
 fn root_state(state: RootState) -> &'static str {
@@ -92,5 +172,15 @@ fn root_state(state: RootState) -> &'static str {
         RootState::Watching => "watching",
         RootState::Degraded => "degraded",
         RootState::Unavailable => "unavailable",
+    }
+}
+
+/// `path` as a TOML string: a literal one where it can be, so a Windows path reads as it is written.
+fn toml_string(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if text.contains('\'') {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        format!("'{text}'")
     }
 }

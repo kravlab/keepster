@@ -21,11 +21,15 @@ async fn status_reports_the_daemon_and_no_roots_before_any_are_registered() {
     assert!(uptime < 60, "a freshly started daemon reported {uptime}s");
 
     // Rows whose owners have not landed report `unknown` rather than a comfortable default: ticket 05
-    // forbids looking healthier than the truth. Ticket 61 fills autostart and linger, ticket 52 fills
-    // maintenance.
+    // forbids looking healthier than the truth. Ticket 61 fills autostart and linger. Maintenance is
+    // ticket 52's, and depends on the machine's `git`, which the housekeeping tests look at.
     assert_eq!(body["daemon"]["autostart"], "unknown");
     assert_eq!(body["daemon"]["linger"], "unknown");
-    assert_eq!(body["daemon"]["maintenance"], "unknown");
+    assert!(
+        ["available", "unavailable"]
+            .contains(&body["daemon"]["maintenance"].as_str().unwrap_or("")),
+        "{body}"
+    );
 
     assert_eq!(body["roots"], serde_json::json!([]));
 }

@@ -362,6 +362,8 @@ pub struct GlobalConfig {
     base: Layer,
     by_id: BTreeMap<RootId, Layer>,
     patterns: Vec<(PathGlob, Layer)>,
+    /// The `git` maintenance runs with, when the user names one (ticket 52).
+    git_path: Option<PathBuf>,
 }
 
 impl GlobalConfig {
@@ -374,6 +376,14 @@ impl GlobalConfig {
         };
         let document: GlobalDocument =
             toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
+        let git_path = match &document.git.path {
+            Some(written) if !Path::new(written).is_absolute() => {
+                return Err(invalid(format!(
+                    "git.path `{written}` must be an absolute path: it is never looked up in a PATH"
+                )));
+            }
+            written => written.as_ref().map(PathBuf::from),
+        };
 
         let base = settings_layer(document.tables(), Level::Global, path, text, "")?;
 
@@ -414,6 +424,7 @@ impl GlobalConfig {
             base,
             by_id,
             patterns,
+            git_path,
         })
     }
 }
@@ -785,6 +796,9 @@ struct GlobalDocument {
     restore: RestoreTable,
     #[serde(default)]
     retention: RetentionTable,
+    // The daemon's own, so the top level alone holds it: one daemon runs one `git` for every Root.
+    #[serde(default)]
+    git: GitTable,
     #[serde(default)]
     root: BTreeMap<String, Settings>,
     #[serde(default)]
@@ -851,6 +865,14 @@ macro_rules! holds_tables {
 }
 
 holds_tables!(GlobalDocument, Settings, PatternBlock);
+
+/// The `[git]` table of the global file: the `git` maintenance runs with, authoritatively when set — one
+/// that does not work is reported, never replaced by another (ticket 11).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitTable {
+    path: Option<String>,
+}
 
 /// The `[retention]` table: the ladder, one `[[retention.tier]]` per Tier from the youngest (ticket 51).
 #[derive(Debug, Default, Deserialize)]
@@ -1338,6 +1360,15 @@ impl Configuration {
             .filter(|key| !key.spec.live)
             .map(|key| (key.spec.name, key.setting))
             .collect()
+    }
+
+    /// The `git` the global file in force names, if it names one.
+    pub fn git_path(&mut self) -> Option<PathBuf> {
+        self.refresh_global();
+        self.global
+            .in_force
+            .as_ref()
+            .and_then(|global| global.git_path.clone())
     }
 
     /// Re-read the global file if it changed, keeping its last known-good version in force.
