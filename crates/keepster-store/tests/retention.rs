@@ -215,10 +215,15 @@ fn a_rebuilt_index_agrees_with_one_caught_up_after_thinning() {
         .expect("a pass");
     let caught_up = fixture.timeline(None);
 
-    let index = fixture.directory.path().join("index.sqlite");
+    // Closed first: Windows refuses to delete a database a connection still holds.
+    let Fixture {
+        directory, store, ..
+    } = fixture;
+    drop(store);
+    let index = directory.path().join("index.sqlite");
     fs::remove_file(&index).expect("the index");
-    let reopened = HistoryStore::open(fixture.directory.path().join("history.git"), &index)
-        .expect("the store");
+    let reopened =
+        HistoryStore::open(directory.path().join("history.git"), &index).expect("the store");
     let rebuilt = reopened
         .timeline(&TimelineQuery {
             path: None,
