@@ -63,10 +63,13 @@ jobs:
     needs: fresh
     if: needs.fresh.outputs.run == 'true'
     runs-on: macos-latest
+    # As in the merge gate: line tables only, enough for a failure to say where.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
-      - run: cargo test --doc --workspace --locked
+      - run: cargo test --workspace --all-features --locked --no-fail-fast

@@ -1,13 +1,12 @@
 //! A Capture Preview through `/v1` (ticket 57, ticket 20): what a Snapshot of a directory would hold,
 //! streamed as one JSON object per line — for a directory that is not a Root, honouring its own
 //! `.keepster.toml` and showing what it sets, and for a Root, without capturing, locking or triggering
-//! anything; one at a time, and stopped when its reader goes away.
+//! anything. One at a time, and stopped when its reader goes away: those are held to in the daemon's own
+//! tests of the walk, since no test can size the buffers between a socket's two ends.
 
 use std::path::Path;
-use std::time::Duration;
 
 use keepster_api::encode_path_query;
-use keepster_cli::{ClientError, DaemonClient};
 use keepster_testkit::{Harness, MANUAL};
 use serde_json::{Value, json};
 
@@ -281,54 +280,6 @@ async fn a_malformed_request_is_refused_at_the_door() {
     assert_eq!(only.status.as_u16(), 400);
     let refused: Value = serde_json::from_slice(&only.body).expect("a problem");
     assert_eq!(refused["code"], "preview_invalid");
-}
-
-#[tokio::test]
-async fn one_preview_walks_at_a_time_and_it_stops_when_its_reader_goes_away() {
-    let daemon = Harness::start_with_global_config(MANUAL).await;
-    let big = daemon.scratch("big");
-    // Lines enough to fill, many times over, every buffer between the walk and a reader that has stopped
-    // reading — hyper's on both sides, the socket's or the named pipe's, the channel's: some 4 MB of them,
-    // under names short enough for any platform's path limit.
-    let padding = "n".repeat(130);
-    for at in 0..20_000 {
-        std::fs::write(big.join(format!("{padding}-{at:05}.txt")), b"x").expect("a file");
-    }
-    let client = DaemonClient::new(daemon.control_path());
-
-    let mut reading = client
-        .lines(&url(&big, "&depth=infinity"))
-        .await
-        .expect("a stream");
-    let header: Value =
-        serde_json::from_str(&reading.next().await.expect("a line").expect("the header"))
-            .expect("JSON");
-    assert_eq!(
-        header["type"], "header",
-        "the first line arrives before the walk ends"
-    );
-
-    match client.lines(&url(&big, "")).await {
-        Err(ClientError::Refused(refused)) => {
-            assert_eq!(refused.status.as_u16(), 409);
-            let problem: Value = serde_json::from_slice(&refused.body).expect("a problem");
-            assert_eq!(problem["code"], "preview_busy");
-        }
-        other => panic!("a second preview is refused while one walks: {other:?}"),
-    }
-
-    // The reader goes away; the walk stops, and the next preview walks.
-    drop(reading);
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if daemon.get(&url(&big, "")).await.status.as_u16() == 200 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the first walk stopped with its reader");
 }
 
 const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");

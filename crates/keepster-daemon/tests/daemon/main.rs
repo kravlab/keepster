@@ -1,0 +1,34 @@
+//! Every integration test of `keepster-daemon`, linked into one binary: each file is a module, as it was once
+//! a crate of its own. One binary links once, where one per file linked dozens of times over — most of
+//! what a test run cost on Windows.
+
+mod cli_diff;
+mod cli_follow;
+mod cli_history;
+mod cli_restore;
+mod cli_roots;
+mod cli_status;
+mod configuration;
+mod diff;
+mod events;
+mod export;
+mod forget;
+mod housekeeping;
+mod jobs;
+mod links;
+mod modes;
+mod openapi;
+mod pins;
+mod preview;
+mod reading;
+mod reconciliation;
+mod restore;
+mod root_states;
+mod roots;
+mod rules;
+mod snapshots;
+mod status;
+mod triggers;
+mod version;
+mod volumes;
+mod withheld;

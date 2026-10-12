@@ -72,15 +72,21 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         exclude:
           - os: ${{ github.event_name != 'pull_request' && 'macos-latest' || 'none' }}
+    # Line tables only: a failing test still says where, and the debug information every test binary
+    # carries — which Windows writes out as a PDB per binary — shrinks to a fraction.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Every failing test binary is reported, not only the first: a platform's failures are read in
-      # one run rather than one per push.
-      - run: cargo test --workspace --all-targets --all-features --locked --no-fail-fast
-      - run: cargo test --doc --workspace --locked
+      # one run rather than one per push. No `--all-targets`: the workspace has no benches or examples,
+      # and without it the doc tests run in this one invocation, under the same features, rather than in
+      # a second one that rebuilds crates for a feature set of its own.
+      - run: cargo test --workspace --all-features --locked --no-fail-fast
 
   contract:
     name: the /v1 contract is additive
@@ -97,7 +103,7 @@ jobs:
       # covers the whole contract, and a stale document is reported as such rather than as a test failure
       # among many.
       - name: The committed openapi.json is the generated one
-        run: cargo test --locked -p keepster-daemon --test openapi the_committed_document_is_the_generated_one
+        run: cargo test --locked -p keepster-daemon --test daemon openapi::the_committed_document_is_the_generated_one
       - uses: actions/setup-go@v5
         with:
           go-version: stable

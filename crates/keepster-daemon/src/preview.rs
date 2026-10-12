@@ -126,7 +126,7 @@ pub(crate) async fn preview(
     tokio::task::spawn_blocking(move || {
         // Released when the walk ends, however it ends.
         let _walking = walking;
-        walk(&prepared, &listing, &lines);
+        walk(&prepared, &listing, &lines, STALL);
     });
     let body = futures_util::stream::unfold(received, |mut received| async move {
         received
@@ -357,12 +357,12 @@ fn prepared(state: &DaemonState, path: &Path) -> Result<Prepared, ProblemRespons
     })
 }
 
-/// Send `record` down `lines`, waiting at most [`STALL`] for room: whether anyone is still reading.
-fn send(lines: &mpsc::Sender<Bytes>, record: &PreviewRecord) -> bool {
+/// Send `record` down `lines`, waiting at most `stall` for room: whether anyone is still reading.
+fn send(lines: &mpsc::Sender<Bytes>, record: &PreviewRecord, stall: Duration) -> bool {
     let mut line = serde_json::to_vec(record).expect("a record serialises");
     line.push(b'\n');
     let mut line = Bytes::from(line);
-    let deadline = Instant::now() + STALL;
+    let deadline = Instant::now() + stall;
     loop {
         match lines.try_send(line) {
             Ok(()) => return true,
@@ -378,8 +378,11 @@ fn send(lines: &mpsc::Sender<Bytes>, record: &PreviewRecord) -> bool {
 
 /// Walk what `prepared` names, sending its header, the entries `listing` asks for, progress now and then
 /// and the summary down `lines` — and stopping the moment no one is reading them.
-fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>) {
-    if !send(lines, &prepared.header) {
+///
+/// A reader that stops reading is given up on after `stall`, [`STALL`] but in a test.
+fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>, stall: Duration) {
+    let send = |record: &PreviewRecord| send(lines, record, stall);
+    if !send(&prepared.header) {
         return;
     }
 
@@ -395,9 +398,9 @@ fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>) {
         &mut |entry| {
             tally.add(&entry);
             walked += 1;
-            let listed = !listing.lists(&entry) || send(lines, &entry_record(&entry));
-            let alive = !walked.is_multiple_of(PROGRESS_EVERY)
-                || send(lines, &PreviewRecord::Progress { walked });
+            let listed = !listing.lists(&entry) || send(&entry_record(&entry));
+            let alive =
+                !walked.is_multiple_of(PROGRESS_EVERY) || send(&PreviewRecord::Progress { walked });
             if listed && alive && !lines.is_closed() {
                 ControlFlow::Continue(())
             } else {
@@ -410,16 +413,13 @@ fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>) {
     }
     match outcome {
         Ok(()) => {
-            send(lines, &summary_record(&tally.finish()));
+            send(&summary_record(&tally.finish()));
         }
         Err(error) => {
             tracing::warn!(path = %prepared.root.display(), %error, "a Capture Preview could not walk the directory");
-            send(
-                lines,
-                &PreviewRecord::Error {
-                    detail: error.to_string(),
-                },
-            );
+            send(&PreviewRecord::Error {
+                detail: error.to_string(),
+            });
         }
     }
 }
@@ -519,5 +519,117 @@ fn reason_of(class: PreviewClass) -> Option<String> {
     match class {
         PreviewClass::Withheld(reason) => Some(reason.as_str().to_owned()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The two guards a preview owes the daemon, held to directly rather than through sockets whose
+    //! buffers no test can size: one walk at a time, and no walk outliving its reader.
+
+    use std::time::{Duration, Instant};
+
+    use keepster_api::PreviewRecord;
+    use keepster_core::{CapturePolicy, RootPath};
+    use tokio::sync::mpsc;
+
+    use super::{Listing, Only, Prepared, Walking, walk};
+
+    /// A directory of `files` files, and what previewing it walks.
+    fn prepared(files: usize) -> (tempfile::TempDir, Prepared) {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        for at in 0..files {
+            std::fs::write(directory.path().join(format!("{at:04}.txt")), b"x").expect("a file");
+        }
+        let prepared = Prepared {
+            header: PreviewRecord::Header {
+                path: directory.path().to_string_lossy().into_owned(),
+                root: None,
+                within: None,
+                overlaps: None,
+                config: None,
+            },
+            policy: CapturePolicy::default(),
+            root: directory.path().to_path_buf(),
+            start: RootPath::root(),
+        };
+
+        (directory, prepared)
+    }
+
+    /// Every path listed, as `depth=infinity` asks.
+    const EVERY: Listing = Listing {
+        every: true,
+        only: None::<Only>,
+        measure_excluded: true,
+        top: 10,
+    };
+
+    #[test]
+    fn one_walk_holds_the_slot_until_it_ends_however_it_ends() {
+        let slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let first = Walking::claim(&slot).expect("the slot is free");
+        assert!(Walking::claim(&slot).is_none(), "a second walk is refused");
+        drop(first);
+        assert!(
+            Walking::claim(&slot).is_some(),
+            "released when the walk ends"
+        );
+
+        let slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = Walking::claim(&slot).expect("the slot is free");
+        let ended = std::thread::spawn(move || {
+            let _held = held;
+            panic!("a walk that fails");
+        })
+        .join();
+        assert!(ended.is_err());
+        assert!(
+            Walking::claim(&slot).is_some(),
+            "released by a walk that panicked, too"
+        );
+    }
+
+    #[test]
+    fn a_walk_stops_at_once_when_its_reader_goes_away() {
+        let (_directory, prepared) = prepared(200);
+        let (lines, mut reader) = mpsc::channel(1);
+
+        let started = Instant::now();
+        let walking = std::thread::spawn(move || {
+            walk(&prepared, &EVERY, &lines, Duration::from_secs(60));
+        });
+        // The header, then the reader goes away with the walk still under way.
+        let header = reader.blocking_recv().expect("the header");
+        assert!(String::from_utf8_lossy(&header).contains("\"header\""));
+        drop(reader);
+        walking.join().expect("the walk ends");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no line waits a minute for a reader that is gone"
+        );
+    }
+
+    #[test]
+    fn a_walk_gives_up_on_a_reader_that_stopped_reading() {
+        let (_directory, prepared) = prepared(200);
+        // Room for the header alone, and a reader that never reads.
+        let (lines, mut reader) = mpsc::channel(1);
+
+        let started = Instant::now();
+        walk(&prepared, &EVERY, &lines, Duration::from_millis(100));
+
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the walk ends, so its slot is free for the next"
+        );
+        let header = reader.try_recv().expect("the header was sent");
+        assert!(String::from_utf8_lossy(&header).contains("\"header\""));
+        assert!(
+            reader.try_recv().is_err(),
+            "nothing after the line nobody took"
+        );
     }
 }
