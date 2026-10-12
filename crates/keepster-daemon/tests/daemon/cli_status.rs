@@ -55,9 +55,27 @@ async fn cli_status_renders_the_daemon_rows_for_a_human() {
     for row in ["api", "pid", "uptime", "autostart", "linger", "maintenance"] {
         assert!(out.contains(row), "no `{row}` row in:\n{out}");
     }
+    // Autostart and linger are read from the machine the test runs on (ticket 61): whichever they are,
+    // the row says so in words, never as a bare default.
+    let row = |name: &str| {
+        out.lines()
+            .find(|line| line.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no `{name}` row in:\n{out}"))
+            .to_owned()
+    };
+    let autostart = row("autostart");
     assert!(
-        out.contains("unknown"),
-        "rows that cannot be determined yet must say so, in:\n{out}"
+        ["available", "not installed", "disabled", "unknown"]
+            .iter()
+            .any(|said| autostart.contains(said)),
+        "{autostart}"
+    );
+    let linger = row("linger");
+    assert!(
+        ["available", "coverage ends at logout", "unknown"]
+            .iter()
+            .any(|said| linger.contains(said)),
+        "{linger}"
     );
     assert!(
         out.to_lowercase().contains("no watched roots"),
