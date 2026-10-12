@@ -469,6 +469,7 @@ fn a_sidecar_record_this_build_does_not_know_is_skipped_and_reported_where_it_is
                 now: at(NOW + 120),
                 verify: keepster_core::Verify::Stat,
                 record_unchanged: true,
+                hold_emptied: false,
             },
         )
         .expect("a pass");

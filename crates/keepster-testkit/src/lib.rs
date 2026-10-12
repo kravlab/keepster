@@ -1,15 +1,24 @@
 //! The test harness: a real daemon, over a real socket, driven by the real client.
 //!
-//! This is the highest seam in the workspace and the one most tests belong at (ticket 31). There are
-//! no test doubles here: the daemon under test is the daemon that ships, and the client is the CLI's
-//! own. Dev-only, never published, and allowed to depend on anything.
+//! This is the highest seam in the workspace and the one most tests belong at (ticket 31). The daemon
+//! under test is the daemon that ships, and the client is the CLI's own; the one stand-in is which
+//! volume a path is on, [`FakeVolumes`], since no test can unplug a disk from the machine it runs on.
+//! Dev-only, never published, and allowed to depend on anything.
+
+mod volumes;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+
+pub use volumes::FakeVolumes;
 
 use keepster_cli::{DaemonClient, EventStream, Response};
 use keepster_daemon::{DaemonConfig, RunningDaemon};
 use tempfile::TempDir;
+
+/// The identity of the volume every path a harness hands out is on, unless a test mounts another.
+pub const HARNESS_VOLUME: &str = "uuid:harness";
 
 /// A global configuration under which a Root is captured only when a test asks: no Trigger is active and
 /// no Reconciliation runs at the start.
@@ -63,7 +72,7 @@ impl Stopped {
 }
 
 /// How a test's daemon differs from the default one.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct Options {
     /// The daemon-wide watch ceiling.
     watch_ceiling: Option<usize>,
@@ -71,6 +80,8 @@ struct Options {
     retry_after: Option<Duration>,
     /// How Retention and maintenance are paced.
     housekeeping: Option<keepster_daemon::HousekeepingTiming>,
+    /// What is mounted where, kept across a restart as a machine's disks are.
+    volumes: Arc<FakeVolumes>,
 }
 
 impl Harness {
@@ -159,6 +170,9 @@ impl Harness {
         let control_path = control_path(&base);
         let store_base = base.join("store");
         let config_path = base.join("config.toml");
+        // Everything a test makes is on one volume the platform can name, as on most machines; a test
+        // about volumes mounts others inside it.
+        options.volumes.mount(&base, Some(HARNESS_VOLUME));
 
         let daemon = keepster_daemon::start(DaemonConfig {
             control_path: control_path.clone(),
@@ -167,6 +181,7 @@ impl Harness {
             watch_ceiling: options.watch_ceiling,
             retry_after: options.retry_after,
             housekeeping: options.housekeeping,
+            volumes: Some(Arc::clone(&options.volumes) as Arc<dyn keepster_daemon::Volumes>),
         })
         .await
         .expect("the daemon binds its control channel");
@@ -178,6 +193,11 @@ impl Harness {
             options,
             directory,
         }
+    }
+
+    /// What this daemon is told is mounted where, for a test to unmount and remount at will.
+    pub fn volumes(&self) -> &FakeVolumes {
+        &self.options.volumes
     }
 
     /// The control channel this daemon is listening on, for driving the real CLI against it.

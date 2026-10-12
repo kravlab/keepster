@@ -80,6 +80,7 @@ impl Fixture {
                     now: at(MOMENT + 60 * self.passes),
                     verify,
                     record_unchanged: false,
+                    hold_emptied: false,
                 },
             )
             .expect("a pass")

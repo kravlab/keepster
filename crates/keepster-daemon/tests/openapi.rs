@@ -264,6 +264,8 @@ fn the_problem_code_is_an_open_string_whose_known_values_are_listed() {
         "history_unreadable",
         "body_invalid",
         "purge_invalid",
+        "volume_mismatch",
+        "store_unreachable",
     ] {
         assert!(
             description.contains(&format!("`{known}`")),

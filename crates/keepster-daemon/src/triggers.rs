@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use keepster_app::config::Effective;
-use keepster_app::snapshots;
+use keepster_app::snapshots::{self, CaptureError};
 use keepster_core::{
     Action, CapturePolicy, PolicyEvent, PolicyState, RootId, Trigger, Triggers, Verify, decide,
 };
@@ -24,6 +24,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::DaemonState;
+use crate::volumes::Gate;
 
 /// How often a capture waiting for its store's lock looks again.
 const LOCK_POLL: Duration = Duration::from_millis(500);
@@ -105,6 +106,10 @@ pub(crate) enum Watch {
     Ceiling,
     /// Not watched, because the platform refused: reconciled periodically instead.
     Failed,
+    /// Not watched, because the Root is on a filesystem the platform's watcher is documented as blind
+    /// on — a network or FUSE mount on Linux, any network mount on macOS: reconciled periodically
+    /// instead (ticket 29).
+    Blind,
 }
 
 #[derive(Debug)]
@@ -313,7 +318,7 @@ fn describe(activity: &mut Activity, effective: &Effective) {
 /// at the last event it saw (ticket 30).
 fn settings_for(effective: &Effective, watch: Watch) -> Triggers {
     let mut settings = effective.triggers;
-    if settings.watcher && matches!(watch, Watch::Ceiling | Watch::Failed) {
+    if settings.watcher && matches!(watch, Watch::Ceiling | Watch::Failed | Watch::Blind) {
         settings.watcher = false;
         settings.periodic = Some(
             settings
@@ -475,6 +480,11 @@ async fn watch(
     if !on {
         return None;
     }
+    if crate::volumes::blind(&*state.volumes, &record.path) {
+        tracing::warn!(root = %record.id, "the Root is on a filesystem whose remote changes the platform's watcher never sees; it is reconciled periodically instead");
+        lock(activity).watch = Watch::Blind;
+        return None;
+    }
     let _arming = state.runtimes.arming.lock().await;
     let (path, rules, outbox) = (record.path.clone(), rules.clone(), outbox.clone());
 
@@ -587,13 +597,6 @@ impl From<&keepster_store::Pass> for Passed {
 /// ran.
 fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEvent, Option<Passed>) {
     let now = crate::roots::now();
-    let (root, location, loaded) = match crate::snapshots::prepare(state, id) {
-        Ok(prepared) => prepared,
-        Err(problem) => {
-            tracing::warn!(root = %id, %trigger, problem = ?problem, "an automatic capture could not start");
-            return (PolicyEvent::CaptureFailed, None);
-        }
-    };
 
     let store = state.store_lock(id);
     let _held = match store.try_lock() {
@@ -602,19 +605,36 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
         Err(TryLockError::WouldBlock) => return (PolicyEvent::LockBusy, None),
     };
     if !state.registry().contains(id) {
-        // Deregistered — and perhaps erased — since it was prepared: opening the store now would bring an
-        // erased one back as an orphan.
+        // Deregistered — and perhaps erased — meanwhile: opening the store now would bring an erased one
+        // back as an orphan.
         return (PolicyEvent::CaptureFailed, None);
     }
+    // Holding the store, so the Root cannot move under the capture once its volume is followed.
+    let hold = match crate::volumes::gate(state, id, trigger) {
+        Gate::Capture { hold } => hold,
+        Gate::Elsewhere => {
+            tracing::warn!(root = %id, %trigger, "the Root's directory is on a volume other than the one registered; nothing is captured from it");
+            return (PolicyEvent::CaptureFailed, None);
+        }
+    };
+    let (root, location, loaded) = match crate::snapshots::prepare(state, id) {
+        Ok(prepared) => prepared,
+        Err(problem) => {
+            tracing::warn!(root = %id, %trigger, problem = ?problem, "an automatic capture could not start");
+            return (PolicyEvent::CaptureFailed, None);
+        }
+    };
 
     let request = CaptureRequest {
         trigger,
         now,
         verify: loaded.reconcile.verify,
         record_unchanged: false,
+        hold_emptied: hold,
     };
     match snapshots::pass(&root, &location, &loaded.policy, &request) {
         Ok(pass) => {
+            state.outcomes.passed(id, pass.held);
             crate::snapshots::report_unrecognized(id, &pass);
             if let Some(reason) = &pass.index_lag {
                 tracing::warn!(root = %id, %reason, "the history index lags");
@@ -625,11 +645,18 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
                     crate::snapshots::announce(state, id, captured);
                     PolicyEvent::CaptureFinished
                 }
+                None if pass.held => {
+                    tracing::warn!(root = %id, %trigger, "every path is gone and nothing proves the tree is the one registered; the capture is held until one is asked for");
+                    PolicyEvent::CaptureUnchanged
+                }
                 None => PolicyEvent::CaptureUnchanged,
             };
             (event, Some(Passed::from(&pass)))
         }
         Err(error) => {
+            if matches!(error, CaptureError::StoreUnreachable { .. }) {
+                state.outcomes.unreachable(id);
+            }
             tracing::warn!(root = %id, %trigger, %error, "an automatic capture failed");
             (PolicyEvent::CaptureFailed, None)
         }

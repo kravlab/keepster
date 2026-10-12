@@ -197,7 +197,7 @@ fn locate(configured: Option<&Path>) -> Result<Git, GitUnavailable> {
 }
 
 /// The platform this daemon runs on, as the search for `git` tells them apart.
-fn platform() -> Platform {
+pub(crate) fn platform() -> Platform {
     if cfg!(windows) {
         Platform::Windows
     } else if cfg!(target_os = "macos") {

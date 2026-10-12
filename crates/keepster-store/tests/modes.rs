@@ -92,6 +92,7 @@ impl Fixture {
                     now: at(seconds),
                     verify: Verify::Stat,
                     record_unchanged: false,
+                    hold_emptied: false,
                 },
             )
             .expect("a pass")

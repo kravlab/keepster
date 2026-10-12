@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
 use keepster_api::{ErrorCode, Event, FollowTargets, Problem, RegisterRoot, Root, RootState};
 use keepster_app::roots::{self, RegisterError, RootError};
-use keepster_core::RootId;
+use keepster_core::{RootId, VolumeVerdict};
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
 
 use crate::DaemonState;
@@ -120,8 +120,10 @@ pub(crate) async fn register(
 ) -> Result<impl IntoResponse, ProblemResponse> {
     let Json(request) = body.map_err(body_problem)?;
     let registry = state.registry();
-    let record =
-        roots::register(&registry, now(), request.path.as_ref()).map_err(register_problem)?;
+    let record = roots::register(&registry, now(), request.path.as_ref(), &|path| {
+        crate::volumes::place_of(&*state.volumes, path)
+    })
+    .map_err(register_problem)?;
     // Announced before the reload, so a state the new Root reaches is announced after it exists.
     state.publish(Event::RootRegistered {
         root: record.id.to_string(),
@@ -229,7 +231,10 @@ pub(crate) async fn move_root(
     let Json(request) = body.map_err(body_problem)?;
     let id = parse_id(&id)?;
     let registry = state.registry();
-    let record = roots::move_root(&registry, id, request.path.as_ref()).map_err(root_problem)?;
+    let record = roots::move_root(&registry, id, request.path.as_ref(), &|path| {
+        crate::volumes::place_of(&*state.volumes, path)
+    })
+    .map_err(root_problem)?;
     state.publish(Event::RootMoved {
         root: id.to_string(),
     });
@@ -375,12 +380,28 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 /// name — and `Degraded` with the reason otherwise.
 fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
     let activity = daemon.runtimes.activity(record.id).unwrap_or_default();
+    // From the base rather than the Registry, whose lock a caller may be holding.
+    let location =
+        keepster_app::snapshots::location(&daemon.store_base.join(record.id.to_string()));
     let state = if !record.path.is_dir() {
         Some((RootState::Unavailable, "root_missing"))
+    } else if crate::volumes::verdict(&*daemon.volumes, record) == VolumeVerdict::Elsewhere {
+        // A directory, but on a volume other than the one registered — an empty mount point, most
+        // likely: nothing may be captured from it, and the history is as readable as ever (ADR 0011).
+        Some((RootState::Unavailable, "volume_mismatch"))
+    } else if daemon.outcomes.is_unreachable(record.id)
+        || (location.store.exists() && !location.store.is_dir())
+    {
+        // Nowhere to write, and nowhere else is written instead: there is no fallback store.
+        Some((RootState::Unavailable, "store_unreachable"))
     } else if let Some(state) =
         configuration::state_of(&daemon.configuration(record.id, &record.path))
     {
         Some(state)
+    } else if daemon.outcomes.is_held(record.id) {
+        // Every path is gone where nothing proves the tree is the one registered: held, until a
+        // capture someone asks for confirms it, or the tree comes back (ADR 0011).
+        Some((RootState::Degraded, "capture_held"))
     } else {
         coverage(&activity).map(|code| (RootState::Degraded, code))
     };
@@ -426,6 +447,10 @@ fn coverage(activity: &triggers::Activity) -> Option<&'static str> {
         Some("watch_ceiling")
     } else if activity.watch == triggers::Watch::Failed {
         Some("watch_unavailable")
+    } else if activity.watch == triggers::Watch::Blind {
+        // A network or FUSE filesystem the platform's watcher is documented as blind on: reconciled
+        // periodically instead, and said so (ticket 29).
+        Some("watch_blind")
     } else if activity.coarse_mtime && activity.verify == keepster_core::Verify::Stat {
         // ADR 0014: the user decides whether to pay for hashing everything, so the weakness is said.
         Some("mtime_coarse")

@@ -1,10 +1,10 @@
 //! What only the Windows API can answer: the control channel's name and the access control that makes it
 //! the owner's alone, a file's hard-link names, and where Git for Windows is installed (ticket 52).
 //!
-//! Every `unsafe` block in the workspace that touches the Windows API is meant to live here — ticket
-//! 10 already settled that shape when it needed a link count that stable Rust does not expose. The
-//! crate-wide `unsafe_code = "deny"` lint is lifted for this module only, so each call is visible in
-//! one place and reviewable as a unit.
+//! Every `unsafe` block in the workspace that touches the Windows API lives in this crate — here, or,
+//! for which volume a path is on, in `volume/windows.rs` (ticket 56). Ticket 10 settled that shape when
+//! it needed a link count that stable Rust does not expose. The crate-wide `unsafe_code = "deny"` lint
+//! is lifted for these modules only, so each call is visible in one place and reviewable as a unit.
 #![allow(
     unsafe_code,
     reason = "the Win32 calls below have no safe wrapper in std or tokio; they are confined to this module"

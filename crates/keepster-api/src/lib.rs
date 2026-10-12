@@ -1280,9 +1280,11 @@ pub enum RootState {
     /// Still watched, but not as promised — its configuration failed to load and the last known-good
     /// one is in force, or its coverage guarantee is switched off.
     Degraded,
-    /// Nothing can be captured: the directory is missing, unmounted or unreadable, its History Store
-    /// was written by a version this build cannot open, or its configuration has never had a valid
-    /// version to fall back on.
+    /// Nothing can be captured: the directory is missing, unmounted or unreadable, it is on a volume
+    /// other than the one it was registered on (`volume_mismatch`), its History Store cannot be written
+    /// (`store_unreachable`) or was written by a version this build cannot open, or its configuration has
+    /// never had a valid version to fall back on. The history is not unreadable: the timeline, diffs and
+    /// content read as ever, and only capture and Restore stop.
     Unavailable,
 }
 

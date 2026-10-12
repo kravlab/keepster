@@ -172,7 +172,9 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::RootUnavailable
         | ErrorCode::ConfigInvalid
         | ErrorCode::ConfirmationRequired
-        | ErrorCode::SecretOptedIn => exit::STATE_CONFLICT,
+        | ErrorCode::SecretOptedIn
+        | ErrorCode::VolumeMismatch
+        | ErrorCode::StoreUnreachable => exit::STATE_CONFLICT,
         // Asking for the content of a directory, or the entries of a file, is a mistake in what was
         // asked rather than a state anything is in.
         ErrorCode::PathInvalid

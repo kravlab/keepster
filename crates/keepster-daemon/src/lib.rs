@@ -24,6 +24,7 @@ mod restore;
 mod roots;
 mod snapshots;
 mod triggers;
+mod volumes;
 
 use std::collections::HashMap;
 use std::io;
@@ -46,6 +47,7 @@ use utoipa_axum::routes;
 
 pub use housekeeping::HousekeepingTiming;
 pub use openapi::openapi_json;
+pub use volumes::{PlatformVolumes, Volume, Volumes};
 
 /// How to run a daemon instance.
 #[derive(Debug, Clone)]
@@ -68,6 +70,9 @@ pub struct DaemonConfig {
     /// How Retention and maintenance are paced, or `None` for [`HousekeepingTiming::default`]. Only a
     /// test has reason to set it.
     pub housekeeping: Option<HousekeepingTiming>,
+    /// Who answers which volume a path is on, or `None` for [`PlatformVolumes`]. Only a test has reason
+    /// to set it: unplugging a disk is not something a test can do to the machine it runs on.
+    pub volumes: Option<Arc<dyn Volumes>>,
 }
 
 /// A daemon that is listening, and the handle that stops it.
@@ -136,6 +141,7 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         ceiling,
         config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
         config.housekeeping.unwrap_or_default(),
+        config.volumes.unwrap_or_else(|| Arc::new(PlatformVolumes)),
     );
     // The daemon's first look at the Registry happens before any request is served, so that the start's
     // Reconciliation is told apart from the one a registration owes: a Root registered a moment later is
@@ -271,6 +277,12 @@ struct DaemonState {
     events: Arc<events::EventBus>,
     /// What the event stream last said about each Root's state and configuration.
     announced: Arc<Mutex<events::Announced>>,
+    /// Which volume a path is on (ticket 56).
+    volumes: Arc<dyn Volumes>,
+    /// What the last capture of each Root found of its volume and its store.
+    outcomes: Arc<volumes::Outcomes>,
+    /// Where every Root's directory is: its record and its History Store.
+    store_base: PathBuf,
 }
 
 impl DaemonState {
@@ -281,6 +293,7 @@ impl DaemonState {
         watch_ceiling: Option<usize>,
         retry_after: std::time::Duration,
         housekeeping: HousekeepingTiming,
+        volumes: Arc<dyn Volumes>,
     ) -> Self {
         Self {
             started: Instant::now(),
@@ -289,7 +302,7 @@ impl DaemonState {
             config: Arc::new(Mutex::new(keepster_app::config::Configuration::new(
                 config_path,
                 std::env::home_dir(),
-                store_base,
+                store_base.clone(),
             ))),
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling, retry_after)),
             housekeeping: Arc::new(housekeeping::Housekeeping::new(housekeeping)),
@@ -297,6 +310,9 @@ impl DaemonState {
             jobs: Arc::new(jobs::Jobs::default()),
             events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
             announced: Arc::new(Mutex::new(events::Announced::default())),
+            volumes,
+            outcomes: Arc::new(volumes::Outcomes::default()),
+            store_base,
         }
     }
 

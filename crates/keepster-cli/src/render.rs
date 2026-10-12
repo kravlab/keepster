@@ -88,6 +88,31 @@ pub fn write_roots(roots: &[Root], out: &mut impl Write) -> io::Result<()> {
                  build and are not carried forward"
             )?;
         }
+        // Ticket 56: what each volume state means for the history, so that `unavailable` is never read
+        // as "gone".
+        let hint = match root.state_code.as_deref() {
+            Some("volume_mismatch") => Some(
+                "its disk is not mounted there, so nothing is captured; its history reads as ever"
+                    .to_owned(),
+            ),
+            Some("capture_held") => Some(format!(
+                "every file is gone and nothing proves it is the disk it was; to record that, run: \
+                 keepster snapshot -r {}",
+                root.id
+            )),
+            Some("store_unreachable") => Some(
+                "its history store cannot be written, so nothing is captured, and nowhere else instead"
+                    .to_owned(),
+            ),
+            Some("watch_blind") => Some(
+                "changes made on the server are never announced here; it is reconciled periodically"
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        if let Some(hint) = hint {
+            writeln!(out, "      {hint}")?;
+        }
         if root.state_code.as_deref() == Some("root_missing") {
             writeln!(
                 out,

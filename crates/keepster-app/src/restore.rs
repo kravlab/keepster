@@ -138,6 +138,7 @@ pub fn restore(
             now,
             verify: Verify::Stat,
             record_unchanged: false,
+            hold_emptied: false,
         },
     )?;
     let safety_snapshot = safety

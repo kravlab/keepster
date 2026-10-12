@@ -314,6 +314,27 @@ fn records_a_newer_keepster_wrote_are_named_under_their_root() {
 }
 
 #[test]
+fn a_root_whose_disk_is_gone_says_its_history_still_reads_and_a_held_one_says_how_to_record_it() {
+    let mut gone = root("01J0000000000000000000000A", RootState::Unavailable);
+    gone.state_code = Some("volume_mismatch".to_owned());
+    let mut held = root("01J0000000000000000000000B", RootState::Degraded);
+    held.state_code = Some("capture_held".to_owned());
+
+    let result = outcome(served(&status_with(vec![gone, held])), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(printed.contains("its history reads as ever"), "{printed}");
+    assert!(
+        printed.contains("keepster snapshot -r 01J0000000000000000000000B"),
+        "{printed}"
+    );
+    assert_eq!(
+        result.code, 10,
+        "a Root that cannot be captured is the graver news"
+    );
+}
+
+#[test]
 fn the_git_in_use_is_shown_with_its_version() {
     let result = outcome(served(&status_with(Vec::new())), false, None);
 

@@ -278,6 +278,11 @@ pub struct CaptureRequest {
     /// Whether a tree identical to its baseline is still written as a Snapshot — which only a capture
     /// someone asked for is: a touched file or a quiet periodic floor is not a new version.
     pub record_unchanged: bool,
+    /// Whether a pass that would delete every path the previous Snapshot held is held instead of
+    /// written — where nothing proves the tree is the one registered, an unmounted mount point is an
+    /// ordinary empty directory (ADR 0011). A capture someone asked for is their confirmation, and is
+    /// never held.
+    pub hold_emptied: bool,
 }
 
 /// What one pass did.
@@ -308,6 +313,9 @@ pub struct Pass {
     /// How many links the pass followed into their targets — which no watch covers, so this pass was
     /// their coverage (ticket 49).
     pub followed: u64,
+    /// Whether the pass was held rather than written: it would have deleted every path, and it was asked
+    /// to hold such a pass.
+    pub held: bool,
 }
 
 /// Which part of a Root's chronology to list.
@@ -644,6 +652,7 @@ impl HistoryStore {
                 now,
                 verify: Verify::Stat,
                 record_unchanged: true,
+                hold_emptied: false,
             },
         )?;
 
@@ -671,6 +680,7 @@ impl HistoryStore {
             now,
             verify,
             record_unchanged,
+            hold_emptied,
         } = *request;
         let segment = self.segment_at(now)?;
         let reference = retention::segment_ref(&segment);
@@ -725,6 +735,19 @@ impl HistoryStore {
             return Ok(pass);
         }
         let tree = self.find(tree_id)?;
+        // Every path gone, and nothing proving this is the tree that was registered: the previous
+        // Snapshot stays the newest, so Retention has nothing to age it behind (ADR 0011).
+        if hold_emptied {
+            let emptied = match &baseline_tree {
+                Some(baseline) => self.holds_any(baseline)? && !self.holds_any(&tree)?,
+                None => false,
+            };
+            if emptied {
+                let mut pass = walked.pass(None, None);
+                pass.held = true;
+                return Ok(pass);
+            }
+        }
 
         let id = SnapshotId::following(previous, now);
         let signature = self.signature(now)?;
@@ -1080,6 +1103,16 @@ impl HistoryStore {
     /// The tree `id` in this store.
     fn find(&self, id: git2::Oid) -> Result<git2::Tree<'_>, StoreError> {
         self.repository.find_tree(id).map_err(self.failed("read"))
+    }
+
+    /// Whether a Snapshot's tree holds any path at all: an entry beside its sidecar, or one the sidecar
+    /// names without holding — Withheld, or not read.
+    fn holds_any(&self, root: &git2::Tree<'_>) -> Result<bool, StoreError> {
+        if root.iter().any(|entry| entry.name() != Ok(SIDECAR)) {
+            return Ok(true);
+        }
+
+        Ok(!self.sidecar(root)?.sidecar.records.is_empty())
     }
 
     /// Whether the Snapshot whose tree is `root` observed its paths' modes.
@@ -1748,6 +1781,7 @@ impl Walked {
             incomplete: u64::try_from(self.incomplete.len()).unwrap_or(u64::MAX),
             unrecognized: self.unrecognized.clone(),
             followed: self.followed,
+            held: false,
         }
     }
 

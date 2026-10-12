@@ -45,6 +45,16 @@ pub enum CaptureError {
         /// Where the Root was last known to be.
         path: PathBuf,
     },
+    /// The History Store cannot be opened or created where it lives, so there is nowhere to write — and
+    /// nowhere else is written instead (ticket 56).
+    #[error("the history store at {path} cannot be written")]
+    StoreUnreachable {
+        /// Where the store is.
+        path: PathBuf,
+        /// Why it cannot be opened, boxed so the error stays small.
+        #[source]
+        source: Box<StoreError>,
+    },
     /// The Registry itself failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -103,7 +113,12 @@ fn open_for_capture(
         });
     }
 
-    Ok(HistoryStore::open(&location.store, &location.index)?)
+    HistoryStore::open(&location.store, &location.index).map_err(|source| {
+        CaptureError::StoreUnreachable {
+            path: location.store.clone(),
+            source: Box::new(source),
+        }
+    })
 }
 
 /// Bring a Root's derived index up to date, rebuilding it if it is damaged or missing.

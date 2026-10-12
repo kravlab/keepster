@@ -148,12 +148,20 @@ exist yet.
 _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:
-The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, its
-History Store was written by a version this one cannot open, or its configuration has never had a valid version
-to fall back on. Distinct from Degraded, where watching continues on
-worse terms; an Unavailable Root is never deregistered and its History Store is kept, because the Root's identity
-does not depend on its path.
+The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, it is on
+a volume other than the one it was registered on, its History Store cannot be written or was written by a version
+this one cannot open, or its configuration has never had a valid version to fall back on. Distinct from Degraded,
+where watching continues on worse terms; an Unavailable Root is never deregistered and its History Store is kept,
+because the Root's identity does not depend on its path. **It does not mean the history is unreadable**: the
+timeline, diffs and content read as ever, and only capture and Restore stop.
 _Avoid_: offline, missing, lost, disconnected
+
+**Volume Identity**:
+The persistent identity of the volume a Root is on — a filesystem UUID, a volume GUID, a share's source — recorded
+with the Root's place within the volume at registration and compared before every capture, because an unmounted
+mount point is an ordinary empty directory (ADR 0011). A volume mounted somewhere else with the Root at the same
+place within it is followed; that is not a move.
+_Avoid_: disk id, device, mount
 
 **Restore**:
 Writing a Snapshot's version of a file back over the Working Tree.

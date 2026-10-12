@@ -569,6 +569,7 @@ fn an_automatic_capture_that_changes_nothing_writes_no_snapshot() {
                 now: at(MOMENT),
                 verify: Verify::Stat,
                 record_unchanged: false,
+                hold_emptied: false,
             },
         )
         .expect("a capture")
@@ -588,6 +589,7 @@ fn an_automatic_capture_that_changes_nothing_writes_no_snapshot() {
                 now: at(MOMENT + 60),
                 verify: Verify::Stat,
                 record_unchanged: false,
+                hold_emptied: false,
             },
         )
         .expect("a capture")
@@ -605,6 +607,7 @@ fn an_automatic_capture_that_changes_nothing_writes_no_snapshot() {
                 now: at(MOMENT + 120),
                 verify: Verify::Stat,
                 record_unchanged: false,
+                hold_emptied: false,
             },
         )
         .expect("a capture")

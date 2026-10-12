@@ -167,6 +167,14 @@ fn run_pass(
     if !state.registry().contains(id) {
         return Err(roots::not_found(&id.to_string()));
     }
+    // Holding the store, so the Root cannot move under the capture once its volume is followed.
+    let hold = match crate::volumes::gate(state, id, trigger) {
+        crate::volumes::Gate::Capture { hold } => hold,
+        crate::volumes::Gate::Elsewhere => {
+            let path = roots::record(&state.registry(), id)?.path;
+            return Err(crate::volumes::elsewhere(&path));
+        }
+    };
     // Resolved only now, holding the store: a Forget this capture waited behind may have excluded a
     // path from now on, and rules read before it would capture the secret straight back (ticket 81).
     let (root, location, loaded) = prepare(state, id)?;
@@ -176,9 +184,15 @@ fn run_pass(
         now,
         verify: verify.unwrap_or(loaded.reconcile.verify),
         record_unchanged,
+        hold_emptied: hold,
     };
-    let pass =
-        snapshots::pass(&root, &location, &loaded.policy, &request).map_err(capture_problem)?;
+    let pass = snapshots::pass(&root, &location, &loaded.policy, &request).map_err(|error| {
+        if matches!(error, CaptureError::StoreUnreachable { .. }) {
+            state.outcomes.unreachable(id);
+        }
+        capture_problem(error)
+    })?;
+    state.outcomes.passed(id, pass.held);
     if let Some(captured) = &pass.snapshot {
         if let Err(reason) = &captured.changed_paths {
             tracing::warn!(root = %id, snapshot = %captured.id, %reason, "the changes could not be counted");
@@ -191,6 +205,9 @@ fn run_pass(
         tracing::warn!(root = %id, %reason, "the history index lags");
     }
     report_unrecognized(id, &pass);
+    if pass.held {
+        tracing::warn!(root = %id, %trigger, "every path is gone and nothing proves the tree is the one registered; the capture is held until one is asked for");
+    }
     state.runtimes.passed(id, trigger, &pass);
 
     Ok(pass)
@@ -741,6 +758,12 @@ pub(crate) fn capture_problem(error: CaptureError) -> ProblemResponse {
             error.to_string(),
         )
         .with_detail("root", id.to_string()),
+        CaptureError::StoreUnreachable { ref path, .. } => ProblemResponse::new(
+            StatusCode::CONFLICT,
+            ErrorCode::StoreUnreachable,
+            error.to_string(),
+        )
+        .with_detail("path", path.to_string_lossy()),
         CaptureError::Registry(_) | CaptureError::Store(_) => ProblemResponse::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::CaptureFailed,

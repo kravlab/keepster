@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::{RootId, SnapshotId};
+use keepster_core::{RootId, SnapshotId, VolumePlace};
 use keepster_store::{Registry, RegistryEntry, RegistryError, RootRecord, StoreError};
 
 use crate::snapshots;
@@ -56,6 +56,7 @@ pub fn register(
     registry: &Registry,
     now: SystemTime,
     path: &Path,
+    place: &dyn Fn(&Path) -> Option<VolumePlace>,
 ) -> Result<RootRecord, RegisterError> {
     let path = std::path::absolute(path).map_err(|source| RegisterError::Unresolvable {
         path: path.to_path_buf(),
@@ -87,12 +88,22 @@ pub fn register(
         .find(|record| record.path == path)
     {
         registry.rewatch(unwatched.id)?;
-        return Ok(unwatched);
+        // Watched again is registered again: where it sits on its volume is recorded as it is now.
+        let record = RootRecord {
+            volume: place(&path),
+            ..unwatched
+        };
+        registry.insert(&record)?;
+        return Ok(record);
     }
 
+    // Where it sits on its volume, recorded now so that every capture can tell this tree from an empty
+    // mount point (ADR 0011).
+    let volume = place(&path);
     let record = RootRecord {
         id: RootId::generate(now),
         path,
+        volume,
     };
     registry.insert(&record)?;
 
@@ -192,7 +203,42 @@ pub fn deregister(
 /// reliably announces a directory move — so any auto-detection would be a heuristic that one day grafts
 /// a stranger's history onto yours (ticket 07). The identity does not change, so the history does not
 /// move with it.
-pub fn move_root(registry: &Registry, id: RootId, path: &Path) -> Result<RootRecord, RootError> {
+///
+/// The Root is somewhere the person chose, so where it sits on its volume is recorded again, as at
+/// registration.
+pub fn move_root(
+    registry: &Registry,
+    id: RootId,
+    path: &Path,
+    place: &dyn Fn(&Path) -> Option<VolumePlace>,
+) -> Result<RootRecord, RootError> {
+    relocate(registry, id, path, |path| place(path))
+}
+
+/// Record that a Root's volume is mounted somewhere else now, with the Root at the same place within
+/// it (ADR 0011).
+///
+/// Not a move: the operating system chose the mount point and the person did nothing, and the volume's
+/// identity is the proof — not a heuristic — that this is the same tree. Ticket 07's no-overlap rule is
+/// run all the same, since the new mount point may lie inside another Root.
+pub fn follow(registry: &Registry, id: RootId, path: &Path) -> Result<RootRecord, RootError> {
+    let recorded = registry
+        .readable()?
+        .into_iter()
+        .find(|record| record.id == id)
+        .ok_or(RootError::NotFound { id })?;
+
+    relocate(registry, id, path, |_| recorded.volume.clone())
+}
+
+/// Record the Root `id` at `path`, which must be a directory overlapping no other Root, with its place
+/// on its volume as `place` says.
+fn relocate(
+    registry: &Registry,
+    id: RootId,
+    path: &Path,
+    place: impl Fn(&Path) -> Option<VolumePlace>,
+) -> Result<RootRecord, RootError> {
     let records = registry.readable()?;
     if !records.iter().any(|record| record.id == id) {
         return Err(RootError::NotFound { id });
@@ -224,7 +270,8 @@ pub fn move_root(registry: &Registry, id: RootId, path: &Path) -> Result<RootRec
         return Err(RootError::Overlaps { path, existing });
     }
 
-    let record = RootRecord { id, path };
+    let volume = place(&path);
+    let record = RootRecord { id, path, volume };
     registry.insert(&record)?;
 
     Ok(record)

@@ -18,6 +18,7 @@ mod segment;
 mod sidecar;
 mod snapshot;
 mod trigger;
+mod volume;
 
 pub use event::EventId;
 pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
@@ -51,3 +52,4 @@ pub use trigger::{
     Action, InvalidDuration, PolicyEvent, PolicyState, RETRY_AFTER, RETRY_CEILING, Triggers,
     decide, format_duration, parse_duration,
 };
+pub use volume::{VolumePlace, VolumeVerdict, verify_volume, watch_blind};

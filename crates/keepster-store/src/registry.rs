@@ -8,7 +8,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use keepster_core::RootId;
+use keepster_core::{RootId, VolumePlace};
 use serde::{Deserialize, Serialize};
 
 /// The file that records one Root, beside that Root's History Store.
@@ -47,6 +47,9 @@ pub struct RootRecord {
     pub id: RootId,
     /// Where the Root's directory is right now.
     pub path: PathBuf,
+    /// Where it sits on its volume, recorded at registration and compared before every capture
+    /// (ADR 0011) — `None` where the volume could not be identified.
+    pub volume: Option<VolumePlace>,
 }
 
 /// Why a Registry operation failed.
@@ -291,6 +294,13 @@ struct RecordFile {
     version: u32,
     id: String,
     path: PathBuf,
+    /// The volume's identity. Optional and additive, so a build from before it reads the record as it
+    /// always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume: Option<String>,
+    /// The Root's place within that volume, `/`-separated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    within_volume: Option<String>,
 }
 
 fn read_record(path: &Path) -> Result<RootRecord, RegistryError> {
@@ -319,6 +329,10 @@ fn read_record(path: &Path) -> Result<RootRecord, RegistryError> {
     Ok(RootRecord {
         id,
         path: file.path,
+        volume: file.volume.map(|identity| VolumePlace {
+            identity,
+            within: file.within_volume.unwrap_or_default(),
+        }),
     })
 }
 
@@ -341,6 +355,8 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
         version: CONTAINER_VERSION,
         id: record.id.to_string(),
         path: record.path.clone(),
+        volume: record.volume.as_ref().map(|place| place.identity.clone()),
+        within_volume: record.volume.as_ref().map(|place| place.within.clone()),
     };
     let text = toml::to_string_pretty(&file).map_err(|error| RegistryError::Unreadable {
         path: path.to_path_buf(),

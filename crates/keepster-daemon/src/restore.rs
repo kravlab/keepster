@@ -12,6 +12,7 @@ use keepster_api::{
     RestoreOutcome, RestoreRequest, Restored, RestoredPath,
 };
 use keepster_app::restore::{self, RestoreError};
+use keepster_core::VolumeVerdict;
 use keepster_core::{
     Confirmation, Confirmed, Issue, ModeChoice, NameCase, PathPlan, Plan, Resolution, RootPath,
     SnapshotId, Step,
@@ -76,6 +77,9 @@ pub(crate) async fn restore(
             if !state.registry().contains(id) {
                 return Err(roots::not_found(&id.to_string()));
             }
+            // Followed first, holding the store as a capture does, if its volume is mounted somewhere
+            // else now (ADR 0011).
+            let root = crate::volumes::follow(&state, root);
             // The Safety Snapshot is a capture: its rules are read holding the store, so a Forget this
             // waited behind cannot have excluded a path it then takes back (ticket 81).
             let loaded = state.effective(id, &root.path)?;
@@ -86,6 +90,10 @@ pub(crate) async fn restore(
                     format!("{} is not there to restore into", root.path.display()),
                 )
                 .with_detail("path", root.path.to_string_lossy()));
+            }
+            // Nothing is written into a tree that is not the one registered (ADR 0011).
+            if crate::volumes::verdict(&*state.volumes, &root) == VolumeVerdict::Elsewhere {
+                return Err(crate::volumes::elsewhere(&root.path));
             }
 
             let restored = restore::restore(&root, &location, &loaded.policy, &request, now)

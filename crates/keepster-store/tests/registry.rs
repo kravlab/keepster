@@ -20,6 +20,7 @@ fn a_record_being_rewritten_is_never_read_half_written() {
         .insert(&RootRecord {
             id,
             path: PathBuf::from("/start"),
+            volume: None,
         })
         .expect("the first record");
 
@@ -33,6 +34,7 @@ fn a_record_being_rewritten_is_never_read_half_written() {
                     .insert(&RootRecord {
                         id,
                         path: PathBuf::from(format!("/moved/{round}")),
+                        volume: None,
                     })
                     .expect("a rewrite");
             }
@@ -93,6 +95,7 @@ fn a_record_from_an_older_container_is_rewritten_in_this_one_and_read_as_it_was(
         &RootRecord {
             id,
             path: PathBuf::from("/project"),
+            volume: None,
         }
     );
     assert!(
@@ -122,4 +125,34 @@ fn a_record_from_an_older_container_is_rewritten_in_this_one_and_read_as_it_was(
         !dir.join("root.toml.new").exists(),
         "replaced atomically, nothing left beside it"
     );
+}
+
+#[test]
+fn a_root_s_place_on_its_volume_is_recorded_and_survives_an_unwatch() {
+    let base = tempfile::tempdir().expect("a temporary store base");
+    let registry = Registry::open(base.path()).expect("an empty registry");
+    let placed = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH),
+        path: PathBuf::from("/media/disk/projects/app"),
+        volume: Some(keepster_core::VolumePlace {
+            identity: "uuid:1234-ABCD".to_owned(),
+            within: "projects/app".to_owned(),
+        }),
+    };
+    let unplaced = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+        path: PathBuf::from("/tmp/app"),
+        volume: None,
+    };
+    registry.insert(&placed).expect("written");
+    registry.insert(&unplaced).expect("written");
+
+    assert_eq!(
+        registry.readable().expect("read"),
+        vec![placed.clone(), unplaced],
+        "a volume that could not be identified is recorded as none"
+    );
+
+    registry.remove(placed.id).expect("unwatched");
+    assert_eq!(registry.unwatched().expect("read"), vec![placed]);
 }

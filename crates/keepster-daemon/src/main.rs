@@ -78,6 +78,7 @@ async fn run_daemon(
         watch_ceiling: None,
         retry_after: None,
         housekeeping: None,
+        volumes: None,
     })
     .await
     {

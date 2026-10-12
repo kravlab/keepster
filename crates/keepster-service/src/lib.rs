@@ -7,8 +7,11 @@
 
 use std::path::PathBuf;
 
+mod volume;
 #[cfg(windows)]
 mod windows;
+
+pub use volume::{Volume, mount_points, volume_of};
 
 #[cfg(windows)]
 pub use windows::{

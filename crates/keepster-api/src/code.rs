@@ -71,6 +71,8 @@ error_codes! {
     JobInterrupted = "job_interrupted": "The daemon stopped before the job could start; nothing was done.",
     GlobInvalid = "glob_invalid": "`glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.",
     SecretOptedIn = "secret_opted_in": "A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.",
+    VolumeMismatch = "volume_mismatch": "The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.",
+    StoreUnreachable = "store_unreachable": "The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.",
 }
 
 impl ErrorCode {

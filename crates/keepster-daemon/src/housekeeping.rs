@@ -244,6 +244,9 @@ fn pass_over_every_root(state: &DaemonState) {
     state.housekeeping.forget_except(&kept);
     // A `git` installed or upgraded since the last look is found here, never under another lock.
     crate::git::refresh(state);
+    // A volume mounted somewhere else since the last look is followed here, without waiting for a
+    // capture (ADR 0011).
+    crate::volumes::follow_every_root(state);
 
     let every = watched
         .iter()

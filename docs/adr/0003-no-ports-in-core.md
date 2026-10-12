@@ -4,8 +4,9 @@ Keepster's core holds the logic worth protecting — the Retention ladder, the l
 trigger machine — and the usual way to protect it is hexagonal: the core declares `trait SnapshotStore`, `trait
 Clock`, `trait FileSystem`, and adapters obey. We do the opposite. `keepster-core` is pure functions over domain
 types with no traits and no I/O; `keepster-app` holds use-cases that call a **concrete** `SnapshotStore`; time is a
-parameter. The workspace contains no port trait, no fake and no mock. A reader expecting hexagonal architecture
-would otherwise read this as an oversight, which is why it is written down.
+parameter. The workspace contains no port trait for the store, the clock or the filesystem, and no fake or mock of
+any of them; the one stand-in it has is named below, with why. A reader expecting hexagonal architecture would
+otherwise read this as an oversight, which is why it is written down.
 
 ## Considered Options
 
@@ -39,8 +40,15 @@ would otherwise read this as an oversight, which is why it is written down.
 - **The cost is real and one-directional**: `keepster-app` tests need `git` present and write to temp dirs, so
   they are slower than core tests and will not run in an environment without git. Retrofitting a trait later means
   touching every use-case and every test that constructs a store, which is why this is an ADR rather than a note.
-- **Nothing needs dependency injection.** With no trait in the workspace there is nothing to resolve, so wiring is
-  a sequence of constructor calls in the daemon and a DI container would have no work to do.
+- **Nothing needs dependency injection.** With no port trait for the store, the clock or the filesystem there is
+  nothing to resolve, so wiring is a sequence of constructor calls in the daemon and a DI container would have no
+  work to do.
 - **"Swappable" is redefined.** The storage model is *locally replaceable* — no crate outside `keepster-store`
   names a git concept, so a rewrite is confined to one crate — rather than *trait-substitutable*. The weaker claim
   is the true one and must not be restated as the stronger one.
+- **One stand-in exists, and it is not a store: which volume a path is on** (ticket 56, ADR 0011). The daemon
+  asks it through `trait Volumes`, and the harness answers with `FakeVolumes`. The reasoning above runs the other
+  way here: what must be proved is the daemon's behaviour when a disk is unplugged or remounted elsewhere, which no
+  test can do to the machine it runs on, while the platform's own answers are tested for real, in
+  `keepster-service`, on every platform CI runs. The trait is the daemon's, never the core's, and has one
+  production implementation.
