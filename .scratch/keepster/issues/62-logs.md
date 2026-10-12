@@ -2,7 +2,7 @@
 
 **Blocked by:** 42 (Configuration — two levels, provenance, automatic reload, `Degraded`)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **What to build:** when something goes wrong a user has a readable log in a known place on every platform, and a debug
 level left on overnight can neither fill the disk the daemon is protecting nor push the useful lines out of the
@@ -18,8 +18,8 @@ the level is an operation with an expiry, which is the root-cause answer rather 
 - [x] Rotation triggers on size, retains a bounded number of files, and the declared ceiling is a configuration key
 - [x] Raising the level takes a duration and returns to the default by itself; an active temporary level is a row in
       `status`
-- [ ] The rotation writer is covered by tests on all three platforms, including the boundary and the semantics of
-      renaming an open file on Windows — *written and compiled for Windows; not yet run on Windows or macOS, so not ticked*
+- [x] The rotation writer is covered by tests on all three platforms, including the boundary and the semantics of
+      renaming an open file on Windows — *run on Linux and Windows; not yet run on macOS, ticked by the owner's call*
 - [x] Lines are human-readable with structured fields by default, switchable to one JSON object per line by a global
       key, one file either way
 - [x] The format and the ceiling describe the daemon, so they are never settable per Root
@@ -53,3 +53,6 @@ the level is an operation with an expiry, which is the root-cause answer rather 
   timer stops while a laptop sleeps); a rotation whose last rename fails puts the current file back instead of
   deleting it, the shift stops at the first file a reader holds so a retry loses nothing, and a `.rotating` file a
   crash left between the two renames is put back when the log is opened.
+- Closed on the owner's decision after the merge gate at 517126c went green: on Windows all nine tests of
+  `tests/rotating.rs` passed, both Windows-only ones included (9 passed, 0 ignored). **The rotation tests have not
+  yet run on macOS**: the last nightly macOS run was at fff716b, before this ticket's commit.
