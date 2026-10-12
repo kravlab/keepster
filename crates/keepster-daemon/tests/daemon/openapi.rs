@@ -136,6 +136,8 @@ fn every_route_the_api_serves_is_described() {
             "POST /v1/roots/{id}/reconcile",
             "POST /v1/roots/{id}/restore",
             "POST /v1/roots/{id}/snapshots",
+            "POST /v1/ui/bootstrap",
+            "POST /v1/ui/token/rotate",
             "PUT /v1/roots/{id}/pins/{snapshot}",
         ]
     );
@@ -201,6 +203,9 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "Unsearched",
         "ContentRecord",
         "SearchCost",
+        "ListenerStatus",
+        "ListenerState",
+        "UiBootstrap",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -334,6 +339,7 @@ fn every_operation_has_its_own_stable_name() {
     assert_eq!(
         names,
         [
+            "create_ui_bootstrap",
             "diff_root",
             "download_archive",
             "explain_path",
@@ -358,6 +364,7 @@ fn every_operation_has_its_own_stable_name() {
             "reconcile_root",
             "register_root",
             "restore_root",
+            "rotate_ui_token",
             "search_content",
             "search_paths",
             "stat_selection",

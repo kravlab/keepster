@@ -5,7 +5,8 @@
 //! ticket 08 forbids the CLI to depend on the daemon. It is a platform fact, and this is the
 //! platform crate.
 
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 mod volume;
 #[cfg(windows)]
@@ -28,17 +29,9 @@ pub use windows::{
 /// Returns `None` when the platform's per-user runtime directory — or, on Windows, the owning SID —
 /// cannot be determined, which the caller reports rather than guessing a world-readable location.
 pub fn default_control_path() -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // `XDG_RUNTIME_DIR` is the documented per-user, permission-protected runtime directory.
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .map(|dir| PathBuf::from(dir).join("keepster/daemon.sock"))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Per-user and private on macOS, where there is no `XDG_RUNTIME_DIR`.
-        std::env::var_os("TMPDIR").map(|dir| PathBuf::from(dir).join("keepster/daemon.sock"))
+        default_runtime_dir().map(|dir| dir.join("daemon.sock"))
     }
 
     #[cfg(windows)]
@@ -47,6 +40,37 @@ pub fn default_control_path() -> Option<PathBuf> {
         current_user_sid()
             .ok()
             .map(|sid| PathBuf::from(format!(r"\\.\pipe\keepster-{sid}")))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
+/// The per-user runtime directory, private to its owner, which is where a secret that lives for one
+/// daemon start belongs — the loopback listener's token (ticket 60). On Unix it holds the control socket
+/// too.
+///
+/// Returns `None` when the platform's per-user runtime directory cannot be determined.
+pub fn default_runtime_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        // `XDG_RUNTIME_DIR` is the documented per-user, permission-protected runtime directory.
+        std::env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("keepster"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Per-user and private on macOS, where there is no `XDG_RUNTIME_DIR`.
+        std::env::var_os("TMPDIR").map(|dir| PathBuf::from(dir).join("keepster"))
+    }
+
+    #[cfg(windows)]
+    {
+        // A named pipe has no directory, so the token sits beside the store, under a per-user profile
+        // directory whose inherited ACL admits its owner, SYSTEM and the administrators alone.
+        std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Keepster\\run"))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -130,4 +154,60 @@ pub fn default_config_path() -> Option<PathBuf> {
     {
         None
     }
+}
+
+/// The global configuration of an install that declines the web UI: no loopback listener, so no
+/// network surface and no token (ticket 24).
+pub const NO_WEB_UI: &str = "[ui]\nlistener = false\n";
+
+/// What declaring a CLI-only install did to the global configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoWebUi {
+    /// There was none, and one now switches the listener off.
+    Created,
+    /// There was one, which is left exactly as it is: rewriting a person's TOML would lose their
+    /// comments and their order. `add` is the line for them to add, in its `[ui]` table — which the
+    /// file may already have, so the table is not part of the line.
+    Existing {
+        /// The line to add under `[ui]`.
+        add: &'static str,
+    },
+}
+
+/// Declare at install time that this machine has no web UI: write the configuration that switches the
+/// loopback listener off — only when this creates the file (ticket 24).
+///
+/// `keepster service install --no-web-ui` calls this (ticket 61). The file stays the single source of
+/// truth: this is one way of producing it, and the daemon cannot tell how the key got there. A file
+/// created at the same moment by someone else is theirs, and is left alone like any existing one.
+pub fn declare_no_web_ui(config_path: &Path) -> io::Result<NoWebUi> {
+    if let Some(directory) = config_path.parent() {
+        std::fs::create_dir_all(directory)?;
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(config_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Ok(NoWebUi::Existing {
+                add: "listener = false",
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let written = file
+        .write_all(
+            format!("# Written by `keepster service install --no-web-ui`.\n{NO_WEB_UI}").as_bytes(),
+        )
+        .and_then(|()| file.sync_all());
+    if let Err(error) = written {
+        // A file half-written by this call is not a person's; it goes rather than leave a typo behind.
+        drop(file);
+        let _ = std::fs::remove_file(config_path);
+        return Err(error);
+    }
+
+    Ok(NoWebUi::Created)
 }

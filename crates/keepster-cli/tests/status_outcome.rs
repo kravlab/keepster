@@ -39,6 +39,7 @@ fn status_with(roots: Vec<Root>) -> Status {
                 detail: None,
                 install: None,
             },
+            listener: None,
         },
         roots,
     }

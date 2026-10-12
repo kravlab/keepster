@@ -2353,6 +2353,81 @@
         }
       }
     },
+    "/v1/ui/bootstrap": {
+      "post": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "A single-use code for opening a browser session, inside the URL to open.",
+        "operationId": "create_ui_bootstrap",
+        "responses": {
+          "200": {
+            "description": "The URL to open. Its code is exchanged once, for an `HttpOnly`, `SameSite=Strict` cookie, and redirected away from. Served on the control channel alone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiBootstrap"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The daemon has no loopback listener: `ui.listener` is off, or it could not bind (`listener_unavailable`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No code could be minted.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ui/token/rotate": {
+      "post": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Replace the token, revoking every browser session and every code not yet exchanged.",
+        "operationId": "rotate_ui_token",
+        "responses": {
+          "204": {
+            "description": "A new token is in force and in its file; every session the old one opened is refused from now on. A restart rotates it too. Served on the control channel alone."
+          },
+          "409": {
+            "description": "The daemon has no loopback listener, so there is no token (`listener_unavailable`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The new token could not be written; the old one stays in force.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/version": {
       "get": {
         "tags": [
@@ -2760,6 +2835,17 @@
               "linger": {
                 "$ref": "#/components/schemas/Reported",
                 "description": "Whether coverage survives logout. Filled by ticket 61, and on macOS it reads as unavailable\nbecause a LaunchAgent dies at logout."
+              },
+              "listener": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ListenerStatus",
+                    "description": "Whether the daemon has a network surface: the loopback listener the browser reaches it through\n(ticket 60). The only place that says so. Switched off, it is a deliberate configuration rather\nthan a fault, and changes no exit code. Absent from a daemon older than the field."
+                  }
+                ]
               },
               "maintenance": {
                 "$ref": "#/components/schemas/Reported",
@@ -4033,6 +4119,42 @@
           "deleted"
         ]
       },
+      "ListenerState": {
+        "type": "string",
+        "description": "Whether the loopback listener exists. Decided when the daemon starts, and only a restart changes it.",
+        "enum": [
+          "listening",
+          "off",
+          "failed"
+        ]
+      },
+      "ListenerStatus": {
+        "type": "object",
+        "description": "The loopback listener: where it is, or why there is none.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it listens, `127.0.0.1:<port>`, while it does."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it could not bind, while it `failed`."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ListenerState",
+            "description": "Whether it is listening."
+          }
+        }
+      },
       "ModesChoice": {
         "type": "string",
         "description": "Which permission bits a restored file ends up with, where the Snapshot's and the disk's differ.",
@@ -4624,7 +4746,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it.\n- `query_invalid`: The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.\n- `search_invalid`: A content search names no Root: give `roots`, or ask for `all`."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it.\n- `query_invalid`: The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.\n- `search_invalid`: A content search names no Root: give `roots`, or ask for `all`.\n- `unauthorized`: The loopback listener was asked without its token: no cookie a bootstrap code was exchanged for, no `Authorization: Bearer` with the token, or a bootstrap code already used.\n- `host_refused`: The request's `Host` is not the loopback listener's own address with its port, which is how a page rebinding its own name to the loopback is told apart.\n- `origin_refused`: The request's `Origin` is not the listener's own, nor one `ui.allowed_origins` names.\n- `token_failed`: A token or a bootstrap code could not be minted or written; the token in force is unchanged.\n- `listener_unavailable`: The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`."
           },
           "detail": {
             "type": "string",
@@ -5350,6 +5472,19 @@
               "type": "string"
             },
             "description": "The Segments, and the Pins as `pins/` and the Snapshot's identity, written by a newer Keepster in\na format this build cannot read. Their Snapshots are on no page; they are not lost, and a build\nthat reads their format lists them again. Absent while there are none."
+          }
+        }
+      },
+      "UiBootstrap": {
+        "type": "object",
+        "description": "A way into the browser session, from `POST /v1/ui/bootstrap` (ticket 60).",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The address to open: the loopback listener with a single-use code, which it exchanges for a\ncookie and redirects away from, so the token itself never appears in a URL."
           }
         }
       },

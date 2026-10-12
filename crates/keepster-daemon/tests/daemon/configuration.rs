@@ -330,3 +330,115 @@ async fn a_file_created_broken_falls_back_to_the_defaults_its_absence_meant() {
         ("degraded".to_owned(), "config_invalid".to_owned())
     );
 }
+
+#[tokio::test]
+async fn the_listener_is_on_by_default_and_reported_as_a_key_of_every_root() {
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+
+    let configuration = configuration(&daemon, &root).await;
+
+    let listener = key(&configuration, "ui.listener");
+    assert_eq!(listener["value"], true);
+    assert_eq!(listener["origin"]["level"], "default");
+    assert_eq!(listener["restart_required"], false);
+}
+
+#[tokio::test]
+async fn a_daemon_key_in_a_per_root_block_is_ignored_with_a_warning() {
+    // A key describing the daemon has one value per process, so only the global file's own table sets
+    // it: a block naming one Root, or a pattern of them, cannot.
+    let daemon = Harness::start().await;
+    let (root, project) = registered(&daemon).await;
+    let glob = format!("{}/*", project.parent().expect("a parent").display()).replace('\\', "/");
+    daemon.write_global_config(
+        format!(
+            "[root.{root}.ui]\nlistener = false\n\n\
+             [[roots]]\npath = \"{glob}\"\n[roots.ui]\nport = 9999\n"
+        )
+        .as_bytes(),
+    );
+
+    let configuration = configuration(&daemon, &root).await;
+
+    assert_eq!(key(&configuration, "ui.listener")["value"], true);
+    assert_eq!(key(&configuration, "ui.port")["origin"]["level"], "default");
+    let ignored: Vec<&str> = configuration["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter(|warning| warning["code"] == "key_ignored")
+        .map(|warning| warning["message"].as_str().expect("a message"))
+        .collect();
+    assert_eq!(ignored.len(), 2, "{configuration}");
+    assert!(
+        ignored
+            .iter()
+            .any(|message| message.contains("ui.listener")),
+        "{ignored:?}"
+    );
+    assert!(
+        ignored.iter().any(|message| message.contains("ui.port")),
+        "{ignored:?}"
+    );
+    assert_eq!(configuration["errors"], serde_json::json!([]));
+    watching(&daemon, &root).await;
+}
+
+#[tokio::test]
+async fn a_root_file_setting_a_daemon_key_is_ignored_with_a_warning() {
+    let daemon = Harness::start().await;
+    let (root, project) = registered(&daemon).await;
+    write(&project, ".keepster.toml", b"[ui]\nlistener = false\n");
+
+    let configuration = configuration(&daemon, &root).await;
+
+    assert_eq!(key(&configuration, "ui.listener")["value"], true);
+    assert_eq!(configuration["warnings"][0]["code"], "key_ignored");
+    watching(&daemon, &root).await;
+}
+
+#[tokio::test]
+async fn an_allowed_origin_that_is_a_wildcard_is_refused_as_invalid() {
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+    daemon.write_global_config(b"[ui]\nallowed_origins = [\"*\"]\n");
+
+    let configuration = configuration(&daemon, &root).await;
+
+    assert_eq!(
+        configuration["errors"][0]["code"], "config_invalid",
+        "{configuration}"
+    );
+    assert!(
+        configuration["errors"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("ui.allowed_origins")),
+        "{configuration}"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_to_a_restart_required_key_is_reported_until_the_daemon_restarts() {
+    // Ticket 42's restart-required criterion, end to end, with its first key.
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+
+    daemon.write_global_config(b"[ui]\nlistener = false\n");
+    let edited = configuration(&daemon, &root).await;
+    let listener = key(&edited, "ui.listener");
+    assert_eq!(
+        listener["value"], true,
+        "the value in force is the one the daemon started with"
+    );
+    assert_eq!(listener["origin"]["level"], "default");
+    assert_eq!(listener["restart_required"], true);
+
+    let daemon = daemon.restart().await;
+
+    let restarted = configuration(&daemon, &root).await;
+    let listener = key(&restarted, "ui.listener");
+    assert_eq!(listener["value"], false);
+    assert_eq!(listener["origin"]["level"], "global");
+    assert_eq!(listener["restart_required"], false);
+}

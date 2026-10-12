@@ -109,6 +109,47 @@ pub struct DaemonStatus {
     pub maintenance: Reported,
     /// The external `git` maintenance runs with, or why there is none.
     pub git: GitStatus,
+    /// Whether the daemon has a network surface: the loopback listener the browser reaches it through
+    /// (ticket 60). The only place that says so. Switched off, it is a deliberate configuration rather
+    /// than a fault, and changes no exit code. Absent from a daemon older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener: Option<ListenerStatus>,
+}
+
+/// The loopback listener: where it is, or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListenerStatus {
+    /// Whether it is listening.
+    pub state: ListenerState,
+    /// Where it listens, `127.0.0.1:<port>`, while it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Why it could not bind, while it `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Whether the loopback listener exists. Decided when the daemon starts, and only a restart changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ListenerState {
+    /// It is listening, at `address`.
+    Listening,
+    /// `ui.listener` switched it off: the daemon has no network surface, and mints no token.
+    Off,
+    /// It is switched on and could not bind — most likely another process holds `ui.port`.
+    Failed,
+}
+
+/// A way into the browser session, from `POST /v1/ui/bootstrap` (ticket 60).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UiBootstrap {
+    /// The address to open: the loopback listener with a single-use code, which it exchanges for a
+    /// cookie and redirects away from, so the token itself never appears in a URL.
+    pub url: String,
 }
 
 /// The external `git` store maintenance runs with (ticket 52). Capture never needs it.

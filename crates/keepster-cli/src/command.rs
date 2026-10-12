@@ -98,6 +98,37 @@ pub enum Command {
     /// Remove every version of a path from the Root's whole history, when a secret was captured.
     /// Irreversible; the files on disk are not touched.
     Forget(ForgetArgs),
+
+    /// Open the web UI in a browser, signed in — or, with `token rotate`, end every browser session.
+    Ui(UiArgs),
+}
+
+/// Options of `keepster ui`.
+#[derive(Debug, Args)]
+pub struct UiArgs {
+    /// Print the address to open instead of opening a browser. It holds a single-use code, which the
+    /// first browser to open it spends.
+    #[arg(long)]
+    pub no_browser: bool,
+
+    /// What else to do with the browser's way in.
+    #[command(subcommand)]
+    pub command: Option<UiCommand>,
+}
+
+/// The subcommands of `keepster ui`.
+#[derive(Debug, Subcommand)]
+pub enum UiCommand {
+    /// The loopback listener's token.
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+/// The subcommands of `keepster ui token`.
+#[derive(Debug, Subcommand)]
+pub enum TokenCommand {
+    /// Replace the token, ending every browser session it opened. Restarting the daemon does too.
+    Rotate,
 }
 
 /// Options of `keepster forget`.

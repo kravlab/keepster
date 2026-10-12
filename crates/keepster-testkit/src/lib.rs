@@ -5,6 +5,7 @@
 //! volume a path is on, [`FakeVolumes`], since no test can unplug a disk from the machine it runs on.
 //! Dev-only, never published, and allowed to depend on anything.
 
+mod loopback;
 mod volumes;
 
 use std::path::{Path, PathBuf};
@@ -176,6 +177,9 @@ impl Harness {
 
         let daemon = keepster_daemon::start(DaemonConfig {
             control_path: control_path.clone(),
+            runtime_dir: base.clone(),
+            // Any free port: tests run in parallel, and a fixed one would be taken by the first.
+            loopback_port: Some(0),
             store_base,
             config_path: Some(config_path),
             watch_ceiling: options.watch_ceiling,
@@ -205,12 +209,56 @@ impl Harness {
         self.daemon.control_path()
     }
 
+    /// Where the loopback listener is, or `None` when it is off.
+    pub fn loopback(&self) -> Option<std::net::SocketAddr> {
+        self.daemon.loopback()
+    }
+
+    /// The file this daemon writes the loopback listener's token into, whether or not it did.
+    pub fn token_path(&self) -> PathBuf {
+        self.base.join(keepster_daemon::TOKEN_FILE)
+    }
+
+    /// Send one request to the loopback listener, as a browser or a third-party client would, with
+    /// exactly the headers given — no `Host` is added, so a test decides what the daemon is told.
+    ///
+    /// Fails the test when the listener is off or cannot be reached.
+    pub async fn loopback_request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> Response {
+        let address = self.loopback().expect("the loopback listener is on");
+        loopback::request(address, method, path, headers)
+            .await
+            .unwrap_or_else(|error| panic!("{method} {path} over loopback failed: {error}"))
+    }
+
+    /// `GET` the given path from the loopback listener, naming it in `Host` as a browser would and
+    /// sending `headers` besides.
+    pub async fn loopback_get(&self, path: &str, headers: &[(&str, &str)]) -> Response {
+        let host = self
+            .loopback()
+            .expect("the loopback listener is on")
+            .to_string();
+        let mut all = vec![("host", host.as_str())];
+        all.extend_from_slice(headers);
+
+        self.loopback_request("GET", path, &all).await
+    }
+
     /// The directory the daemon keeps one Root's record and History Store in.
     ///
     /// Tests use it to assert what deregistering does and does not erase — the one question where the
     /// answer is a file on disk rather than an answer from the API.
     pub fn store_dir(&self, root_id: &str) -> PathBuf {
         self.base.join("store").join(root_id)
+    }
+
+    /// The global configuration file this daemon reads, which need not exist.
+    pub fn config_path(&self) -> PathBuf {
+        self.base.join("config.toml")
     }
 
     /// Write the global configuration this daemon reads, replacing whatever it held.

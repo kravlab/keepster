@@ -163,6 +163,7 @@ pub(crate) fn wire(value: &Value) -> serde_json::Value {
     match value {
         Value::Bool(switch) => json!(switch),
         Value::Bytes(bytes) => json!(bytes),
+        Value::Number(number) => json!(number),
         Value::Duration(duration) => json!(keepster_core::format_duration(*duration)),
         Value::Words(words) => json!(words),
         Value::Name(name) => json!(name),

@@ -737,6 +737,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
+ "getrandom",
  "jiff",
  "keepster-api",
  "keepster-app",
@@ -787,6 +788,9 @@ dependencies = [
 name = "keepster-testkit"
 version = "0.1.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "keepster-cli",
  "keepster-daemon",
  "serde_json",

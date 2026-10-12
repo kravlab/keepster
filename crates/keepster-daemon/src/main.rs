@@ -31,8 +31,16 @@ async fn main() -> ExitCode {
                 return ExitCode::from(exit::OTHER);
             };
 
+            let Some(runtime_dir) = keepster_service::default_runtime_dir() else {
+                eprintln!(
+                    "keepster: this platform has no per-user runtime directory for the daemon"
+                );
+                return ExitCode::from(exit::OTHER);
+            };
+
             run_daemon(
                 control_path,
+                runtime_dir,
                 store_base,
                 keepster_service::default_config_path(),
             )
@@ -61,6 +69,7 @@ async fn main() -> ExitCode {
         Command::Maintain(args) => keepster_cli::maintain(args, &control_path).await,
         Command::Job(args) => keepster_cli::job(args, &control_path).await,
         Command::Forget(args) => keepster_cli::forget(args, &control_path).await,
+        Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -72,11 +81,14 @@ async fn main() -> ExitCode {
 /// pending debounce window — and makes the pid file's lock the single-instance authority.
 async fn run_daemon(
     control_path: PathBuf,
+    runtime_dir: PathBuf,
     store_base: PathBuf,
     config_path: Option<PathBuf>,
 ) -> u8 {
     let daemon = match keepster_daemon::start(DaemonConfig {
         control_path,
+        runtime_dir,
+        loopback_port: None,
         store_base,
         config_path,
         watch_ceiling: None,

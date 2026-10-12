@@ -85,6 +85,10 @@ pub struct KeySpec {
     /// Whether an edit takes effect without a restart. One that cannot is reported as restart-required
     /// rather than silently ignored; the first such key is ticket 60's loopback listener.
     pub live: bool,
+    /// Whether it describes the daemon rather than a Root: one value per process, so only the global
+    /// file's own table sets it, and a per-Root block setting it is ignored with a warning as a Root's
+    /// own file is (ticket 60).
+    pub daemon: bool,
     /// Whether it decides what a capture holds, so that changing it queues the Root for a full
     /// comparison against its Working Tree.
     pub classifies: bool,
@@ -106,6 +110,7 @@ pub const SCHEMA: &[KeySpec] = &[
         root_settable: false,
         live: true,
         classifies: true,
+        daemon: false,
     },
     // Following a link decides what may enter the user's history — a file arriving in someone else's
     // repository must not be able to pull `~/.ssh` in through a link of its own (ticket 49).
@@ -114,6 +119,7 @@ pub const SCHEMA: &[KeySpec] = &[
         root_settable: false,
         live: true,
         classifies: true,
+        daemon: false,
     },
     trigger_key("files.follow_reconcile_interval"),
     trigger_key("triggers.active"),
@@ -129,6 +135,7 @@ pub const SCHEMA: &[KeySpec] = &[
         root_settable: true,
         live: true,
         classifies: false,
+        daemon: false,
     },
     // How much history is kept is a decision about the user's data: a file arriving in someone else's
     // repository must not be able to shorten their history to an hour (ticket 51).
@@ -137,8 +144,30 @@ pub const SCHEMA: &[KeySpec] = &[
         root_settable: false,
         live: true,
         classifies: false,
+        daemon: false,
     },
+    // The loopback listener, its port, and the browser origins it answers besides its own: the one
+    // network surface the product has, which a CLI-only user may decline (ticket 24). Taken when the
+    // daemon starts, because a listener appearing while it runs would be a second lifecycle.
+    daemon_key("ui.listener"),
+    daemon_key("ui.port"),
+    daemon_key("ui.allowed_origins"),
 ];
+
+/// A key describing the daemon: set in the global file's own table alone, and in force from the start
+/// until the next one.
+const fn daemon_key(name: &'static str) -> KeySpec {
+    KeySpec {
+        name,
+        root_settable: false,
+        live: false,
+        classifies: false,
+        daemon: true,
+    }
+}
+
+/// The port the loopback listener binds unless `ui.port` says otherwise.
+pub const DEFAULT_PORT: u16 = 7419;
 
 /// A key deciding when and how a Root is captured rather than what a capture holds: settable per Root,
 /// as ticket 04 lists the Trigger set, its intervals and Reconciliation, and changing it reclassifies
@@ -149,6 +178,7 @@ const fn trigger_key(name: &'static str) -> KeySpec {
         root_settable: true,
         live: true,
         classifies: false,
+        daemon: false,
     }
 }
 
@@ -158,6 +188,7 @@ const fn capture_key(name: &'static str) -> KeySpec {
         root_settable: true,
         live: true,
         classifies: true,
+        daemon: false,
     }
 }
 
@@ -182,6 +213,8 @@ pub enum Value {
     Bool(bool),
     /// A size, in bytes.
     Bytes(u64),
+    /// A plain number, such as a port.
+    Number(u64),
     /// A length of time.
     Duration(Duration),
     /// A set of names, replaced wholesale by a more specific level.
@@ -364,6 +397,9 @@ struct Layer {
     verify: Option<Entry>,
     restore_modes: Option<Entry>,
     retention: Option<Entry>,
+    listener: Option<Entry>,
+    port: Option<Entry>,
+    allowed_origins: Option<Entry>,
 }
 
 impl Layer {
@@ -390,6 +426,9 @@ impl Layer {
             "reconcile.verify" => self.verify.take().is_some(),
             "restore.modes" => self.restore_modes.take().is_some(),
             "retention.tier" => self.retention.take().is_some(),
+            "ui.listener" => self.listener.take().is_some(),
+            "ui.port" => self.port.take().is_some(),
+            "ui.allowed_origins" => self.allowed_origins.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -403,8 +442,8 @@ impl Layer {
 #[derive(Debug, Clone, Default)]
 pub struct GlobalConfig {
     base: Layer,
-    by_id: BTreeMap<RootId, Layer>,
-    patterns: Vec<(PathGlob, Layer)>,
+    by_id: BTreeMap<RootId, Block>,
+    patterns: Vec<(PathGlob, Block)>,
     /// The `git` maintenance runs with, when the user names one (ticket 52).
     git_path: Option<PathBuf>,
 }
@@ -438,7 +477,11 @@ impl GlobalConfig {
             let block_name = format!("root.{key}.");
             by_id.insert(
                 id,
-                settings_layer(block.tables(), Level::GlobalRoot, path, text, &block_name)?,
+                Block::new(
+                    settings_layer(block.tables(), Level::GlobalRoot, path, text, &block_name)?,
+                    path,
+                    &format!("[root.{key}]"),
+                ),
             );
         }
 
@@ -459,7 +502,11 @@ impl GlobalConfig {
                 .map_err(|error| invalid(format!("[[roots]] path: {error}")))?;
             patterns.push((
                 glob,
-                settings_layer(block.tables(), Level::GlobalPattern, path, text, "roots.")?,
+                Block::new(
+                    settings_layer(block.tables(), Level::GlobalPattern, path, text, "roots.")?,
+                    path,
+                    &format!("the [[roots]] block for `{written}`"),
+                ),
             ));
         }
 
@@ -469,6 +516,38 @@ impl GlobalConfig {
             patterns,
             git_path,
         })
+    }
+}
+
+/// One per-Root block of the global file: what it sets, and the keys it set that describe the daemon,
+/// which were ignored.
+#[derive(Debug, Clone, Default)]
+struct Block {
+    layer: Layer,
+    warnings: Vec<ConfigWarning>,
+}
+
+impl Block {
+    /// The block whose settings are `layer`, in the file at `path`, as `named` names it to a person —
+    /// with every key describing the daemon dropped and said to be: one daemon runs one listener,
+    /// whichever Roots a block names (ticket 60).
+    fn new(mut layer: Layer, path: &Path, named: &str) -> Self {
+        let warnings = SCHEMA
+            .iter()
+            .filter(|spec| spec.daemon && layer.unset(spec.name))
+            .map(|spec| ConfigWarning {
+                code: WarningCode::KeyIgnored,
+                message: format!(
+                    "{}: {} is ignored in {named}; it describes the daemon, so only the file's own \
+                     [{}] table sets it",
+                    path.display(),
+                    spec.name,
+                    spec.name.split('.').next().unwrap_or_default(),
+                ),
+            })
+            .collect();
+
+        Self { layer, warnings }
     }
 }
 
@@ -530,17 +609,19 @@ pub fn effective(
         .iter()
         .rev()
         .find(|(glob, _)| glob.matches(&path))
-        .map(|(_, layer)| layer);
+        .map(|(_, block)| block);
+    let blocks: Vec<&Block> = pattern.into_iter().chain(global.by_id.get(&id)).collect();
     let layers: Vec<&Layer> = std::iter::once(&global.base)
-        .chain(pattern)
-        .chain(global.by_id.get(&id))
+        .chain(blocks.iter().map(|block| &block.layer))
         .chain(own.map(|own| &own.layer))
         .collect();
+    let warnings = blocks
+        .iter()
+        .flat_map(|block| block.warnings.iter().cloned())
+        .chain(own.into_iter().flat_map(|own| own.warnings.iter().cloned()))
+        .collect();
 
-    merge(
-        &layers,
-        own.map(|own| own.warnings.clone()).unwrap_or_default(),
-    )
+    merge(&layers, warnings)
 }
 
 /// `layers`, from the least specific to the most, merged by key class, with `warnings` from reading
@@ -696,6 +777,15 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
     let Value::Ladder(ladder) = retention.value.clone() else {
         unreachable!("the ladder is only ever set as a ladder")
     };
+    let listener = scalar(|layer| layer.listener.as_ref(), Value::Bool(true));
+    let port = scalar(
+        |layer| layer.port.as_ref(),
+        Value::Number(u64::from(DEFAULT_PORT)),
+    );
+    let allowed_origins = scalar(
+        |layer| layer.allowed_origins.as_ref(),
+        Value::Words(Vec::new()),
+    );
     let modes_default = match &restore_modes.value {
         Value::Name(name) => mode_choice(name).flatten(),
         _ => unreachable!("the Restore modes answer is only ever set as a name"),
@@ -730,6 +820,9 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         ("reconcile.verify", Setting::Scalar(verify)),
         ("restore.modes", Setting::Scalar(restore_modes)),
         ("retention.tier", Setting::Scalar(retention)),
+        ("ui.listener", Setting::Scalar(listener)),
+        ("ui.port", Setting::Scalar(port)),
+        ("ui.allowed_origins", Setting::Scalar(allowed_origins)),
     ];
     let keys = settings
         .into_iter()
@@ -751,6 +844,48 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         keys,
         warnings,
     }
+}
+
+/// The origin `written` names, as a browser sends it in `Origin` — lowercase, `scheme://host[:port]` —
+/// or why it is not one.
+///
+/// Never a wildcard, in whole or in part: an allowed origin is a promise about one page, and `*` would
+/// hand the loopback listener to every page the user has open (ticket 07).
+fn allowed_origin(written: &str) -> Result<String, String> {
+    let refused = |why: &str| Err(format!("`{written}` {why}"));
+    if written.contains('*') {
+        return refused("is a wildcard, and an allowed origin never is: name each origin");
+    }
+    let origin = written.to_ascii_lowercase();
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return refused("is not an origin; write one as `http://localhost:3000`");
+    };
+    if scheme != "http" && scheme != "https" {
+        return refused("is not an origin: its scheme is neither `http` nor `https`");
+    }
+    if authority.contains(['/', '?', '#', '@']) {
+        return refused("is not an origin: it holds more than a scheme, a host and a port");
+    }
+    // An IPv6 host is bracketed, and its own colons are not a port's.
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((host, "")) => (host, None),
+            Some((host, rest)) => (host, Some(rest.strip_prefix(':').unwrap_or(rest))),
+            None => return refused("is not an origin: its IPv6 host is never closed"),
+        },
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    if port.is_some_and(|port| port.parse::<u16>().is_err()) {
+        return refused("is not an origin: its port is not a number from 0 to 65535");
+    }
+    if host.is_empty() {
+        return refused("is not an origin: it names no host");
+    }
+
+    Ok(origin)
 }
 
 /// `restore.modes`' value for asking, its default.
@@ -839,6 +974,8 @@ struct GlobalDocument {
     restore: RestoreTable,
     #[serde(default)]
     retention: RetentionTable,
+    #[serde(default)]
+    ui: UiTable,
     // The daemon's own, so the top level alone holds it: one daemon runs one `git` for every Root.
     #[serde(default)]
     git: GitTable,
@@ -862,6 +999,8 @@ struct Settings {
     restore: RestoreTable,
     #[serde(default)]
     retention: RetentionTable,
+    #[serde(default)]
+    ui: UiTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -879,6 +1018,8 @@ struct PatternBlock {
     restore: RestoreTable,
     #[serde(default)]
     retention: RetentionTable,
+    #[serde(default)]
+    ui: UiTable,
 }
 
 /// The tables of the schema, wherever a block holds them.
@@ -888,6 +1029,7 @@ struct Tables<'a> {
     reconcile: &'a ReconcileTable,
     restore: &'a RestoreTable,
     retention: &'a RetentionTable,
+    ui: &'a UiTable,
 }
 
 /// Each block holding the whole schema hands its tables over as one.
@@ -901,6 +1043,7 @@ macro_rules! holds_tables {
                     reconcile: &self.reconcile,
                     restore: &self.restore,
                     retention: &self.retention,
+                    ui: &self.ui,
                 }
             }
         }
@@ -915,6 +1058,17 @@ holds_tables!(GlobalDocument, Settings, PatternBlock);
 #[serde(deny_unknown_fields)]
 struct GitTable {
     path: Option<String>,
+}
+
+/// The `[ui]` table: the loopback listener the browser reaches the daemon through (ticket 60). Every
+/// key of it describes the daemon, so only the global file's own table sets them; anywhere else they
+/// are read, so that a block or a Root's file setting one is told so, and then ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiTable {
+    listener: Option<Spanned<bool>>,
+    port: Option<Spanned<i64>>,
+    allowed_origins: Option<Spanned<Vec<String>>>,
 }
 
 /// The `[retention]` table: the ladder, one `[[retention.tier]]` per Tier from the youngest (ticket 51).
@@ -992,6 +1146,7 @@ fn settings_layer(
         reconcile,
         restore,
         retention,
+        ui,
     }: Tables<'_>,
     level: Level,
     path: &Path,
@@ -1096,6 +1251,49 @@ fn settings_layer(
             Ok(Entry {
                 value: Value::Ladder(ladder),
                 origin: origin(first.span()),
+            })
+        })
+        .transpose()?;
+    let invalid_ui = |key: &str, message: String| ConfigError {
+        path: path.to_path_buf(),
+        message: format!("{block}ui.{key}: {message}"),
+    };
+    layer.listener = ui.listener.as_ref().map(|listener| Entry {
+        value: Value::Bool(*listener.get_ref()),
+        origin: origin(listener.span()),
+    });
+    layer.port = ui
+        .port
+        .as_ref()
+        .map(|port| match u16::try_from(*port.get_ref()) {
+            Ok(number) if number != 0 => Ok(Entry {
+                value: Value::Number(u64::from(number)),
+                origin: origin(port.span()),
+            }),
+            _ => Err(invalid_ui(
+                "port",
+                format!(
+                    "`{}` is not a port; write one from 1 to 65535",
+                    port.get_ref()
+                ),
+            )),
+        })
+        .transpose()?;
+    layer.allowed_origins = ui
+        .allowed_origins
+        .as_ref()
+        .map(|origins| {
+            let mut allowed: Vec<String> = Vec::new();
+            for written in origins.get_ref() {
+                let origin = allowed_origin(written)
+                    .map_err(|message| invalid_ui("allowed_origins", message))?;
+                if !allowed.contains(&origin) {
+                    allowed.push(origin);
+                }
+            }
+            Ok(Entry {
+                value: Value::Words(allowed),
+                origin: origin(origins.span()),
             })
         })
         .transpose()?;
@@ -1300,6 +1498,18 @@ struct TrackedRoot {
     inputs: Option<Vec<(&'static str, Vec<Value>)>>,
 }
 
+/// What the daemon runs with, from the keys describing it (ticket 60).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonSettings {
+    /// Whether the loopback listener exists at all: `ui.listener`.
+    pub listener: bool,
+    /// The port it binds: `ui.port`.
+    pub port: u16,
+    /// The browser origins it answers besides its own, each as `scheme://host[:port]`:
+    /// `ui.allowed_origins`.
+    pub allowed_origins: Vec<String>,
+}
+
 /// One Root's configuration as it stands.
 #[derive(Debug, Clone)]
 pub struct Resolved {
@@ -1457,19 +1667,39 @@ impl Configuration {
     /// The keys that cannot change live as the global file's own table sets them now. Such a key
     /// describes the daemon, one value per process, so no per-Root block decides it.
     fn daemon_settings(&self) -> BTreeMap<&'static str, Setting> {
-        let Some(global) = &self.global.in_force else {
-            return BTreeMap::new();
-        };
-        if SCHEMA.iter().all(|spec| spec.live) {
-            return BTreeMap::new();
+        match &self.global.in_force {
+            Some(global) => not_live(&global.base),
+            None => BTreeMap::new(),
         }
+    }
 
-        merge(&[&global.base], Vec::new())
-            .keys
-            .into_iter()
-            .filter(|key| !key.spec.live)
-            .map(|key| (key.spec.name, key.setting))
-            .collect()
+    /// What the daemon runs with: the keys describing it as they stood when it started, which stay in
+    /// force until the next start whatever the file says meanwhile (ticket 60).
+    ///
+    /// A global file with no valid version at the start leaves the defaults in force — and they, not
+    /// whichever version is written next, are what a later edit is compared against.
+    pub fn daemon(&mut self) -> DaemonSettings {
+        self.refresh_global();
+        let started = self
+            .at_start
+            .get_or_insert_with(|| not_live(&Layer::default()));
+        let value = |name: &str| {
+            started
+                .get(name)
+                .and_then(|setting| setting.values().first().copied().cloned())
+        };
+
+        DaemonSettings {
+            listener: value("ui.listener") != Some(Value::Bool(false)),
+            port: match value("ui.port") {
+                Some(Value::Number(port)) => u16::try_from(port).unwrap_or(DEFAULT_PORT),
+                _ => DEFAULT_PORT,
+            },
+            allowed_origins: match value("ui.allowed_origins") {
+                Some(Value::Words(origins)) => origins,
+                _ => Vec::new(),
+            },
+        }
     }
 
     /// The ladder a Root no longer watched decays by: the global file's, with its blocks for the Root —
@@ -1628,6 +1858,16 @@ impl Configuration {
 
         refresh(&mut root.file, &path, &known_good, parse);
     }
+}
+
+/// The keys that cannot change live, as `layer` alone sets them.
+fn not_live(layer: &Layer) -> BTreeMap<&'static str, Setting> {
+    merge(&[layer], Vec::new())
+        .keys
+        .into_iter()
+        .filter(|key| !key.spec.live)
+        .map(|key| (key.spec.name, key.setting))
+        .collect()
 }
 
 /// Re-read the file at `path` into `tracked` if it changed, keeping the last known-good version in

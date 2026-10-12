@@ -177,3 +177,19 @@ Writing a Snapshot's versions into a directory the user names, leaving the Worki
 that cannot name one, handing the same selection over as one archive. A Withheld path is absent from it and said
 so, never an empty file.
 _Avoid_: restore to, copy out, dry-run
+
+**Control Channel**:
+The permission-protected socket (a named pipe on Windows) the CLI reaches the daemon through. OS permissions are
+its boundary, so it needs no token.
+_Avoid_: socket API, local API
+
+**Loopback Listener**:
+The daemon's one network surface: the same API on `127.0.0.1`, for the browser and third-party clients, guarded by
+a token minted per start and by checking `Host` and `Origin` on every request. Switchable off, which leaves the
+daemon with no network surface and no token at all.
+_Avoid_: web server, HTTP port, TCP API
+
+**Bootstrap Code**:
+A single-use code, handed out on the Control Channel alone, that the Loopback Listener exchanges once for a browser
+session — so the token itself never appears in a URL.
+_Avoid_: login link, magic link, one-time token

@@ -25,3 +25,9 @@ CodeMirror 6, fed the **daemon's** hunks through its override hook, so the merge
       remaining lazy chunks
 - [ ] Quality gates run: strict type checking, formatting and linting for the SPA, in a job that is the only one
       installing node
+
+## Comments
+- **From ticket 60.** The loopback router (`loopback_router` in `keepster-daemon`) serves a one-line
+  placeholder at `/`, where a bootstrap exchange redirects; the embedded SPA replaces it. Every asset is
+  behind the same gate (`Host`, `Origin`, cookie), so the SPA needs no route of its own. The `embed-ui`
+  feature must not change the listener's default (ticket 24).

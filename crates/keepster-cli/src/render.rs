@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{GitStatus, Reported, Root, RootState, Status};
+use keepster_api::{GitStatus, ListenerState, ListenerStatus, Reported, Root, RootState, Status};
 
 /// Write the daemon's payload exactly as it arrived.
 ///
@@ -50,8 +50,29 @@ pub fn write_human(
     writeln!(out, "  linger       {}", reported(daemon.linger))?;
     writeln!(out, "  maintenance  {}", reported(daemon.maintenance))?;
     write_git(&daemon.git, shell_git, out)?;
+    if let Some(listener) = &daemon.listener {
+        write_listener(listener, out)?;
+    }
 
     write_roots(&status.roots, out)
+}
+
+/// Whether the daemon has a network surface. Off is a choice, said as one rather than as a fault.
+fn write_listener(listener: &ListenerStatus, out: &mut impl Write) -> io::Result<()> {
+    match (listener.state, &listener.address) {
+        (ListenerState::Listening, Some(address)) => {
+            writeln!(out, "  web ui       listening on http://{address}")
+        }
+        (ListenerState::Off, _) => writeln!(out, "  web ui       off (ui.listener = false)"),
+        (ListenerState::Failed, _) | (ListenerState::Listening, None) => writeln!(
+            out,
+            "  web ui       not listening: {}",
+            listener
+                .detail
+                .as_deref()
+                .unwrap_or("the loopback listener could not bind")
+        ),
+    }
 }
 
 /// Render Watched Roots, one per line, for `status`, `watch` and `roots` alike.

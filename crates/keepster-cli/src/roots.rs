@@ -242,7 +242,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::SecretOptedIn
         | ErrorCode::VolumeMismatch
         | ErrorCode::StoreUnreachable
-        | ErrorCode::PreviewBusy => exit::STATE_CONFLICT,
+        | ErrorCode::PreviewBusy
+        | ErrorCode::ListenerUnavailable => exit::STATE_CONFLICT,
         // Asking for the content of a directory, or the entries of a file, is a mistake in what was
         // asked rather than a state anything is in.
         ErrorCode::PathInvalid
@@ -272,7 +273,12 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::JobInterrupted
         | ErrorCode::PreviewFailed
         | ErrorCode::DestUnwritable
-        | ErrorCode::DirectoryUnreadable => exit::OTHER,
+        | ErrorCode::DirectoryUnreadable
+        | ErrorCode::TokenFailed
+        // Answered by the loopback listener alone, which the CLI never speaks to.
+        | ErrorCode::Unauthorized
+        | ErrorCode::HostRefused
+        | ErrorCode::OriginRefused => exit::OTHER,
     }
 }
 

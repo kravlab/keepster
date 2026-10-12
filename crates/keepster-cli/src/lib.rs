@@ -25,13 +25,14 @@ pub mod search;
 pub mod selector;
 pub mod snapshots;
 pub mod status;
+pub mod ui;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs, ForgetArgs,
     GrepArgs, JobArgs, LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs,
-    ReconcileArgs, ResolutionArgs, RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs,
-    WatchArgs,
+    ReconcileArgs, ResolutionArgs, RestoreArgs, SnapshotArgs, StatusArgs, TokenCommand, UiArgs,
+    UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -51,6 +52,7 @@ pub use roots::{move_root, roots, unwatch, watch};
 pub use search::{find, grep};
 pub use snapshots::snapshot;
 pub use status::{Outcome, exit_code_for, outcome, status};
+pub use ui::ui;
 
 /// The process exit codes, which are contract: a script must be able to tell one failure from
 /// another, so `1` is a catch-all and never the whole table (ticket 07). Each code appears here once

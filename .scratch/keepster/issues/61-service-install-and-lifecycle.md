@@ -34,3 +34,8 @@ any documented form and would have carried the same logout gap anyway.
   therefore unlink indexes the first holds open — the corruption vector the ordering was meant to avoid — and then
   rebind the socket. The flock'd pid file this ticket adds must be taken *before* `recover_indexes` runs, and the
   test for a refused second instance should assert that it touched no index.
+- **From ticket 60: `keepster service install --no-web-ui`.** The flag calls
+  `keepster_service::declare_no_web_ui(config_path)`, which writes `[ui] listener = false` only when it
+  creates the global configuration. On `NoWebUi::Existing { add }` the command changes nothing and prints
+  `add` plus the restart reminder (ticket 24). The listener-off refusal of `keepster ui` currently says
+  "restart the daemon"; once `keepster service restart` exists, name it there.

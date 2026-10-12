@@ -19,6 +19,7 @@ mod export;
 mod git;
 mod housekeeping;
 mod jobs;
+mod loopback;
 mod ndjson;
 mod openapi;
 mod pins;
@@ -30,6 +31,7 @@ mod roots;
 mod search;
 mod snapshots;
 mod triggers;
+mod ui;
 mod volumes;
 
 use std::collections::HashMap;
@@ -52,6 +54,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 pub use housekeeping::HousekeepingTiming;
+pub use loopback::TOKEN_FILE;
 pub use openapi::openapi_json;
 pub use volumes::{PlatformVolumes, Volume, Volumes};
 
@@ -61,6 +64,12 @@ pub struct DaemonConfig {
     /// Where the control channel is created. Tests use a short temporary path deliberately:
     /// `sun_path` holds 104 bytes on macOS and 108 on Linux.
     pub control_path: PathBuf,
+    /// The per-user runtime directory, private to its owner, where the loopback listener's token is
+    /// written for each start as [`TOKEN_FILE`] (ticket 60).
+    pub runtime_dir: PathBuf,
+    /// The port the loopback listener binds whatever `ui.port` says, or `None` to take it from the
+    /// configuration. Only a test has reason to set it, to `0` for any free port.
+    pub loopback_port: Option<u16>,
     /// The directory that holds one subdirectory per Watched Root: its Registry record and, from
     /// ticket 38, its History Store.
     pub store_base: PathBuf,
@@ -86,6 +95,7 @@ pub struct DaemonConfig {
 /// Dropping it asks the daemon to stop; awaiting [`RunningDaemon::shutdown`] waits until it has.
 pub struct RunningDaemon {
     control_path: PathBuf,
+    loopback: Option<std::net::SocketAddr>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<io::Result<()>>,
 }
@@ -94,6 +104,11 @@ impl RunningDaemon {
     /// The control channel this daemon is listening on.
     pub fn control_path(&self) -> &Path {
         &self.control_path
+    }
+
+    /// Where the loopback listener is, or `None` when there is none.
+    pub fn loopback(&self) -> Option<std::net::SocketAddr> {
+        self.loopback
     }
 
     /// Stop serving and wait for the listener to close, returning whatever the server returned.
@@ -135,14 +150,38 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     })
     .await
     .map_err(io::Error::other)?;
-    let listener = bind_control_channel(&config.control_path)?;
+    let socket = bind_control_channel(&config.control_path)?;
     let (shutdown, stop) = oneshot::channel();
     let ceiling = config
         .watch_ceiling
         .or_else(keepster_watch::default_ceiling);
+    let config_path = config.config_path.clone();
+    let mut configuration = keepster_app::config::Configuration::new(
+        config.config_path,
+        std::env::home_dir(),
+        config.store_base.clone(),
+    );
+    let settings = configuration.daemon();
+    let token_path = config.runtime_dir.join(TOKEN_FILE);
+    // Whatever a previous start left: a token is this start's or none, and a start that ends up with
+    // no listener — switched off, or failing to bind — leaves no secret guarding nothing.
+    loopback::remove_token(&token_path);
+    let (listener, tcp) = if settings.listener {
+        let port = config.loopback_port.unwrap_or(settings.port);
+        match bind_loopback(port, &settings.allowed_origins, token_path).await {
+            Ok((gate, tcp)) => (loopback::Listener::Listening(gate), Some(tcp)),
+            Err(error) => {
+                tracing::warn!(%error, port, "the loopback listener could not be started");
+                (loopback::Listener::Failed(error.to_string()), None)
+            }
+        }
+    } else {
+        (loopback::Listener::Off { config_path }, None)
+    };
     let state = DaemonState::new(
         registry,
-        config.config_path,
+        configuration,
+        listener,
         config.store_base,
         ceiling,
         config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
@@ -165,18 +204,47 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     // `Degraded` state — does not wait for a client.
     let ticker = tokio::spawn(configuration::reload_continually(state.clone()));
     let housekeeping = tokio::spawn(housekeeping::run_continually(state.clone()));
+    let loopback = match &*state.listener {
+        loopback::Listener::Listening(gate) => Some(gate.address()),
+        _ => None,
+    };
     let task = tokio::spawn(async move {
         let events = Arc::clone(&state.events);
         let housekeeping_state = Arc::clone(&state.housekeeping);
-        let stopping = async move {
+        let (signal, stopping) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
             let _ = stop.await;
             // No pass and no job starts from here on; one that is waiting for its store ends failed, and
             // says so while the stream is still open.
             housekeeping_state.stop();
             // An open event stream would otherwise hold the graceful stop forever.
             events.close();
+            let _ = signal.send(true);
+        });
+        let until_stopped = |mut stopping: tokio::sync::watch::Receiver<bool>| async move {
+            let _ = stopping.wait_for(|stopped| *stopped).await;
         };
-        let served = serve(listener, router(state.clone()), stopping).await;
+        let browser = match (&*state.listener, tcp) {
+            (loopback::Listener::Listening(gate), Some(tcp)) => Some(tokio::spawn(serve(
+                tcp,
+                loopback_router(state.clone(), Arc::clone(gate)),
+                until_stopped(stopping.clone()),
+            ))),
+            _ => None,
+        };
+        let served = serve(socket, router(state.clone()), until_stopped(stopping)).await;
+        if let Some(browser) = browser {
+            match browser.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "the loopback listener stopped with an error")
+                }
+                Err(error) => tracing::warn!(%error, "the loopback listener's task failed"),
+            }
+        }
+        if let loopback::Listener::Listening(gate) = &*state.listener {
+            gate.withdraw();
+        }
         // No further Trigger is accepted; the captures in flight finish and every pending debounce
         // window is captured before the daemon is done (ticket 05).
         ticker.abort();
@@ -195,9 +263,25 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
 
     Ok(RunningDaemon {
         control_path: config.control_path,
+        loopback,
         shutdown: Some(shutdown),
         task,
     })
+}
+
+/// Bind the loopback listener on `port` — `0` for any free one — and mint the token guarding it.
+///
+/// At the start or not at all: a listener appearing while the daemon runs would be a second lifecycle,
+/// with a port collision surfacing at a request rather than here (ticket 24).
+async fn bind_loopback(
+    port: u16,
+    allowed_origins: &[String],
+    token_path: PathBuf,
+) -> io::Result<(Arc<loopback::Gate>, tokio::net::TcpListener)> {
+    let tcp = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    let gate = loopback::Gate::new(tcp.local_addr()?, allowed_origins, token_path)?;
+
+    Ok((Arc::new(gate), tcp))
 }
 
 /// How long a stopping daemon waits for a Retention or Maintenance Pass in flight, inside the service
@@ -291,12 +375,19 @@ struct DaemonState {
     previewing: Arc<std::sync::atomic::AtomicBool>,
     /// Where every Root's directory is: its record and its History Store.
     store_base: PathBuf,
+    /// The loopback listener, or why there is none (ticket 60).
+    listener: Arc<loopback::Listener>,
 }
 
 impl DaemonState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one parameter per independent part of the state, each named at the one call"
+    )]
     fn new(
         registry: Registry,
-        config_path: Option<PathBuf>,
+        config: keepster_app::config::Configuration,
+        listener: loopback::Listener,
         store_base: PathBuf,
         watch_ceiling: Option<usize>,
         retry_after: std::time::Duration,
@@ -307,11 +398,7 @@ impl DaemonState {
             started: Instant::now(),
             registry: Arc::new(Mutex::new(registry)),
             store_locks: Arc::new(Mutex::new(HashMap::new())),
-            config: Arc::new(Mutex::new(keepster_app::config::Configuration::new(
-                config_path,
-                std::env::home_dir(),
-                store_base.clone(),
-            ))),
+            config: Arc::new(Mutex::new(config)),
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling, retry_after)),
             housekeeping: Arc::new(housekeeping::Housekeeping::new(housekeeping)),
             git: Arc::new(Mutex::new(None)),
@@ -322,6 +409,7 @@ impl DaemonState {
             outcomes: Arc::new(volumes::Outcomes::default()),
             previewing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             store_base,
+            listener: Arc::new(listener),
         }
     }
 
@@ -423,6 +511,27 @@ fn router(state: DaemonState) -> Router {
     router.with_state(state)
 }
 
+/// What the loopback listener serves: the same `/v1` — the SPA gets no privileged endpoint — behind the
+/// gate, and the page a browser session lands on.
+fn loopback_router(state: DaemonState, gate: Arc<loopback::Gate>) -> Router {
+    let (router, _) = on_both_listeners().split_for_parts();
+
+    router
+        .route("/", axum::routing::get(landing))
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(gate, loopback::guard))
+}
+
+/// Where a browser session lands until ticket 64 embeds the web UI: a build without it still serves
+/// `/v1` here, because the API is public for third-party clients (ticket 24).
+async fn landing() -> axum::response::Html<&'static str> {
+    axum::response::Html(
+        "<!doctype html><meta charset=\"utf-8\"><title>Keepster</title>\
+         <p>Keepster's daemon is listening. This build carries no web UI; its API is served under \
+         <code>/v1</code>.</p>",
+    )
+}
+
 /// Every route, each with its description.
 ///
 /// `routes!` takes the path from the handler's own `#[utoipa::path]` and hands the same string to axum,
@@ -430,6 +539,14 @@ fn router(state: DaemonState) -> Router {
 /// handler left out is dead code. Handlers are grouped by path, because one `routes!` registers one
 /// path.
 fn api() -> OpenApiRouter<DaemonState> {
+    on_both_listeners()
+        .routes(routes!(ui::bootstrap))
+        .routes(routes!(ui::rotate))
+}
+
+/// Every route both listeners serve, by the same `routes!` contract as [`api`]: all of `/v1` but the
+/// browser's way in, which the control channel alone hands out.
+fn on_both_listeners() -> OpenApiRouter<DaemonState> {
     OpenApiRouter::with_openapi(openapi::base())
         .routes(routes!(openapi::serve))
         .routes(routes!(version))
@@ -498,6 +615,7 @@ async fn status(
             linger: Reported::Unknown,
             maintenance,
             git,
+            listener: Some(state.listener.status()),
         },
         roots: registered,
     }))
