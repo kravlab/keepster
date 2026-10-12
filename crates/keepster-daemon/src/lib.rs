@@ -16,6 +16,7 @@ mod events;
 mod explain;
 mod git;
 mod housekeeping;
+mod jobs;
 mod openapi;
 mod pins;
 mod problem;
@@ -148,8 +149,12 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     let housekeeping = tokio::spawn(housekeeping::run_continually(state.clone()));
     let task = tokio::spawn(async move {
         let events = Arc::clone(&state.events);
+        let housekeeping_state = Arc::clone(&state.housekeeping);
         let stopping = async move {
             let _ = stop.await;
+            // No pass and no job starts from here on; one that is waiting for its store ends failed, and
+            // says so while the stream is still open.
+            housekeeping_state.stop();
             // An open event stream would otherwise hold the graceful stop forever.
             events.close();
         };
@@ -158,7 +163,6 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         // window is captured before the daemon is done (ticket 05).
         ticker.abort();
         // A pass in flight holds a store's lock, which the last captures below need: it finishes first.
-        state.housekeeping.stop();
         if tokio::time::timeout(HOUSEKEEPING_DRAIN, housekeeping)
             .await
             .is_err()
@@ -249,6 +253,8 @@ struct DaemonState {
     housekeeping: Arc<housekeeping::Housekeeping>,
     /// The `git` maintenance runs with, once it has been looked for.
     git: Arc<Mutex<Option<git::Found>>>,
+    /// The jobs the daemon remembers (ticket 54).
+    jobs: Arc<jobs::Jobs>,
     /// What happened, for every open event stream and the ones that reconnect.
     events: Arc<events::EventBus>,
     /// What the event stream last said about each Root's state and configuration.
@@ -276,6 +282,7 @@ impl DaemonState {
             runtimes: Arc::new(triggers::Runtimes::new(watch_ceiling, retry_after)),
             housekeeping: Arc::new(housekeeping::Housekeeping::new(housekeeping)),
             git: Arc::new(Mutex::new(None)),
+            jobs: Arc::new(jobs::Jobs::default()),
             events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
             announced: Arc::new(Mutex::new(events::Announced::default())),
         }
@@ -326,7 +333,7 @@ impl DaemonState {
     /// Taken after the Registry wherever both are held, never before, so the two locks cannot
     /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes,
     /// housekeeping's table of what each Root owes, the `git` found, then what the event stream announced
-    /// and its buffer. A panic while it is held loses nothing that matters: every file is compared with
+    /// and its buffer. The jobs' table is innermost: taken with at most a store's lock held. A panic while it is held loses nothing that matters: every file is compared with
     /// what was read last, so the next resolution reads again whatever a panic left half-done.
     fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config
@@ -399,6 +406,8 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::content))
         .routes(routes!(pins::list))
         .routes(routes!(pins::pin, pins::unpin))
+        .routes(routes!(jobs::maintain))
+        .routes(routes!(jobs::show))
         .routes(routes!(diff::diff))
         .routes(routes!(restore::restore))
         .routes(routes!(explain::explain))

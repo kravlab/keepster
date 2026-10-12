@@ -13,8 +13,9 @@ pub use git::{Git, GitUnavailable};
 pub use history::{
     CaptureRequest, CapturedSnapshot, Comparison, Content, DIFF_MAX_SIZE, Depth, DiffLine,
     DiffTarget, Entry, EntryKind, FileChange, FileDiff, HistoryStore, Hunk, IncompletePath,
-    LineKind, LinkNames, Listing, Pass, Preflight, RestoreScope, Retained, SnapshotSummary,
-    StoreError, TimelinePage, TimelineQuery, WithheldPath, Written, destination_naming,
+    LineKind, LinkNames, Listing, Maintained, Pass, Preflight, RestoreScope, Retained,
+    SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, Written,
+    destination_naming,
 };
 pub use keepster_core::WithheldReason;
 pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};

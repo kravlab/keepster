@@ -128,6 +128,12 @@ Retention, which discards Snapshots wholesale by age; Forget removes one path fr
 survive, and never touches the Working Tree.
 _Avoid_: purge, scrub, delete, redact
 
+**Job**:
+A long or irreversible operation the daemon runs on a Root's store on request — a manual Maintenance Pass, Forget —
+with an identity of its own, so that a client whose connection dropped can still learn how it ended. It is queued
+until its store is free, then running, then succeeded or failed. Jobs live in the daemon's memory only.
+_Avoid_: task, operation, request
+
 **Degraded**:
 The state of a Root the daemon is still watching but cannot serve as promised — its configuration failed to
 load and the last known-good one is in force, or its coverage guarantee has been switched off or does not

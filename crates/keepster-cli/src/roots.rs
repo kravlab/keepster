@@ -140,7 +140,7 @@ pub(crate) fn body_of(answer: Result<Response, ClientError>) -> Result<Vec<u8>, 
 /// code the precise one, and the code is what a client branches on. A code this build has never heard of
 /// falls back to its status, which is exactly what ADR 0005 requires of any client — the set is open and
 /// grows inside `/v1`.
-fn exit_code_for(problem: Option<&Problem>, status: u16) -> u8 {
+pub(crate) fn exit_code_for(problem: Option<&Problem>, status: u16) -> u8 {
     match problem.and_then(|problem| ErrorCode::parse(&problem.code)) {
         Some(code) => exit_code_for_known(code),
         None => match status {
@@ -162,7 +162,10 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         ErrorCode::RootNotFound
         | ErrorCode::SnapshotNotFound
         | ErrorCode::PathNotFound
-        | ErrorCode::Withheld => exit::NOT_FOUND,
+        | ErrorCode::Withheld
+        | ErrorCode::JobNotFound => exit::NOT_FOUND,
+        // The same answer `status` gives for it, so a script tells it apart from any other refusal.
+        ErrorCode::MaintenanceUnavailable => exit::MAINTENANCE_UNAVAILABLE,
         // A configuration that cannot be read is a state the Root is in until someone edits a file.
         // A Restore waiting for an answer is in a state only the person can move it out of.
         ErrorCode::RootOverlaps
@@ -188,7 +191,9 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::RegistryFailed
         | ErrorCode::CaptureFailed
         | ErrorCode::ClockUnusable
-        | ErrorCode::HistoryUnreadable => exit::OTHER,
+        | ErrorCode::HistoryUnreadable
+        | ErrorCode::MaintenanceFailed
+        | ErrorCode::JobInterrupted => exit::OTHER,
     }
 }
 

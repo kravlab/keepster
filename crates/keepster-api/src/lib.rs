@@ -855,6 +855,38 @@ pub enum Event {
         /// The Root.
         root: String,
     },
+    /// A job left the queue and is under way (ticket 54).
+    #[serde(rename = "job.started")]
+    JobStarted {
+        /// The job's identity.
+        job: String,
+        /// What it does: `maintenance`. The set grows inside `/v1`.
+        kind: String,
+        /// The Root it works on.
+        root: String,
+    },
+    /// A job got further: `done` of `total` steps, in units of its own.
+    #[serde(rename = "job.progress")]
+    JobProgress {
+        /// The job's identity.
+        job: String,
+        /// How many steps are done.
+        done: u64,
+        /// How many there are.
+        total: u64,
+    },
+    /// A job ended; `GET /v1/jobs/{id}` has its result or what went wrong.
+    #[serde(rename = "job.completed")]
+    JobCompleted {
+        /// The job's identity.
+        job: String,
+        /// What it did.
+        kind: String,
+        /// The Root it worked on.
+        root: String,
+        /// How it ended: `succeeded` or `failed`.
+        state: JobState,
+    },
     /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
     /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
     #[serde(rename = "resync")]
@@ -875,9 +907,80 @@ impl Event {
             Self::RestoreCompleted { .. } => "restore.completed",
             Self::RetentionCompleted { .. } => "retention.completed",
             Self::MaintenanceCompleted { .. } => "maintenance.completed",
+            Self::JobStarted { .. } => "job.started",
+            Self::JobProgress { .. } => "job.progress",
+            Self::JobCompleted { .. } => "job.completed",
             Self::Resync => "resync",
         }
     }
+}
+
+/// Where a job is in its life: queued, then running, then succeeded or failed — once, in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum JobState {
+    /// Accepted, waiting for its store — behind a capture in flight, say.
+    Queued,
+    /// Under way.
+    Running,
+    /// Done as asked; `result` says what it did.
+    Succeeded,
+    /// Ended without doing what was asked; `error` says why.
+    Failed,
+}
+
+/// A job just accepted, as `202` answers it; `Location` names the same job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JobAccepted {
+    /// The job's identity, by which `GET /v1/jobs/{id}` reports it.
+    pub job_id: String,
+}
+
+/// A long or irreversible operation, as `GET /v1/jobs/{id}` reports it (ticket 54, ticket 07). Jobs live
+/// in the daemon's memory: a restart forgets them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Job {
+    /// The job's identity.
+    pub id: String,
+    /// What it does: `maintenance`. The set grows inside `/v1`, so a client must accept a kind it does
+    /// not know.
+    pub kind: String,
+    /// The Root it works on.
+    pub root: String,
+    /// Where it is in its life.
+    pub state: JobState,
+    /// How far it got, for a job that counts its steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<JobProgress>,
+    /// What it did, once it succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<JobResult>,
+    /// Why it failed, in the shape of every other failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Problem>,
+}
+
+/// How far a job got: `done` of `total` steps, in units of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JobProgress {
+    /// How many steps are done.
+    pub done: u64,
+    /// How many there are.
+    pub total: u64,
+}
+
+/// What a job did. Each kind fills in what it measures, so every field is optional and more arrive
+/// inside `/v1` as kinds are added.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JobResult {
+    /// A Maintenance Pass: how much smaller the store is on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed_bytes: Option<u64>,
 }
 
 /// What a Reconciliation asked for on demand did.
@@ -1141,6 +1244,22 @@ mod tests {
                 removed_snapshots: 30,
             },
             Event::MaintenanceCompleted { root: root() },
+            Event::JobStarted {
+                job: root(),
+                kind: "maintenance".to_owned(),
+                root: root(),
+            },
+            Event::JobProgress {
+                job: root(),
+                done: 1,
+                total: 2,
+            },
+            Event::JobCompleted {
+                job: root(),
+                kind: "maintenance".to_owned(),
+                root: root(),
+                state: super::JobState::Succeeded,
+            },
             Event::Resync,
         ] {
             let serialised = serde_json::to_value(&event).expect("JSON");

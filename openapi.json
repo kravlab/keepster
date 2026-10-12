@@ -37,6 +37,48 @@
         }
       }
     },
+    "/v1/jobs/{id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Report a job: where it is, and once it has ended, what it did or why it failed.",
+        "operationId": "get_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The job's identity, as `202` answered it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job: none was started, or the daemon restarted since.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/openapi.json": {
       "get": {
         "tags": [
@@ -629,6 +671,66 @@
           },
           "409": {
             "description": "The Root is unavailable, or its configuration cannot be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/maintenance": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Run a Maintenance Pass over the Root now, as a job: what is otherwise done daily, at a quiet moment,\non request — after a Retention that freed much, say.",
+        "operationId": "maintain_root",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The pass is queued behind any capture of the Root in flight — or, asked for again while one still waits, that same job; `Location` and the body name it.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The job, at `/v1/jobs/{id}`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is watched, or kept since it was unwatched.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No `git` a pass can run with is usable, or the Root is unavailable.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2312,6 +2414,105 @@
           },
           {
             "type": "object",
+            "description": "A job left the queue and is under way (ticket 54).",
+            "required": [
+              "job",
+              "kind",
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "job.started"
+                ]
+              },
+              "job": {
+                "type": "string",
+                "description": "The job's identity."
+              },
+              "kind": {
+                "type": "string",
+                "description": "What it does: `maintenance`. The set grows inside `/v1`."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root it works on."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A job got further: `done` of `total` steps, in units of its own.",
+            "required": [
+              "job",
+              "done",
+              "total",
+              "event"
+            ],
+            "properties": {
+              "done": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many steps are done.",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "job.progress"
+                ]
+              },
+              "job": {
+                "type": "string",
+                "description": "The job's identity."
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many there are.",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A job ended; `GET /v1/jobs/{id}` has its result or what went wrong.",
+            "required": [
+              "job",
+              "kind",
+              "root",
+              "state",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "job.completed"
+                ]
+              },
+              "job": {
+                "type": "string",
+                "description": "The job's identity."
+              },
+              "kind": {
+                "type": "string",
+                "description": "What it did."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root it worked on."
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState",
+                "description": "How it ended: `succeeded` or `failed`."
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon\nrestarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.",
             "required": [
               "event"
@@ -2545,6 +2746,127 @@
           }
         }
       },
+      "Job": {
+        "type": "object",
+        "description": "A long or irreversible operation, as `GET /v1/jobs/{id}` reports it (ticket 54, ticket 07). Jobs live\nin the daemon's memory: a restart forgets them.",
+        "required": [
+          "id",
+          "kind",
+          "root",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Problem",
+                "description": "Why it failed, in the shape of every other failure."
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The job's identity."
+          },
+          "kind": {
+            "type": "string",
+            "description": "What it does: `maintenance`. The set grows inside `/v1`, so a client must accept a kind it does\nnot know."
+          },
+          "progress": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JobProgress",
+                "description": "How far it got, for a job that counts its steps."
+              }
+            ]
+          },
+          "result": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JobResult",
+                "description": "What it did, once it succeeded."
+              }
+            ]
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root it works on."
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobState",
+            "description": "Where it is in its life."
+          }
+        }
+      },
+      "JobAccepted": {
+        "type": "object",
+        "description": "A job just accepted, as `202` answers it; `Location` names the same job.",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "The job's identity, by which `GET /v1/jobs/{id}` reports it."
+          }
+        }
+      },
+      "JobProgress": {
+        "type": "object",
+        "description": "How far a job got: `done` of `total` steps, in units of its own.",
+        "required": [
+          "done",
+          "total"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many steps are done.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many there are.",
+            "minimum": 0
+          }
+        }
+      },
+      "JobResult": {
+        "type": "object",
+        "description": "What a job did. Each kind fills in what it measures, so every field is optional and more arrive\ninside `/v1` as kinds are added.",
+        "properties": {
+          "reclaimed_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A Maintenance Pass: how much smaller the store is on disk.",
+            "minimum": 0
+          }
+        }
+      },
+      "JobState": {
+        "type": "string",
+        "description": "Where a job is in its life: queued, then running, then succeeded or failed — once, in that order.",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed"
+        ]
+      },
       "LineKind": {
         "type": "string",
         "description": "Which side of a diff a line is on.",
@@ -2677,7 +2999,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done."
           },
           "detail": {
             "type": "string",

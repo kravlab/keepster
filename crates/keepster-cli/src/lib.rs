@@ -11,6 +11,7 @@ pub mod diff;
 pub mod events;
 pub mod explain;
 pub mod history;
+pub mod jobs;
 pub mod pins;
 pub mod reconcile;
 pub mod render;
@@ -23,14 +24,16 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, LogArgs, MoveArgs, PinArgs, PinsArgs,
-    ReconcileArgs, RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, JobArgs, LogArgs, MaintainArgs,
+    MoveArgs, PinArgs, PinsArgs, ReconcileArgs, RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs,
+    UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
 pub use events::{EventStream, SseEvent};
 pub use explain::explain;
 pub use history::{cat, log};
+pub use jobs::{job, maintain};
 pub use pins::{pin, pins, unpin};
 pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};
@@ -60,7 +63,8 @@ pub mod exit {
     pub const PARTIAL: u8 = 6;
     /// `status` found at least one Root that is not `Watching`.
     pub const ROOT_NOT_WATCHING: u8 = 10;
-    /// `status` found every Root watched, and no `git` maintenance can run with (ticket 11).
+    /// `status` found every Root watched, and no `git` maintenance can run with (ticket 11) — or a
+    /// Maintenance Pass was asked for without one.
     pub const MAINTENANCE_UNAVAILABLE: u8 = 11;
     /// Anything else, deliberately narrow.
     pub const OTHER: u8 = 1;

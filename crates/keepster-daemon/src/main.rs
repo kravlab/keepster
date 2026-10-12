@@ -54,6 +54,8 @@ async fn main() -> ExitCode {
         Command::Pin(args) => keepster_cli::pin(args, &control_path, now()).await,
         Command::Unpin(args) => keepster_cli::unpin(args, &control_path, now()).await,
         Command::Pins(args) => keepster_cli::pins(args, &control_path).await,
+        Command::Maintain(args) => keepster_cli::maintain(args, &control_path).await,
+        Command::Job(args) => keepster_cli::job(args, &control_path).await,
     };
 
     ExitCode::from(code)

@@ -74,6 +74,36 @@ pub enum Command {
 
     /// List a Root's pinned Snapshots, newest first.
     Pins(PinsArgs),
+
+    /// Run a Maintenance Pass over a Root now, reclaiming what Retention removed, as a job.
+    Maintain(MaintainArgs),
+
+    /// Report a job: where it is, and how it ended.
+    Job(JobArgs),
+}
+
+/// Options of `keepster maintain`.
+#[derive(Debug, Args)]
+pub struct MaintainArgs {
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print the job's identity and end at once, rather than following it to its end.
+    #[arg(long)]
+    pub detach: bool,
+}
+
+/// Options of `keepster job`.
+#[derive(Debug, Args)]
+pub struct JobArgs {
+    /// The job's identity, as `--detach` printed it.
+    pub id: String,
+
+    /// Print the daemon's answer as JSON, verbatim.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster pin`.

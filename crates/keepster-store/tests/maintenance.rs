@@ -132,12 +132,17 @@ fn the_pass_reclaims_what_retention_condemned_and_a_deleted_ref_alone_frees_noth
         "a deleted ref only makes its objects unreachable: this is why the pass exists"
     );
 
-    fixture.store.maintain(&git()).expect("maintained");
+    let maintained = fixture.store.maintain(&git()).expect("maintained");
 
     let after = fixture.objects();
     assert!(
         after < before / 4,
         "the condemned megabytes are gone: {before} bytes before, {after} after"
+    );
+    assert_eq!(
+        maintained.reclaimed_bytes,
+        before - after,
+        "and the pass says how much"
     );
 }
 

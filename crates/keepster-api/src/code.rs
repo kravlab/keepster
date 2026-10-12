@@ -65,6 +65,10 @@ error_codes! {
     ConfirmationRequired = "confirmation_required": "A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.",
     ResolutionInvalid = "resolution_invalid": "A resolution sets no answer or more than one, or names a new name that is not a bare name.",
     Withheld = "withheld": "The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.",
+    JobNotFound = "job_not_found": "No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.",
+    MaintenanceUnavailable = "maintenance_unavailable": "No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.",
+    MaintenanceFailed = "maintenance_failed": "A Maintenance Pass ran and failed; `detail` holds what `git` said.",
+    JobInterrupted = "job_interrupted": "The daemon stopped before the job could start; nothing was done.",
 }
 
 impl ErrorCode {

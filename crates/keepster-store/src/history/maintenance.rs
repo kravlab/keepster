@@ -11,6 +11,13 @@ use crate::git::{Git, GitUnavailable};
 /// restarted daemon does not maintain every store again at once.
 const MAINTAINED: &str = "keepster-maintained";
 
+/// What a Maintenance Pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Maintained {
+    /// How much smaller the store's objects are on disk than before the pass.
+    pub reclaimed_bytes: u64,
+}
+
 impl HistoryStore {
     /// Reclaim the space nothing references any more, and pack what is left.
     ///
@@ -20,12 +27,16 @@ impl HistoryStore {
     /// another `gc`, and never `git maintenance`, whose defaults keep moving; `gc` packs the refs too.
     ///
     /// The error is `git`'s own, word for word: a pass fails only through what `git` did or said.
-    pub fn maintain(&self, git: &Git) -> Result<(), GitUnavailable> {
+    pub fn maintain(&self, git: &Git) -> Result<Maintained, GitUnavailable> {
+        let objects = self.path.join("objects");
+        let before = bytes_under(&objects);
         git.run_in(&self.path, &["gc", "--prune=now", "--quiet"])?;
         // Best effort: without it, the next daemon maintains this store once more than it needed to.
         let _ = std::fs::write(self.path.join(MAINTAINED), b"");
 
-        Ok(())
+        Ok(Maintained {
+            reclaimed_bytes: before.saturating_sub(bytes_under(&objects)),
+        })
     }
 
     /// When the last Maintenance Pass over the store at `path` finished, as far as the store records it —
@@ -35,4 +46,19 @@ impl HistoryStore {
             .and_then(|metadata| metadata.modified())
             .ok()
     }
+}
+
+/// Every byte of every file under `directory`, as far as it can be read.
+fn bytes_under(directory: &Path) -> u64 {
+    std::fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => bytes_under(&entry.path()),
+                    _ => entry.metadata().map_or(0, |metadata| metadata.len()),
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }

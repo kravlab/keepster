@@ -7,6 +7,7 @@
 mod event;
 mod git;
 mod identity;
+mod job;
 mod path;
 mod policy;
 mod restore;
@@ -21,6 +22,7 @@ mod trigger;
 pub use event::EventId;
 pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
 pub use identity::NotAnIdentity;
+pub use job::{JobId, JobState, JobTransition};
 pub use path::{InvalidPath, RootPath};
 pub use policy::{
     CapturePolicy, DEFAULT_MAX_SIZE, Explanation, FollowStop, InvalidSize, SizeRule, Verdict,

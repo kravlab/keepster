@@ -21,6 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 use keepster_api::Event;
 use keepster_app::snapshots::{self, StoreLocation};
 use keepster_core::{Newest, RootId, SegmentName};
+use keepster_store::Maintained;
 
 use crate::DaemonState;
 
@@ -174,6 +175,11 @@ impl Housekeeping {
     /// Forget every Root not among `registered`.
     fn forget_except(&self, registered: &[RootId]) {
         self.roots().retain(|id, _| registered.contains(id));
+    }
+
+    /// Whether the daemon is stopping, after which no pass — and no job — starts.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
     }
 
     /// Start no further pass, and end the loop once the pass in flight, if any, is done.
@@ -332,7 +338,8 @@ fn consider(state: &DaemonState, record: &keepster_store::RootRecord, standing: 
         retain(state, id, &location, &ladder, newest, now, segment);
     }
     if let (Some(_), Some((generation, git))) = (owed.maintenance, git) {
-        maintain(state, id, &location, generation, git, now);
+        // Logged where it failed; the next look tries again, or the next day does.
+        let _ = maintain(state, id, &location, generation, git, now);
     }
 }
 
@@ -378,44 +385,57 @@ fn retain(
 /// Until a pass with that `git` has succeeded, a failure is the `git`'s and makes maintenance unavailable
 /// for every Root, with what it said in `status` (ticket 11); after one has, it is this store's, and is
 /// tried again the next day.
-fn maintain(
+///
+/// What it did, or why it did not: the scheduled pass logs it, and a manual one's job reports it.
+#[derive(Debug)]
+pub(crate) enum MaintenanceError {
+    /// The history could not be opened, so `git` never ran.
+    History(keepster_store::StoreError),
+    /// The `git` failed its check before the pass, and is unavailable from now on.
+    Unavailable(keepster_store::GitUnavailable),
+    /// The pass ran and `git` failed it.
+    Failed(keepster_store::GitUnavailable),
+}
+
+/// Run the pass; see [`MaintenanceError`] for how it can end otherwise.
+pub(crate) fn maintain(
     state: &DaemonState,
     id: RootId,
     location: &StoreLocation,
     generation: u64,
     git: keepster_store::Git,
     now: SystemTime,
-) {
+) -> Result<Maintained, MaintenanceError> {
     let store = match snapshots::open_for_reading(location) {
         Ok(Some(store)) => store,
         // Nothing captured yet, so nothing to maintain.
         Ok(None) => {
             state.housekeeping.maintained(id, now);
-            return;
+            return Ok(Maintained::default());
         }
         Err(error) => {
             tracing::warn!(root = %id, %error, "the history could not be opened for maintenance");
-            return;
+            return Err(MaintenanceError::History(error));
         }
     };
 
-    let Some(git) = crate::git::proven(state, generation, git) else {
-        return;
-    };
+    let git = crate::git::proven(state, generation, git).map_err(MaintenanceError::Unavailable)?;
     match store.maintain(&git) {
-        Ok(()) => {
+        Ok(maintained) => {
             crate::git::succeeded(state, generation);
             state.housekeeping.maintained(id, now);
-            tracing::info!(root = %id, git = %git.path().display(), "maintained");
+            tracing::info!(root = %id, git = %git.path().display(), reclaimed = maintained.reclaimed_bytes, "maintained");
             state.publish(Event::MaintenanceCompleted {
                 root: id.to_string(),
             });
+            Ok(maintained)
         }
         Err(unavailable) => {
             tracing::warn!(root = %id, %unavailable, "a Maintenance Pass failed");
-            if !crate::git::failed(state, generation, unavailable) {
+            if !crate::git::failed(state, generation, unavailable.clone()) {
                 state.housekeeping.maintained(id, now);
             }
+            Err(MaintenanceError::Failed(unavailable))
         }
     }
 }

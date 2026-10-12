@@ -28,6 +28,8 @@ use crate::index::{self, Index, Observation};
 mod diff;
 mod error_name;
 mod maintenance;
+
+pub use maintenance::Maintained;
 mod pins;
 mod restore;
 mod retention;

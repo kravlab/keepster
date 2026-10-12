@@ -90,8 +90,13 @@ pub(crate) fn current(state: &DaemonState) -> Option<(u64, Git)> {
 }
 
 /// The `git` of `generation`, checked again if no pass has run it yet: a version printed when it was
-/// found says nothing of the binary that is there now (ticket 11). Called right before a real pass.
-pub(crate) fn proven(state: &DaemonState, generation: u64, git: Git) -> Option<Git> {
+/// found says nothing of the binary that is there now (ticket 11). Called right before a real pass; a
+/// `git` that fails the check is unavailable from then on, and the error says why.
+pub(crate) fn proven(
+    state: &DaemonState,
+    generation: u64,
+    git: Git,
+) -> Result<Git, GitUnavailable> {
     let checked = {
         let found = state.git();
         found
@@ -99,16 +104,12 @@ pub(crate) fn proven(state: &DaemonState, generation: u64, git: Git) -> Option<G
             .is_some_and(|found| found.generation == generation && found.proven)
     };
     if checked {
-        return Some(git);
+        return Ok(git);
     }
 
-    match Git::probe(git.path()) {
-        Ok(probed) => Some(probed),
-        Err(unavailable) => {
-            failed(state, generation, unavailable);
-            None
-        }
-    }
+    Git::probe(git.path()).inspect_err(|unavailable| {
+        failed(state, generation, unavailable.clone());
+    })
 }
 
 /// A pass with the `git` of `generation` succeeded: it is proven.
