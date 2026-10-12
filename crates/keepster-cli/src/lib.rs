@@ -12,7 +12,9 @@ pub mod events;
 pub mod explain;
 pub mod history;
 pub mod jobs;
+pub mod lines;
 pub mod pins;
+pub mod preview;
 pub mod reconcile;
 pub mod render;
 pub mod resolve;
@@ -25,8 +27,8 @@ pub mod status;
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ForgetArgs, JobArgs, LogArgs,
-    MaintainArgs, MoveArgs, PinArgs, PinsArgs, ReconcileArgs, RestoreArgs, SnapshotArgs,
-    StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
+    MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, RestoreArgs,
+    SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -34,7 +36,9 @@ pub use events::{EventStream, SseEvent};
 pub use explain::explain;
 pub use history::{cat, log};
 pub use jobs::{forget, job, maintain};
+pub use lines::LineStream;
 pub use pins::{pin, pins, unpin};
+pub use preview::preview;
 pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;

@@ -42,7 +42,7 @@ impl Default for Header {
 }
 
 /// Why a Snapshot holds no content for a path that is there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WithheldReason {
     /// Over its size cap.
     TooLarge,
@@ -109,7 +109,7 @@ impl WithheldReason {
 }
 
 /// What a special file is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpecialKind {
     /// A named pipe.
     Fifo,

@@ -316,7 +316,7 @@ fn body_problem(rejection: JsonRejection) -> ProblemResponse {
 ///
 /// Resolving a relative path here would resolve it against the *daemon's* working directory, which is
 /// meaningless to the client that sent it — so it is refused rather than answered wrongly.
-fn absolute_query_path(path: &str) -> Result<std::path::PathBuf, ProblemResponse> {
+pub(crate) fn absolute_query_path(path: &str) -> Result<std::path::PathBuf, ProblemResponse> {
     let path = std::path::PathBuf::from(path);
 
     if path.is_absolute() {

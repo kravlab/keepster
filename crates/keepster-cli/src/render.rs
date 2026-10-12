@@ -88,6 +88,19 @@ pub fn write_roots(roots: &[Root], out: &mut impl Write) -> io::Result<()> {
                  build and are not carried forward"
             )?;
         }
+        // Ticket 20: the pending change set is a count and an age, never a listing — a listing of a debounce
+        // queue is stale as it prints.
+        if root.pending_paths > 0 {
+            let plural = if root.pending_paths == 1 { "" } else { "s" };
+            match root.oldest_pending_seconds {
+                Some(age) => writeln!(
+                    out,
+                    "      {} change{plural} pending, the oldest {age}s ago",
+                    root.pending_paths
+                )?,
+                None => writeln!(out, "      {} change{plural} pending", root.pending_paths)?,
+            }
+        }
         // Ticket 56: what each volume state means for the history, so that `unavailable` is never read
         // as "gone".
         let hint = match root.state_code.as_deref() {

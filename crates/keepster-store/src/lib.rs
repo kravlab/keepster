@@ -14,9 +14,9 @@ pub use git::{Git, GitUnavailable};
 pub use history::{
     CaptureRequest, CapturedSnapshot, Comparison, Content, DIFF_MAX_SIZE, Depth, DiffLine,
     DiffTarget, Entry, EntryKind, FileChange, FileDiff, Forgotten, HistoryStore, Hunk,
-    IncompletePath, LineKind, LinkNames, Listing, Maintained, Pass, Preflight, RestoreScope,
-    Retained, SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, Written,
-    destination_naming,
+    IncompletePath, LineKind, LinkNames, Listing, Maintained, Pass, Preflight, PreviewOptions,
+    RestoreScope, Retained, SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath,
+    Written, destination_naming, preview,
 };
 pub use index::INDEX_SCHEMA_VERSION;
 pub use keepster_core::WithheldReason;

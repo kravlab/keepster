@@ -467,6 +467,113 @@ mod held {
             "taking the queue empties it"
         );
     }
+    #[test]
+    fn a_directory_that_is_no_root_is_configured_as_registering_it_would_and_names_what_its_file_sets()
+     {
+        let fixture = fixture();
+        let candidate = fixture.root.parent().expect("a parent").join("candidate");
+        fs::create_dir_all(&candidate).expect("a directory");
+        fs::write(
+            candidate.join(ROOT_CONFIG),
+            "[files]\nexclude = [\"*.tmp\"]\nmax_size = \"1 MiB\"\n",
+        )
+        .expect("its own file");
+        let mut configuration = configuration(&fixture);
+
+        let effective = configuration
+            .candidate(&candidate, None)
+            .expect("a configuration");
+
+        assert!(
+            effective
+                .policy
+                .rules()
+                .rules()
+                .any(|rule| rule.text == "*.tmp"),
+            "its own file is honoured"
+        );
+        assert_eq!(
+            keepster_app::config::set_by_root_file(&effective)
+                .into_iter()
+                .map(|(key, values)| (key, values.into_iter().cloned().collect::<Vec<_>>()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("files.exclude", vec![Value::Pattern("*.tmp".to_owned())]),
+                ("files.max_size", vec![Value::Bytes(1024 * 1024)]),
+            ],
+            "and what it sets is named"
+        );
+    }
+
+    #[test]
+    fn a_directory_once_watched_is_configured_under_the_identity_registering_it_again_takes_back() {
+        let fixture = fixture();
+        fs::write(
+            &fixture.global,
+            format!("[root.{}.files]\nmax_size = \"3 MiB\"\n", id()),
+        )
+        .expect("the global file");
+        let mut configuration = configuration(&fixture);
+
+        let fresh = configuration
+            .candidate(&fixture.root, None)
+            .expect("a configuration");
+        let again = configuration
+            .candidate(&fixture.root, Some(id()))
+            .expect("a configuration");
+
+        let max_size = |effective: &keepster_app::config::Effective| {
+            effective
+                .keys
+                .iter()
+                .find(|key| key.spec.name == "files.max_size")
+                .map(|key| {
+                    key.setting
+                        .values()
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+        };
+        let block = Some(vec![Value::Bytes(3 * 1024 * 1024)]);
+        assert_ne!(max_size(&fresh), block, "no block names a new identity");
+        assert_eq!(
+            max_size(&again),
+            block,
+            "the block for the identity it takes back applies"
+        );
+    }
+
+    #[test]
+    fn a_directory_once_watched_keeps_out_what_forget_excluded_from_it() {
+        let fixture = fixture();
+        fs::write(
+            fixture.state.join(id().to_string()).join("forgotten.toml"),
+            "patterns = [\".env.local\"]\n",
+        )
+        .expect("what Forget excluded");
+        let mut configuration = configuration(&fixture);
+
+        let fresh = configuration
+            .candidate(&fixture.root, None)
+            .expect("a configuration");
+        let again = configuration
+            .candidate(&fixture.root, Some(id()))
+            .expect("a configuration");
+
+        let forgets = |effective: &keepster_app::config::Effective| {
+            effective
+                .policy
+                .rules()
+                .rules()
+                .any(|rule| rule.text == ".env.local")
+        };
+        assert!(!forgets(&fresh), "nothing was forgotten from a new Root");
+        assert!(
+            forgets(&again),
+            "registering it again takes back what Forget excluded"
+        );
+    }
 }
 
 #[test]

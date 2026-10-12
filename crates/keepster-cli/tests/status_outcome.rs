@@ -335,6 +335,21 @@ fn a_root_whose_disk_is_gone_says_its_history_still_reads_and_a_held_one_says_ho
 }
 
 #[test]
+fn pending_changes_are_a_count_and_an_age_never_a_listing() {
+    let mut busy = root("01J0000000000000000000000A", RootState::Watching);
+    busy.pending_paths = 3;
+    busy.oldest_pending_seconds = Some(12);
+
+    let result = outcome(served(&status_with(vec![busy])), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("3 changes pending, the oldest 12s ago"),
+        "{printed}"
+    );
+}
+
+#[test]
 fn the_git_in_use_is_shown_with_its_version() {
     let result = outcome(served(&status_with(Vec::new())), false, None);
 

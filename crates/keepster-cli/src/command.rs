@@ -60,6 +60,10 @@ pub enum Command {
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
 
+    /// Show what a Snapshot of a directory would hold right now, grouped by the rule that decided —
+    /// for a Root, or for a directory before it is watched. Captures nothing.
+    Preview(PreviewArgs),
+
     /// Show a Root's effective configuration, and the level that set each key.
     Config(ConfigArgs),
 
@@ -437,6 +441,41 @@ pub struct MoveArgs {
 pub struct WatchArgs {
     /// The directory to watch. Relative paths are resolved against the working directory.
     pub path: PathBuf,
+
+    /// Show what watching it would capture, and watch nothing: `keepster preview`, under this name.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Watch it without asking, even past what one Root is claimed to hold.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Options of `keepster preview`.
+#[derive(Debug, Args)]
+pub struct PreviewArgs {
+    /// The directory; by default the Root holding the working directory, or else the working directory.
+    pub path: Option<PathBuf>,
+
+    /// `infinity` lists every path as well as the summary.
+    #[arg(long)]
+    pub depth: Option<String>,
+
+    /// List every path of one class: `captured`, `excluded`, `withheld` or `unreadable`.
+    #[arg(long)]
+    pub only: Option<String>,
+
+    /// Enter excluded directories to measure what they hold, which capture never does.
+    #[arg(long)]
+    pub measure_excluded: bool,
+
+    /// How many of the largest entries to name on each side.
+    #[arg(long)]
+    pub top: Option<usize>,
+
+    /// Print the daemon's stream as it arrives, one JSON object per line, verbatim.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster status`.

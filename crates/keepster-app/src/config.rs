@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use keepster_core::{
     CapturePolicy, DEFAULT_MAX_SIZE, IGNORE_FILE, InvalidPattern, Keep, Ladder, Level, ModeChoice,
@@ -300,6 +300,49 @@ impl Effective {
             .map(|key| (key.spec.name, key.setting.values()))
             .collect()
     }
+}
+
+/// What a Root's own `.keepster.toml` sets in `effective`, key by key in schema order, with the values it
+/// wrote — a list's own entries alone: what a Capture Preview shows, so that a rule a repository's author
+/// wrote is never read as Keepster's own default.
+pub fn set_by_root_file(effective: &Effective) -> Vec<(&'static str, Vec<&Value>)> {
+    effective
+        .keys
+        .iter()
+        .filter_map(|key| {
+            let entries: Vec<&Entry> = match &key.setting {
+                Setting::Scalar(entry) => vec![entry],
+                Setting::List(entries) => entries.iter().collect(),
+            };
+            let written: Vec<&Value> = entries
+                .into_iter()
+                .filter(|entry| entry.origin.level == Level::Root)
+                .map(|entry| &entry.value)
+                .collect();
+            (!written.is_empty()).then_some((key.spec.name, written))
+        })
+        .collect()
+}
+
+/// `effective` with what Forget excluded added, as rules of its own level and as entries of
+/// `files.exclude`, so that `config` shows them where they decide.
+fn forgetting(effective: &mut Effective, forgotten: Vec<Rule>) {
+    if forgotten.is_empty() {
+        return;
+    }
+    if let Some(exclude) = effective
+        .keys
+        .iter_mut()
+        .find(|key| key.spec.name == "files.exclude")
+    {
+        if let Setting::List(entries) = &mut exclude.setting {
+            entries.extend(forgotten.iter().map(|rule| Entry {
+                value: Value::Pattern(rule.text.clone()),
+                origin: rule.origin.clone(),
+            }));
+        }
+    }
+    effective.policy = std::mem::take(&mut effective.policy).with_forgotten(forgotten);
 }
 
 /// The settings one level contributes, parsed and checked, so that merging can never fail.
@@ -1316,21 +1359,7 @@ impl Configuration {
                 };
             }
         };
-        if !forgotten.is_empty() {
-            if let Some(exclude) = effective
-                .keys
-                .iter_mut()
-                .find(|key| key.spec.name == "files.exclude")
-            {
-                if let Setting::List(entries) = &mut exclude.setting {
-                    entries.extend(forgotten.iter().map(|rule| Entry {
-                        value: Value::Pattern(rule.text.clone()),
-                        origin: rule.origin.clone(),
-                    }));
-                }
-            }
-            effective.policy = effective.policy.with_forgotten(forgotten);
-        }
+        forgetting(&mut effective, forgotten);
         effective.policy = std::mem::take(&mut effective.policy)
             .with_fences(
                 history_fence(&self.state_dir, root_path)
@@ -1372,6 +1401,45 @@ impl Configuration {
             effective: Some(effective),
             errors: self.errors(id),
         }
+    }
+
+    /// The configuration a directory would be registered under, read now: the global file in force and
+    /// the directory's own `.keepster.toml`, exactly as registering it would read them (ticket 57).
+    ///
+    /// For a Capture Preview of a directory that is not a Root. `unwatched` is the identity of the Root
+    /// once watched at `path`, which registering it again would take back — and with it the global file's
+    /// block for that Root. Nothing is remembered: a candidate has no known-good to fall back on, so a
+    /// file that cannot be read is the answer, not the defaults.
+    pub fn candidate(
+        &mut self,
+        path: &Path,
+        unwatched: Option<RootId>,
+    ) -> Result<Effective, Vec<ConfigError>> {
+        self.refresh_global();
+        let Some(global) = self.global.in_force.as_ref() else {
+            return Err(self.global.error.iter().cloned().collect());
+        };
+        let file = path.join(ROOT_CONFIG);
+        let own = read_text(&file)
+            .and_then(|text| text.map(|text| RootConfig::parse(&file, &text)).transpose())
+            .map_err(|error| vec![error])?;
+        // A Root registered now has an identity no block names, so none applies to it — and nothing
+        // was ever forgotten from it.
+        let id = unwatched.unwrap_or_else(|| RootId::generate(UNIX_EPOCH));
+        let mut effective = effective(global, id, path, own.as_ref());
+        if unwatched.is_some() {
+            // Taken back with the identity, as registering again takes them back.
+            let forgotten = self.forgotten(id).map_err(|error| vec![error])?;
+            forgetting(&mut effective, forgotten);
+        }
+        effective.policy = std::mem::take(&mut effective.policy)
+            .with_fences(history_fence(&self.state_dir, path).into_iter().collect())
+            .with_real_fences(vec![(
+                resolved(&self.state_dir),
+                WithheldReason::HistoryStore,
+            )]);
+
+        Ok(effective)
     }
 
     /// Forget every Root `keep` does not name, once they are deregistered.

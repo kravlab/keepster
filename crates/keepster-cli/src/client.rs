@@ -143,6 +143,25 @@ impl DaemonClient {
         Ok(EventStream::new(response.into_body()))
     }
 
+    /// Perform a `GET` whose successful body is read line by line as it arrives — a Capture Preview's
+    /// stream. A refusal is returned whole, as [`ClientError::Refused`], so its Problem can be read.
+    pub async fn lines(&self, path: &str) -> Result<crate::lines::LineStream, ClientError> {
+        let response = self.exchange("GET", path, None, &[]).await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let headers = response.headers().clone();
+            let body = response.into_body().collect().await?.to_bytes().to_vec();
+            return Err(ClientError::Refused(Box::new(Response {
+                status,
+                headers,
+                body,
+            })));
+        }
+
+        Ok(crate::lines::LineStream::new(response.into_body()))
+    }
+
     /// Perform a `POST` of a JSON body against the daemon.
     pub async fn post(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
         self.send("POST", path, Some(body), &[]).await

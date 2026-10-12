@@ -159,7 +159,7 @@ pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Regist
 }
 
 /// A value as the wire types it.
-fn wire(value: &Value) -> serde_json::Value {
+pub(crate) fn wire(value: &Value) -> serde_json::Value {
     match value {
         Value::Bool(switch) => json!(switch),
         Value::Bytes(bytes) => json!(bytes),

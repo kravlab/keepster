@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use crate::client::{ClientError, DaemonClient, Response};
 use crate::command::{MoveArgs, UnwatchArgs, WatchArgs};
 use crate::exit;
+use crate::preview::Shown;
 use crate::render::{write_git, write_roots};
 
 /// Register a directory as a Watched Root.
@@ -27,8 +28,21 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
         }
     };
 
-    let body = serde_json::json!({ "path": path.to_string_lossy() });
     let client = DaemonClient::new(control_path);
+    // `--dry-run` is the preview, and watches nothing.
+    if args.dry_run {
+        return match crate::preview::run(&client, &path, "", Shown::Rendered(false)).await {
+            Ok(_) => exit::SUCCESS,
+            Err(code) => code,
+        };
+    }
+    if !args.yes {
+        if let Err(code) = within_claim(&client, &path).await {
+            return code;
+        }
+    }
+
+    let body = serde_json::json!({ "path": path.to_string_lossy() });
     let answer = client
         .post(
             "/v1/roots",
@@ -44,6 +58,59 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
         }
         Err(code) => code,
     }
+}
+
+/// Go on registering `path` only once it is known to be within what one Root is claimed to hold, or the
+/// person has said to go on past it (ticket 30): nothing is refused, but a directory that big is not
+/// watched by surprise. Where nothing can be asked, `--yes` says it.
+///
+/// A preview that cannot be had says nothing either way, and registering goes on: it will say for itself
+/// whatever is wrong with the directory. One that is busy is the exception, since registering would not
+/// notice: the directory is not watched unseen, and the command says to try again.
+async fn within_claim(client: &DaemonClient, path: &std::path::Path) -> Result<(), u8> {
+    use std::io::IsTerminal;
+
+    if io::stderr().is_terminal() {
+        eprintln!(
+            "keepster: looking at what watching {} would capture…",
+            path.display()
+        );
+    }
+    let summary = match crate::preview::run(client, path, "", Shown::Quiet).await {
+        Ok(summary) => summary,
+        Err(exit::STATE_CONFLICT) => {
+            eprintln!(
+                "keepster: {} was not watched: another Capture Preview is walking, and this one must \
+                 see it first; try again, or pass --yes",
+                path.display()
+            );
+            return Err(exit::STATE_CONFLICT);
+        }
+        Err(_) => return Ok(()),
+    };
+    let keepster_api::PreviewRecord::Summary { past_ceiling, .. } = &summary else {
+        return Ok(());
+    };
+    if past_ceiling.is_empty() {
+        return Ok(());
+    }
+
+    let _ = crate::preview::render(&summary, &mut std::io::stdout().lock());
+    let asked = std::io::stdin().is_terminal()
+        && crate::restore::yes(&format!(
+            "{} is past what one Root is claimed to hold. Watch it anyway?",
+            path.display()
+        ));
+    if asked {
+        return Ok(());
+    }
+    eprintln!(
+        "keepster: {} was not watched; pass --yes to watch it past what one Root is claimed to hold",
+        path.display()
+    );
+
+    // Waiting on the person's word, as a Restore waiting for an answer is.
+    Err(exit::STATE_CONFLICT)
 }
 
 /// Say, without failing the command, that the history just started will never be reclaimed until the
@@ -174,7 +241,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::ConfirmationRequired
         | ErrorCode::SecretOptedIn
         | ErrorCode::VolumeMismatch
-        | ErrorCode::StoreUnreachable => exit::STATE_CONFLICT,
+        | ErrorCode::StoreUnreachable
+        | ErrorCode::PreviewBusy => exit::STATE_CONFLICT,
         // Asking for the content of a directory, or the entries of a file, is a mistake in what was
         // asked rather than a state anything is in.
         ErrorCode::PathInvalid
@@ -187,7 +255,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::PurgeInvalid
         | ErrorCode::ComparisonInvalid
         | ErrorCode::ResolutionInvalid
-        | ErrorCode::GlobInvalid => exit::USAGE,
+        | ErrorCode::GlobInvalid
+        | ErrorCode::PreviewInvalid => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
@@ -197,7 +266,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::ClockUnusable
         | ErrorCode::HistoryUnreadable
         | ErrorCode::MaintenanceFailed
-        | ErrorCode::JobInterrupted => exit::OTHER,
+        | ErrorCode::JobInterrupted
+        | ErrorCode::PreviewFailed => exit::OTHER,
     }
 }
 

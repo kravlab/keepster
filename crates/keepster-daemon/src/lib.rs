@@ -19,6 +19,7 @@ mod housekeeping;
 mod jobs;
 mod openapi;
 mod pins;
+mod preview;
 mod problem;
 mod restore;
 mod roots;
@@ -281,6 +282,8 @@ struct DaemonState {
     volumes: Arc<dyn Volumes>,
     /// What the last capture of each Root found of its volume and its store.
     outcomes: Arc<volumes::Outcomes>,
+    /// Whether a Capture Preview is walking: one runs at a time (ticket 57).
+    previewing: Arc<std::sync::atomic::AtomicBool>,
     /// Where every Root's directory is: its record and its History Store.
     store_base: PathBuf,
 }
@@ -312,6 +315,7 @@ impl DaemonState {
             announced: Arc::new(Mutex::new(events::Announced::default())),
             volumes,
             outcomes: Arc::new(volumes::Outcomes::default()),
+            previewing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             store_base,
         }
     }
@@ -440,6 +444,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(diff::diff))
         .routes(routes!(restore::restore))
         .routes(routes!(explain::explain))
+        .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))
 }
 

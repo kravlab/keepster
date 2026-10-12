@@ -4,6 +4,8 @@
 //! the CLI and third-party clients parse, so that the contract can stay additive without dragging
 //! domain changes onto the wire (ticket 08).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 mod code;
@@ -1286,6 +1288,163 @@ pub enum RootState {
     /// never had a valid version to fall back on. The history is not unreadable: the timeline, diffs and
     /// content read as ever, and only capture and Restore stop.
     Unavailable,
+}
+
+/// One line of a Capture Preview, as `GET /v1/preview` streams them: a `header` first, then an `entry`
+/// for every path asked for as the walk classifies it, interleaved with `progress`, then a `summary` — or,
+/// if the walk fails, an `error` in its place. One JSON object per line (ticket 57); a record of a type a
+/// client does not know is to be passed over.
+///
+/// A preview captures nothing and says nothing of what the History Store would grow by: that is
+/// unknowable without hashing every file, which is the capture. What it measures is content to capture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PreviewRecord {
+    /// What is previewed, sent before the walk starts.
+    Header {
+        /// The directory previewed.
+        path: String,
+        /// The Root it is, or lies inside, when there is one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<String>,
+        /// Where it lies inside that Root, `/`-separated, when it is not the Root itself: classified by the
+        /// Root's rules, as a capture of the Root would classify it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        within: Option<String>,
+        /// A Root it contains, when it is none: registering it would be refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        overlaps: Option<String>,
+        /// The directory's own `.keepster.toml`, when it has one: honoured exactly as registering it would
+        /// honour it, and shown, so that a rule a repository's author wrote is not read as Keepster's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<PreviewConfig>,
+    },
+    /// One path, as the walk classified it.
+    Entry {
+        /// Where, relative to the directory previewed.
+        path: String,
+        /// `file`, `directory`, `link` or `special`.
+        kind: String,
+        /// `captured`, `excluded`, `withheld` or `unreadable`.
+        class: String,
+        /// Why it is Withheld, for a Withheld path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Its apparent size in bytes: a file's length, a link's target text; nothing for a directory.
+        bytes: u64,
+        /// The rule that decided, where one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<RuleReference>,
+        /// Whether it is an excluded directory the walk did not enter, as a capture never would.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pruned: bool,
+    },
+    /// How many paths the walk has classified so far, sent now and then whether or not any is listed —
+    /// so a reader sees the walk is alive, and the walk sees a reader that went away.
+    Progress {
+        /// Paths classified so far.
+        walked: u64,
+    },
+    /// Why the walk stopped short, sent instead of the summary.
+    Error {
+        /// What failed, for a person.
+        detail: String,
+    },
+    /// What the whole walk found.
+    Summary {
+        /// Content to capture.
+        captured: PreviewTotals,
+        /// What the rules and the secret denylist leave out.
+        excluded: PreviewTotals,
+        /// What would be recorded without its content, by reason.
+        withheld: BTreeMap<String, PreviewTotals>,
+        /// How many paths could not be looked at.
+        unreadable: u64,
+        /// Every rule that decided something, and what it decided, largest first.
+        groups: Vec<PreviewGroup>,
+        /// The largest files captured, largest first.
+        largest_captured: Vec<PreviewSize>,
+        /// The largest files left out, largest first: excluded ones that were measured, and those
+        /// withheld without their content.
+        largest_left_out: Vec<PreviewSize>,
+        /// Which of v1's claims for one Root it is past: `files`, `directories`, `bytes`. Nothing is
+        /// refused above them; registering asks for a confirmation.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        past_ceiling: Vec<String>,
+    },
+}
+
+/// A directory's own `.keepster.toml`, as a preview shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PreviewConfig {
+    /// Where it is.
+    pub file: String,
+    /// Every key it sets, in schema order, with what it sets it to.
+    pub sets: Vec<PreviewSetting>,
+    /// What it defines that is almost certainly not meant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ConfigWarning>,
+}
+
+/// One key a directory's own `.keepster.toml` sets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PreviewSetting {
+    /// The key as a person writes it, `table.key`.
+    pub key: String,
+    /// What the file writes for it, typed as `ConfigKey::value` types a value: one for a scalar, every
+    /// entry the file adds for a list.
+    pub values: Vec<serde_json::Value>,
+}
+
+/// How many files and directories, and how many bytes of files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PreviewTotals {
+    /// Files, links and special files.
+    pub files: u64,
+    /// Directories.
+    pub directories: u64,
+    /// The files' apparent sizes, summed.
+    pub bytes: u64,
+    /// Excluded directories not entered, and so not measured.
+    #[serde(default)]
+    pub pruned: u64,
+}
+
+/// Everything one rule — or one reason, or no rule at all — decided.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PreviewGroup {
+    /// `captured`, `excluded`, `withheld` or `unreadable`.
+    pub class: String,
+    /// Why, for a Withheld group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The rule, absent where none decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<RuleReference>,
+    /// How many files it decided.
+    pub files: u64,
+    /// How many directories.
+    pub directories: u64,
+    /// The files' apparent sizes, summed.
+    pub bytes: u64,
+    /// The directories it pruned, named and unmeasured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pruned: Vec<String>,
+}
+
+/// One path and its apparent size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PreviewSize {
+    /// Where, relative to the directory previewed.
+    pub path: String,
+    /// Its apparent size in bytes.
+    pub bytes: u64,
 }
 
 #[cfg(test)]

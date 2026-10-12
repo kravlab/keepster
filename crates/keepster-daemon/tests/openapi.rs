@@ -111,6 +111,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/events",
             "GET /v1/jobs/{id}",
             "GET /v1/openapi.json",
+            "GET /v1/preview",
             "GET /v1/roots",
             "GET /v1/roots/{id}",
             "GET /v1/roots/{id}/config",
@@ -266,6 +267,9 @@ fn the_problem_code_is_an_open_string_whose_known_values_are_listed() {
         "purge_invalid",
         "volume_mismatch",
         "store_unreachable",
+        "preview_busy",
+        "preview_invalid",
+        "preview_failed",
     ] {
         assert!(
             description.contains(&format!("`{known}`")),
@@ -325,6 +329,7 @@ fn every_operation_has_its_own_stable_name() {
             "maintain_root",
             "move_root",
             "pin_snapshot",
+            "preview_directory",
             "read_content",
             "reconcile_root",
             "register_root",

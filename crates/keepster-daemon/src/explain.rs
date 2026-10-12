@@ -113,7 +113,7 @@ pub(crate) async fn explain(
 }
 
 /// A rule as `explain` names it.
-fn reference(rule: &Rule) -> RuleReference {
+pub(crate) fn reference(rule: &Rule) -> RuleReference {
     RuleReference {
         pattern: rule.text.clone(),
         effect: if rule.negated {

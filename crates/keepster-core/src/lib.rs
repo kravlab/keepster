@@ -10,6 +10,7 @@ mod identity;
 mod job;
 mod path;
 mod policy;
+mod preview;
 mod restore;
 mod retention;
 mod root;
@@ -28,6 +29,10 @@ pub use path::{InvalidPath, RootPath};
 pub use policy::{
     CapturePolicy, DEFAULT_MAX_SIZE, Explanation, FollowStop, InvalidSize, SizeRule, Verdict,
     is_reserved, parse_size,
+};
+pub use preview::{
+    Ceiling, PreviewClass, PreviewEntry, PreviewGroup, PreviewKind, PreviewSummary, ROOT_CEILING,
+    Tally, Totals,
 };
 pub use restore::{
     Ancestry, Confirmation, Confirmed, Existing, Found, Issue, ModeChoice, Modes, NameCase, Naming,

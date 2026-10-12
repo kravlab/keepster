@@ -73,6 +73,9 @@ error_codes! {
     SecretOptedIn = "secret_opted_in": "A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.",
     VolumeMismatch = "volume_mismatch": "The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.",
     StoreUnreachable = "store_unreachable": "The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.",
+    PreviewBusy = "preview_busy": "A Capture Preview is already walking; one runs at a time, so this one was not started.",
+    PreviewInvalid = "preview_invalid": "`only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.",
+    PreviewFailed = "preview_failed": "The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.",
 }
 
 impl ErrorCode {

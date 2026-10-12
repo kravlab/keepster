@@ -40,6 +40,7 @@ async fn main() -> ExitCode {
         }
         Command::Status(args) => keepster_cli::status(args, &control_path).await,
         Command::Watch(args) => keepster_cli::watch(args, &control_path).await,
+        Command::Preview(args) => keepster_cli::preview(args, &control_path).await,
         Command::Roots => keepster_cli::roots(&control_path).await,
         Command::Unwatch(args) => keepster_cli::unwatch(args, &control_path).await,
         Command::Move(args) => keepster_cli::move_root(args, &control_path).await,

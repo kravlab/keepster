@@ -110,7 +110,7 @@ fn set_by(origin: &Origin) -> String {
 }
 
 /// A value as a person reads it: text without quotes, a size cap after its pattern.
-fn shown(value: &serde_json::Value) -> String {
+pub(crate) fn shown(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => text.clone(),
         serde_json::Value::Object(fields) if fields.contains_key("pattern") => {
