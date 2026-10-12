@@ -61,6 +61,27 @@ impl Fixture {
         .expect("a store")
     }
 
+    /// The same store with its index deleted, for the next read to rebuild — closed first, since
+    /// Windows deletes no file a connection holds open.
+    fn with_index_rebuilt(self) -> Self {
+        let Self {
+            directory,
+            root,
+            store,
+            id,
+        } = self;
+        drop(store);
+        fs::remove_file(directory.path().join("index.sqlite")).expect("the index deleted");
+        let store = Self::open(&directory);
+
+        Self {
+            directory,
+            root,
+            store,
+            id,
+        }
+    }
+
     fn write(&self, name: &str, content: &str) {
         fs::write(self.root.join(name), content).expect("a file");
     }
@@ -208,9 +229,7 @@ fn a_segment_from_before_the_format_was_recorded_is_read_as_the_first() {
             .reference(&segment_ref("2026-09-30T13"), legacy, true, "legacy")
             .expect("moved");
     }
-    fs::remove_file(fixture.directory.path().join("index.sqlite")).expect("the index rebuilt");
-    let store = Fixture::open(&fixture.directory);
-    let fixture = Fixture { store, ..fixture };
+    let fixture = fixture.with_index_rebuilt();
     fixture.write("notes.txt", "new");
 
     let new = fixture.capture(NOW + 60);
@@ -281,17 +300,12 @@ fn a_segment_newer_than_this_build_is_opaque_and_capture_carries_on_beside_it() 
         vec!["2026-09-30T14".to_owned()],
         "and reported where they would have been listed"
     );
-    fs::remove_file(fixture.directory.path().join("index.sqlite")).expect("the index rebuilt");
-    let rebuilt = Fixture {
-        store: Fixture::open(&fixture.directory),
-        ..fixture
-    };
+    let fixture = fixture.with_index_rebuilt();
     assert_eq!(
-        rebuilt.page().unreadable,
+        fixture.page().unreadable,
         page.unreadable,
         "after a rebuild too"
     );
-    let fixture = rebuilt;
     for id in future {
         assert!(
             matches!(
