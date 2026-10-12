@@ -170,12 +170,15 @@ impl LogLevels {
             until: raised
                 .and_then(|raised| jiff::Timestamp::try_from(raised.until).ok())
                 .map(|moment| moment.to_string()),
-            file: self
-                .output
-                .as_ref()
-                .and_then(|output| output.file())
-                .map(|file| file.display().to_string()),
+            file: self.file().map(|file| file.display().to_string()),
         }
+    }
+
+    /// The file the log is written to, when the daemon writes one.
+    pub(crate) fn file(&self) -> Option<PathBuf> {
+        self.output
+            .as_ref()
+            .and_then(|output| output.file().map(Path::to_path_buf))
     }
 
     /// Write at `level` until `duration` from now, then at the configured level again.

@@ -10,8 +10,10 @@
 #![deny(dead_code)]
 
 mod autostart;
+pub mod bundle;
 mod configuration;
 mod content;
+pub mod diagnostics;
 mod diff;
 mod directories;
 mod events;
@@ -661,6 +663,7 @@ async fn landing() -> axum::response::Html<&'static str> {
 /// path.
 fn api() -> OpenApiRouter<DaemonState> {
     on_both_listeners()
+        .routes(routes!(diagnostics::diagnostics))
         .routes(routes!(ui::bootstrap))
         .routes(routes!(ui::rotate))
 }
@@ -724,11 +727,17 @@ async fn version() -> Json<VersionInfo> {
 async fn status(
     State(state): State<DaemonState>,
 ) -> Result<Json<Status>, problem::ProblemResponse> {
-    let registered = roots::reported(&state, &state.registry())?;
-    let (maintenance, git) = git::report(&state);
+    status_of(&state).await.map(Json)
+}
+
+/// The whole health surface as it stands: what `GET /v1/status` serves, and what a diagnostics bundle
+/// carries verbatim.
+async fn status_of(state: &DaemonState) -> Result<Status, problem::ProblemResponse> {
+    let registered = roots::reported(state, &state.registry())?;
+    let (maintenance, git) = git::report(state);
     let service = state.service.rows().await;
 
-    Ok(Json(Status {
+    Ok(Status {
         daemon: DaemonStatus {
             version: version_info(),
             pid: std::process::id(),
@@ -743,7 +752,7 @@ async fn status(
             log: Some(state.log.status()),
         },
         roots: registered,
-    }))
+    })
 }
 
 #[cfg(unix)]

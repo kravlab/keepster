@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
-use keepster_app::config::{Effective, Entry, GlobalConfig, RootConfig, Setting, Value, effective};
+use keepster_app::config::{
+    Effective, Entry, GlobalConfig, RootConfig, Setting, Value, effective, global_effective,
+};
 use keepster_core::{DEFAULT_MAX_SIZE, Level, RootId};
 
 const GLOBAL: &str = "/home/someone/.config/keepster/config.toml";
@@ -741,4 +743,139 @@ fn the_git_maintenance_runs_with_is_named_at_the_top_of_the_global_file_alone() 
         RootConfig::parse(Path::new(".keepster.toml"), "[git]\npath = \"/tmp/evil\"\n").is_err(),
         "a Root's own file never chooses what the daemon runs"
     );
+}
+
+#[test]
+fn the_global_level_alone_is_the_defaults_under_the_global_file_s_own_table() {
+    let global = global(
+        "[log]\nformat = \"json\"\n\n[[roots]]\npath = \"~/code/*\"\n[roots.files]\nmax_size = \"2 MiB\"\n\n[root.01BX5ZZKBKACTAV9WEVGEMMVRZ.files]\nmax_size = \"3 MiB\"\n",
+    );
+
+    let level = global_effective(&global);
+
+    let format = scalar(&level, "log.format");
+    assert_eq!(format.value, Value::Name("json".to_owned()));
+    assert_eq!(format.origin.level, Level::Global, "set by the global file");
+    let size = scalar(&level, "files.max_size");
+    assert_eq!(
+        (size.value.clone(), size.origin.level),
+        (Value::Bytes(DEFAULT_MAX_SIZE), Level::Default),
+        "a pattern block and an id block each describe some Roots, never the global level"
+    );
+}
+
+mod as_read {
+    //! The configuration as its files read now, for a diagnostics bundle collected without the daemon
+    //! (ticket 63): the same merge, and nothing written — no known-good copy kept or fallen back on.
+
+    use std::fs;
+
+    use keepster_app::config::{
+        ROOT_CONFIG, Setting, Value, global_effective, read_global, read_root, starting_settings,
+    };
+    use keepster_core::Level;
+    use tempfile::TempDir;
+
+    fn id() -> keepster_core::RootId {
+        "01BX5ZZKBKACTAV9WEVGEMMVRZ".parse().expect("an identity")
+    }
+
+    #[test]
+    fn a_daemon_starting_now_would_take_its_settings_from_the_global_file_s_own_table() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let global_path = directory.path().join("config.toml");
+        fs::write(&global_path, "[log]\nformat = \"json\"\n").expect("the global file");
+        let global = read_global(Some(&global_path), None).expect("the global file reads");
+
+        let settings = starting_settings(Some(&global));
+
+        assert_eq!(settings.log_format, "json");
+        assert_eq!(settings.log_level, "info", "an absent key at its default");
+    }
+
+    #[test]
+    fn with_no_global_file_to_read_a_daemon_starting_now_would_take_the_defaults() {
+        let settings = starting_settings(None);
+
+        assert_eq!(settings.log_format, "text");
+        assert!(settings.listener);
+    }
+
+    #[test]
+    fn reading_the_files_for_a_report_merges_them_and_writes_nothing() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let global_path = directory.path().join("config.toml");
+        let state = directory.path().join("store");
+        let root = directory.path().join("project");
+        fs::create_dir_all(state.join(id().to_string())).expect("a Root's store directory");
+        fs::create_dir_all(&root).expect("a Root");
+        fs::write(&global_path, "[log]\nformat = \"json\"\n").expect("the global file");
+        fs::write(root.join(ROOT_CONFIG), "[files]\nmax_size = \"3 MiB\"\n").expect("its file");
+        fs::write(
+            state.join(id().to_string()).join("forgotten.toml"),
+            "patterns = [\".env\"]\n",
+        )
+        .expect("what Forget excluded");
+
+        let global = read_global(Some(&global_path), None).expect("the global file reads");
+        let resolved = read_root(&global, id(), &root, &state);
+
+        let level = global_effective(&global);
+        let format = level
+            .keys
+            .iter()
+            .find(|key| key.spec.name == "log.format")
+            .expect("log.format");
+        assert!(
+            matches!(&format.setting, Setting::Scalar(entry) if entry.value == Value::Name("json".to_owned())),
+            "{format:?}"
+        );
+        let effective = resolved.effective.expect("in force");
+        assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+        let setting = |name: &str| {
+            &effective
+                .keys
+                .iter()
+                .find(|key| key.spec.name == name)
+                .expect("the key")
+                .setting
+        };
+        assert!(
+            matches!(setting("files.max_size"), Setting::Scalar(entry) if entry.origin.level == Level::Root),
+            "the Root's own file is read"
+        );
+        assert!(
+            matches!(setting("files.exclude"), Setting::List(entries) if entries.iter().any(|entry| entry.origin.level == Level::Forget)),
+            "and what Forget excluded from now on"
+        );
+        let written: Vec<_> = fs::read_dir(state.join(id().to_string()))
+            .expect("listed")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(written, ["forgotten.toml"], "no known-good copy is kept");
+        assert!(!state.join("config.known-good.toml").exists());
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_is_the_answer_not_a_fallback() {
+        let directory = TempDir::new().expect("a temporary directory");
+        let global_path = directory.path().join("config.toml");
+        fs::write(&global_path, "[files\n").expect("a broken global file");
+
+        let error = read_global(Some(&global_path), None).expect_err("refused");
+
+        assert_eq!(error.path, global_path);
+    }
+
+    #[test]
+    fn no_global_file_is_the_defaults() {
+        let global = read_global(None, None).expect("the defaults");
+
+        assert!(
+            global_effective(&global)
+                .keys
+                .iter()
+                .all(|key| key.setting.origin().level == Level::Default)
+        );
+    }
 }

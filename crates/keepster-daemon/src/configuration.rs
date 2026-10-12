@@ -5,7 +5,8 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Path, State};
 use keepster_api::{ConfigEntry, ConfigKey, Problem, RootConfiguration, RootState};
-use keepster_app::config::{Resolved, Setting, Value};
+use keepster_app::config::{Effective, Resolved, Setting, Value};
+use keepster_core::RootId;
 use serde_json::json;
 
 use crate::DaemonState;
@@ -45,41 +46,22 @@ pub(crate) async fn show(
         state.configuration(id, &root.path)
     };
 
+    root_configuration(id, resolved).map(Json)
+}
+
+/// The Root `id`'s configuration as `resolved` stands, on the wire — or the problem that keeps it from
+/// being captured at all.
+pub(crate) fn root_configuration(
+    id: RootId,
+    resolved: Resolved,
+) -> Result<RootConfiguration, ProblemResponse> {
     let Some(effective) = resolved.effective else {
         return Err(config_problem(&resolved.errors));
     };
 
-    Ok(Json(RootConfiguration {
+    Ok(RootConfiguration {
         root: id.to_string(),
-        keys: effective
-            .keys
-            .iter()
-            .map(|key| {
-                let (value, entries) = match &key.setting {
-                    Setting::Scalar(entry) => (wire(&entry.value), None),
-                    Setting::List(entries) => (
-                        entries.iter().map(|entry| wire(&entry.value)).collect(),
-                        Some(
-                            entries
-                                .iter()
-                                .map(|entry| ConfigEntry {
-                                    value: wire(&entry.value),
-                                    origin: origin(&entry.origin),
-                                })
-                                .collect(),
-                        ),
-                    ),
-                };
-
-                ConfigKey {
-                    key: key.spec.name.to_owned(),
-                    value,
-                    origin: origin(&key.setting.origin()),
-                    entries,
-                    restart_required: key.restart_required,
-                }
-            })
-            .collect(),
+        keys: keys(&effective),
         warnings: effective
             .warnings
             .into_iter()
@@ -90,7 +72,40 @@ pub(crate) async fn show(
             .iter()
             .map(|error| invalid_file(error).into_problem())
             .collect(),
-    }))
+    })
+}
+
+/// Every key of `effective`, in schema order, with its value and the level that set it.
+pub(crate) fn keys(effective: &Effective) -> Vec<ConfigKey> {
+    effective
+        .keys
+        .iter()
+        .map(|key| {
+            let (value, entries) = match &key.setting {
+                Setting::Scalar(entry) => (wire(&entry.value), None),
+                Setting::List(entries) => (
+                    entries.iter().map(|entry| wire(&entry.value)).collect(),
+                    Some(
+                        entries
+                            .iter()
+                            .map(|entry| ConfigEntry {
+                                value: wire(&entry.value),
+                                origin: origin(&entry.origin),
+                            })
+                            .collect(),
+                    ),
+                ),
+            };
+
+            ConfigKey {
+                key: key.spec.name.to_owned(),
+                value,
+                origin: origin(&key.setting.origin()),
+                entries,
+                restart_required: key.restart_required,
+            }
+        })
+        .collect()
 }
 
 /// What a Root's configuration does to its state, if anything: `Unavailable` when it has no version to

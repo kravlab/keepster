@@ -39,6 +39,7 @@ mod preview;
 mod restore;
 mod retention;
 mod search;
+mod topology;
 
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
@@ -48,6 +49,7 @@ pub use preview::{PreviewOptions, preview};
 pub use restore::{LinkNames, Preflight, RestoreScope, Written, destination_naming};
 pub use retention::Retained;
 pub use search::{ContentFound, ContentPlan, ContentVersion, PathFound, SearchCounts, WithheldMet};
+pub use topology::{PinShape, SegmentShape, Topology, Watermark};
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///
@@ -146,6 +148,15 @@ pub enum StoreError {
     #[error("the history index at {path} could not be discarded for a rebuild")]
     Discard {
         /// The index involved.
+        path: PathBuf,
+        /// The underlying failure.
+        #[source]
+        source: io::Error,
+    },
+    /// The space a store takes on disk could not be measured, for a diagnostics bundle.
+    #[error("the history store at {path} could not be measured")]
+    Measure {
+        /// The store involved.
         path: PathBuf,
         /// The underlying failure.
         #[source]

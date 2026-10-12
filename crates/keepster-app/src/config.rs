@@ -647,6 +647,88 @@ pub fn effective(
     merge(&layers, warnings)
 }
 
+/// The global file at `path` as it reads now — the defaults where there is none — for a report made
+/// without the daemon (ticket 63). Nothing is written and no known-good copy is fallen back on: a file
+/// that does not parse is the answer.
+pub fn read_global(path: Option<&Path>, home: Option<&Path>) -> Result<GlobalConfig, ConfigError> {
+    let Some(path) = path else {
+        return Ok(GlobalConfig::default());
+    };
+
+    match read_text(path)? {
+        Some(text) => GlobalConfig::parse(path, &text, home),
+        None => Ok(GlobalConfig::default()),
+    }
+}
+
+/// The configuration of the Root `id` at `root_path` as its files read now beside `global`, with what
+/// Forget excluded from it under `state_dir` — for a report made without the daemon (ticket 63), so,
+/// as [`read_global`], it writes nothing and a file that cannot be read is the answer.
+pub fn read_root(
+    global: &GlobalConfig,
+    id: RootId,
+    root_path: &Path,
+    state_dir: &Path,
+) -> Resolved {
+    let file = root_path.join(ROOT_CONFIG);
+    let read = read_text(&file)
+        .and_then(|text| text.map(|text| RootConfig::parse(&file, &text)).transpose())
+        .and_then(|own| Ok((own, forgotten_at(state_dir, id)?)));
+    let (own, forgotten) = match read {
+        Ok(read) => read,
+        Err(error) => {
+            return Resolved {
+                effective: None,
+                errors: vec![error],
+            };
+        }
+    };
+    let mut effective = effective(global, id, root_path, own.as_ref());
+    forgetting(&mut effective, forgotten);
+
+    Resolved {
+        effective: Some(effective),
+        errors: Vec::new(),
+    }
+}
+
+/// What Forget excluded from the Root `id` from now on, from its file under `state_dir`.
+fn forgotten_at(state_dir: &Path, id: RootId) -> Result<Vec<Rule>, ConfigError> {
+    let path = state_dir.join(id.to_string()).join(FORGOTTEN);
+    let Some(text) = read_text(&path)? else {
+        return Ok(Vec::new());
+    };
+    let file: ForgottenFile = toml::from_str(&text).map_err(|error| ConfigError {
+        path: path.clone(),
+        message: error.message().to_owned(),
+    })?;
+
+    file.patterns
+        .iter()
+        .map(|pattern| {
+            Rule::parse(
+                pattern,
+                RootPath::root(),
+                RuleOrigin {
+                    level: Level::Forget,
+                    source: path.display().to_string(),
+                    line: None,
+                },
+            )
+            .map_err(|error| ConfigError {
+                path: path.clone(),
+                message: error.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The global level on its own: the defaults under the global file's own table, with no pattern block
+/// and no Root's block, since each of those describes some Roots and never the global level.
+pub fn global_effective(global: &GlobalConfig) -> Effective {
+    merge(&[&global.base], Vec::new())
+}
+
 /// `layers`, from the least specific to the most, merged by key class, with `warnings` from reading
 /// them ahead of the ones the merged rules raise.
 fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
@@ -1619,6 +1701,17 @@ pub struct DaemonSettings {
     pub log_ceiling: u64,
 }
 
+/// The global level of the configuration as the daemon has it in force.
+#[derive(Debug, Clone)]
+pub struct GlobalLevel {
+    /// The global file, where there is one.
+    pub file: Option<PathBuf>,
+    /// The level's effective configuration, or `None` while the global file never had a valid version.
+    pub effective: Option<Effective>,
+    /// Why the global file's current version is not applied, when it is not.
+    pub error: Option<ConfigError>,
+}
+
 /// One Root's configuration as it stands.
 #[derive(Debug, Clone)]
 pub struct Resolved {
@@ -1690,16 +1783,7 @@ impl Configuration {
                 WithheldReason::HistoryStore,
             )]);
 
-        if let Some(started) = &self.at_start {
-            let now = self.daemon_settings();
-            for key in effective.keys.iter_mut().filter(|key| !key.spec.live) {
-                if let Some(setting) = started.get(key.spec.name) {
-                    key.restart_required =
-                        now.get(key.spec.name).map(Setting::values) != Some(setting.values());
-                    key.setting = setting.clone();
-                }
-            }
-        }
+        self.as_started(&mut effective);
 
         let inputs: Vec<(&'static str, Vec<Value>)> = effective
             .classification_inputs()
@@ -1719,6 +1803,25 @@ impl Configuration {
         Resolved {
             effective: Some(effective),
             errors: self.errors(id),
+        }
+    }
+
+    /// The global level on its own as the daemon has it in force: the defaults under the global file's
+    /// own table, with the keys that cannot change live as they stood at the start — what a diagnostics
+    /// bundle reports beside every Root's configuration, so the keys describing the daemon are there
+    /// even with no Root at all (ticket 63).
+    pub fn global(&mut self) -> GlobalLevel {
+        self.refresh_global();
+        let effective = self.global.in_force.as_ref().map(|global| {
+            let mut effective = global_effective(global);
+            self.as_started(&mut effective);
+            effective
+        });
+
+        GlobalLevel {
+            file: self.global_path.clone(),
+            effective,
+            error: self.global.error.clone(),
         }
     }
 
@@ -1773,6 +1876,22 @@ impl Configuration {
         std::mem::take(&mut self.reconcile)
     }
 
+    /// Put the keys that cannot change live in `effective` back to the values they had at the start,
+    /// marking each a file now sets otherwise as needing a restart.
+    fn as_started(&self, effective: &mut Effective) {
+        let Some(started) = &self.at_start else {
+            return;
+        };
+        let now = self.daemon_settings();
+        for key in effective.keys.iter_mut().filter(|key| !key.spec.live) {
+            if let Some(setting) = started.get(key.spec.name) {
+                key.restart_required =
+                    now.get(key.spec.name).map(Setting::values) != Some(setting.values());
+                key.setting = setting.clone();
+            }
+        }
+    }
+
     /// The keys that cannot change live as the global file's own table sets them now. Such a key
     /// describes the daemon, one value per process, so no per-Root block decides it.
     fn daemon_settings(&self) -> BTreeMap<&'static str, Setting> {
@@ -1792,35 +1911,8 @@ impl Configuration {
         let started = self
             .at_start
             .get_or_insert_with(|| not_live(&Layer::default()));
-        let value = |name: &str| {
-            started
-                .get(name)
-                .and_then(|setting| setting.values().first().copied().cloned())
-        };
 
-        DaemonSettings {
-            listener: value("ui.listener") != Some(Value::Bool(false)),
-            port: match value("ui.port") {
-                Some(Value::Number(port)) => u16::try_from(port).unwrap_or(DEFAULT_PORT),
-                _ => DEFAULT_PORT,
-            },
-            allowed_origins: match value("ui.allowed_origins") {
-                Some(Value::Words(origins)) => origins,
-                _ => Vec::new(),
-            },
-            log_level: match value("log.level") {
-                Some(Value::Name(level)) => level,
-                _ => "info".to_owned(),
-            },
-            log_format: match value("log.format") {
-                Some(Value::Name(format)) => format,
-                _ => "text".to_owned(),
-            },
-            log_ceiling: match value("log.ceiling") {
-                Some(Value::Bytes(bytes)) => bytes,
-                _ => DEFAULT_LOG_CEILING,
-            },
-        }
+        settings_of(started)
     }
 
     /// The ladder a Root no longer watched decays by: the global file's, with its blocks for the Root —
@@ -1839,33 +1931,7 @@ impl Configuration {
     /// What Forget excluded from the Root `id` from now on, as rules of their own level, above every
     /// level a person writes (ticket 81).
     pub fn forgotten(&self, id: RootId) -> Result<Vec<Rule>, ConfigError> {
-        let path = self.state_dir.join(id.to_string()).join(FORGOTTEN);
-        let Some(text) = read_text(&path)? else {
-            return Ok(Vec::new());
-        };
-        let file: ForgottenFile = toml::from_str(&text).map_err(|error| ConfigError {
-            path: path.clone(),
-            message: error.message().to_owned(),
-        })?;
-
-        file.patterns
-            .iter()
-            .map(|pattern| {
-                Rule::parse(
-                    pattern,
-                    RootPath::root(),
-                    RuleOrigin {
-                        level: Level::Forget,
-                        source: path.display().to_string(),
-                        line: None,
-                    },
-                )
-                .map_err(|error| ConfigError {
-                    path: path.clone(),
-                    message: error.to_string(),
-                })
-            })
-            .collect()
+        forgotten_at(&self.state_dir, id)
     }
 
     /// Exclude `pattern` from the Root `id` from now on, as Forget's `--exclude` asks: added once to the
@@ -1979,6 +2045,48 @@ impl Configuration {
 
         refresh(&mut root.file, &path, &known_good, parse);
     }
+}
+
+/// The daemon's settings from the keys describing it, each absent one at its default.
+fn settings_of(started: &BTreeMap<&'static str, Setting>) -> DaemonSettings {
+    let value = |name: &str| {
+        started
+            .get(name)
+            .and_then(|setting| setting.values().first().copied().cloned())
+    };
+
+    DaemonSettings {
+        listener: value("ui.listener") != Some(Value::Bool(false)),
+        port: match value("ui.port") {
+            Some(Value::Number(port)) => u16::try_from(port).unwrap_or(DEFAULT_PORT),
+            _ => DEFAULT_PORT,
+        },
+        allowed_origins: match value("ui.allowed_origins") {
+            Some(Value::Words(origins)) => origins,
+            _ => Vec::new(),
+        },
+        log_level: match value("log.level") {
+            Some(Value::Name(level)) => level,
+            _ => "info".to_owned(),
+        },
+        log_format: match value("log.format") {
+            Some(Value::Name(format)) => format,
+            _ => "text".to_owned(),
+        },
+        log_ceiling: match value("log.ceiling") {
+            Some(Value::Bytes(bytes)) => bytes,
+            _ => DEFAULT_LOG_CEILING,
+        },
+    }
+}
+
+/// The settings a daemon starting now would run with: the global file's own table, or the defaults
+/// where it has no valid version. Read without a [`Configuration`], so nothing is written — which is
+/// how a report collected beside a daemon that is not running names, for instance, its log format.
+pub fn starting_settings(global: Option<&GlobalConfig>) -> DaemonSettings {
+    let layer = Layer::default();
+
+    settings_of(&not_live(global.map_or(&layer, |global| &global.base)))
 }
 
 /// The keys that cannot change live, as `layer` alone sets them.

@@ -15,7 +15,7 @@ fn json(response: &keepster_cli::Response) -> Value {
 }
 
 /// A watched Root with one Snapshot.
-async fn captured(daemon: &Harness) -> String {
+pub(crate) async fn captured(daemon: &Harness) -> String {
     let project = daemon.scratch("project");
     std::fs::write(project.join("notes.txt"), b"one").expect("a file");
     let root = daemon
@@ -151,11 +151,37 @@ fn toml_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\"))
 }
 
+/// Where [`whose_git_fails`] puts the `git` it configures.
 #[cfg(unix)]
-#[tokio::test]
-async fn a_pass_that_fails_ends_its_job_failed_with_what_git_said() {
+pub(crate) fn fake_git(daemon: &Harness) -> std::path::PathBuf {
+    daemon.scratch("fake-git").join("git")
+}
+
+/// Put an executable shell script saying `body` at `path`, replacing whatever is there by a rename —
+/// never by writing into a file a pass may be running — and wait until it can be run.
+#[cfg(unix)]
+pub(crate) fn install_script(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
 
+    let written = path.with_extension("new");
+    std::fs::write(&written, body).expect("a script");
+    std::fs::set_permissions(&written, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    std::fs::rename(&written, path).expect("in place");
+    // A file just written may still be open in a child another test forked (ETXTBSY): wait it out.
+    for _ in 0..200 {
+        match std::process::Command::new(path).arg("--version").output() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => break,
+        }
+    }
+}
+
+/// A daemon whose configured `git` passes its check and fails every pass, saying `the disk said no` on
+/// its error stream — already found, so a pass asked for runs it at once.
+#[cfg(unix)]
+pub(crate) async fn whose_git_fails() -> Harness {
     // A look a second, so the `git.path` written below is picked up at once; no pass is due meanwhile.
     let quick = keepster_daemon::HousekeepingTiming {
         every: Duration::from_secs(1),
@@ -164,26 +190,12 @@ async fn a_pass_that_fails_ends_its_job_failed_with_what_git_said() {
         maintain_every: Duration::from_secs(24 * 3600),
     };
     let daemon = Harness::start_with_housekeeping(quick, keepster_testkit::MANUAL).await;
-    let script = daemon.scratch("fake-git").join("git");
-    std::fs::write(
+    let script = fake_git(&daemon);
+    install_script(
         &script,
         "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'git version 2.43.0'; exit 0; fi\n\
          echo 'fatal: the disk said no' >&2\nexit 128\n",
-    )
-    .expect("a script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("executable");
-    // A file just written may still be open in a child another test forked (ETXTBSY): wait it out.
-    for _ in 0..200 {
-        match std::process::Command::new(&script)
-            .arg("--version")
-            .output()
-        {
-            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => break,
-        }
-    }
+    );
     daemon.write_global_config(
         format!(
             "{}\n[git]\npath = {}\n",
@@ -201,6 +213,13 @@ async fn a_pass_that_fails_ends_its_job_failed_with_what_git_said() {
     })
     .await
     .expect("the configured git is found at the next look");
+    daemon
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pass_that_fails_ends_its_job_failed_with_what_git_said() {
+    let daemon = whose_git_fails().await;
     let root = captured(&daemon).await;
     let mut stream = daemon.events(None).await;
 

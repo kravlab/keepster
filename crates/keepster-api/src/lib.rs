@@ -1774,6 +1774,306 @@ fn is_zero(count: &u64) -> bool {
     *count == 0
 }
 
+/// What the daemon knows that a diagnostics bundle carries, as `GET /v1/diagnostics` serves it on the
+/// control channel alone (ticket 63).
+///
+/// The bundle discloses by inventory and never redacts (ADR 0013): paths are here as they are, because
+/// the defects this exists for cannot be diagnosed without them. What is never here is a byte of any
+/// file from history — every section is read from status, configuration, the Registry, refs, commit
+/// messages and the index, and none from a blob. Each section carries its own failure, so one that
+/// cannot be read leaves the others whole.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Diagnostics {
+    /// The health surface, exactly as `GET /v1/status` serves it.
+    pub status: Status,
+    /// What the daemon runs on and with.
+    pub environment: Environment,
+    /// The effective configuration with the level that set each key.
+    pub configuration: DiagnosticConfiguration,
+    /// Every Root the Registry holds, watched or not, with its record as written.
+    pub registry: Vec<RegistryRecord>,
+    /// What each Root's store holds, one entry per Root the Registry holds.
+    pub topology: Vec<RootTopology>,
+    /// How far each Root's derived index got, one entry per Root the Registry holds.
+    pub watermarks: Vec<RootWatermarks>,
+    /// The tail of the daemon's log, and the format it is written in.
+    pub log: LogTail,
+}
+
+/// What the daemon runs on, and with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Environment {
+    /// The operating system, as Rust names it: `linux`, `macos`, `windows`.
+    pub os: String,
+    /// The processor architecture, as Rust names it: `x86_64`, `aarch64`.
+    pub arch: String,
+    /// The filesystem under each Root whose record can be read, in registration order.
+    pub filesystems: Vec<RootFilesystem>,
+    /// The directory watches every Root holds together, against the daemon-wide ceiling.
+    pub watches: WatchCounters,
+    /// The external `git` maintenance runs with, or why there is none: the discovery result.
+    pub git: GitStatus,
+    /// How each Root's last Maintenance Pass since the daemon started ended, in registration order. A
+    /// Root with no pass since then has no entry: the record is kept in memory, not on disk.
+    pub maintenance: Vec<MaintenancePass>,
+}
+
+/// The filesystem under one Root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RootFilesystem {
+    /// The Root's identity.
+    pub root: String,
+    /// Where its directory is.
+    pub path: String,
+    /// The filesystem's type as the platform names it: `ext4`, `nfs4`, `fuse.sshfs`, `apfs`. Absent
+    /// when the volume could not be asked, or when the platform does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem: Option<String>,
+    /// Whether the platform reports the volume as remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<bool>,
+    /// Where the volume is mounted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_point: Option<String>,
+    /// Why the volume could not be asked: most often, the directory is not there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The directory watches in use, against the ceiling the daemon keeps under the platform's budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WatchCounters {
+    /// How many directory watches every Root's watcher holds together now.
+    pub in_use: u64,
+    /// How many they may hold together, where the platform has such a budget (Linux's inotify); absent
+    /// where it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling: Option<u64>,
+}
+
+/// How one Root's last Maintenance Pass ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MaintenancePass {
+    /// The Root's identity.
+    pub root: String,
+    /// When it ended, as an RFC 3339 moment.
+    pub finished_at: String,
+    /// How: `succeeded`; `failed`, when `git` ran and failed it; `git_unavailable`, when the `git` failed
+    /// its check before the pass; `history_unreadable`, when the store could not be opened so `git`
+    /// never ran. An open set, as error codes are.
+    pub outcome: String,
+    /// What a pass that succeeded reclaimed, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed_bytes: Option<u64>,
+    /// What `git` wrote to its error stream, word for word, when it failed. A pass that succeeded keeps
+    /// none: `git` runs quietly, and its error stream is kept only when it fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    /// Why the pass did not run, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The effective configuration: the global level on its own, and every Root's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DiagnosticConfiguration {
+    /// The defaults and the global file's own table — what every Root starts from, and what the keys
+    /// describing the daemon are set by.
+    pub global: GlobalConfiguration,
+    /// Every watched Root's effective configuration, in registration order.
+    pub roots: Vec<RootConfigurationReport>,
+}
+
+/// The global level of the configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GlobalConfiguration {
+    /// The global file, where there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Every key of the schema, with its value and the level that set it, in the order the schema
+    /// lists them. Empty while the global file has never had a valid version.
+    pub keys: Vec<ConfigKey>,
+    /// The global file, when its current version is invalid and not applied, in the standard error
+    /// shape.
+    pub errors: Vec<Problem>,
+}
+
+/// One Root's effective configuration, or why it has none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RootConfigurationReport {
+    /// The Root's identity.
+    pub root: String,
+    /// Its configuration, as `GET /v1/roots/{id}/config` serves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<RootConfiguration>,
+    /// Why it has none: no file it depends on ever had a valid version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<Problem>,
+}
+
+/// One Root the Registry holds, with its record as written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RegistryRecord {
+    /// The Root's identity, which is its directory's name.
+    pub id: String,
+    /// `watched`, or `unwatched` for a Root whose history is kept after an unwatch.
+    pub standing: String,
+    /// Where its directory is, from its record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The identity of the volume it was registered on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<String>,
+    /// Its place within that volume, `/`-separated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within_volume: Option<String>,
+    /// Why its record cannot be read, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What one Root's store holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RootTopology {
+    /// The Root's identity.
+    pub root: String,
+    /// The store's shape. Absent, without an error, for a Root nothing was ever captured from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<StoreTopology>,
+    /// Why the store could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The shape of one store, read from its refs and commit messages — never a blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StoreTopology {
+    /// Every Segment's ref, in name order — which is chronological.
+    pub segments: Vec<SegmentTopology>,
+    /// Every Pin's ref, in name order.
+    pub pins: Vec<PinTopology>,
+    /// The bytes the repository takes on disk.
+    pub history_bytes: u64,
+    /// The bytes the derived index takes on disk; zero when there is none.
+    pub index_bytes: u64,
+}
+
+/// One Segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SegmentTopology {
+    /// The ref's last component: the period, perhaps followed by a sibling's format.
+    pub name: String,
+    /// The commit at its tip.
+    pub tip: String,
+    /// The content format its Snapshots are in; absent when it names none this build knows of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+    /// How many of its commits hold a Snapshot.
+    pub snapshots: u64,
+    /// How many hold none: written by something other than Keepster.
+    pub foreign: u64,
+    /// Its oldest Snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest: Option<SnapshotPoint>,
+    /// Its newest Snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<SnapshotPoint>,
+}
+
+/// One Pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PinTopology {
+    /// The pinned Snapshot's identity, which is the ref's name.
+    pub snapshot: String,
+    /// The commit it names.
+    pub tip: String,
+    /// The content format of the Snapshot it holds; absent when it names none this build knows of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+}
+
+/// A Snapshot named by its identity and the moment it carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SnapshotPoint {
+    /// Its identity.
+    pub id: String,
+    /// When it was taken, in UTC, as RFC 3339.
+    pub taken_at: String,
+}
+
+/// How far one Root's derived index got.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RootWatermarks {
+    /// The Root's identity.
+    pub root: String,
+    /// Every source the index tracks or should track, in source order. Empty for a Root nothing was
+    /// ever captured from.
+    pub sources: Vec<WatermarkReport>,
+    /// Why the store or its index could not be read as it is. The index is never repaired to read it:
+    /// a report that rebuilt what it reports on would hide what it exists to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// How far the index got with one source: a Segment, or a Pin as `pins/` and its identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WatermarkReport {
+    /// The source, as the index names it.
+    pub source: String,
+    /// The commit at its tip now; absent for a source the index names after its ref went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
+    /// The commit the index caught up to; absent for a source not indexed yet. Equal to `tip` once the
+    /// index is up to date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed: Option<String>,
+}
+
+/// The tail of the daemon's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LogTail {
+    /// The format the daemon writes lines in, `text` or `json`, as `log.format` set it at the start. A
+    /// rotated file written before a restart may be in the other.
+    pub format: String,
+    /// The current file and then each rotated one, newest first, until the tail's budget is spent.
+    /// Empty when the daemon writes no log file, or when its log could not be read.
+    pub files: Vec<LogFileTail>,
+    /// Why the log could not be read, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The end of one log file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LogFileTail {
+    /// The file's name in the log directory: `daemon.log`, `daemon.log.1`, …
+    pub name: String,
+    /// The file's whole size, in bytes.
+    pub size: u64,
+    /// Its last lines, whole lines only.
+    pub text: String,
+    /// Whether the lines before these were left out.
+    pub truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Event, RootState};

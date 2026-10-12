@@ -10,6 +10,7 @@ use clap::Parser;
 use keepster_cli::{Cli, Command, exit};
 use keepster_daemon::DaemonConfig;
 
+mod diagnose;
 mod supervised;
 
 #[tokio::main]
@@ -32,7 +33,9 @@ async fn main() -> ExitCode {
     // path names some other daemon, which nothing here may start.
     if cli.control_path.is_none() && !keepster_service::daemon_answers(&control_path) {
         match &cli.command {
-            Command::Daemon | Command::Service(_) => {}
+            // `diagnose` exists for the moment the daemon will not run: starting it would hide that,
+            // so without one the bundle is collected from the disk (ticket 63).
+            Command::Daemon | Command::Service(_) | Command::Diagnose(_) => {}
             Command::Status(_) => {
                 return ExitCode::from(supervised::unreachable(&control_path));
             }
@@ -93,6 +96,7 @@ async fn main() -> ExitCode {
         Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
         Command::Service(command) => supervised::service(command, &control_path).await,
         Command::LogLevel(args) => keepster_cli::log_level(args, &control_path).await,
+        Command::Diagnose(args) => diagnose::diagnose(args, &control_path, now()).await,
     };
 
     ExitCode::from(code)

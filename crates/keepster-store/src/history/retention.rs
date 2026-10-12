@@ -223,7 +223,7 @@ impl HistoryStore {
     }
 
     /// The identity of the Snapshot `commit` holds, or `None` for a commit this product did not write.
-    fn snapshot_of(&self, commit: git2::Oid) -> Result<Option<SnapshotId>, StoreError> {
+    pub(super) fn snapshot_of(&self, commit: git2::Oid) -> Result<Option<SnapshotId>, StoreError> {
         let commit = self
             .repository
             .find_commit(commit)

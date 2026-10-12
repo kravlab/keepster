@@ -74,6 +74,34 @@ struct Due {
     maintained: Option<SystemTime>,
     /// When the Maintenance Pass now owed was first seen to be owed.
     maintenance_since: Option<Instant>,
+    /// How the last Maintenance Pass since the daemon started ended.
+    last_pass: Option<LastPass>,
+}
+
+/// How a Root's last Maintenance Pass ended, kept for a diagnostics bundle (ticket 63).
+///
+/// In memory only: a restarted daemon has none until its next pass, and the bundle says so rather than
+/// the daemon persisting a second record beside the one the store keeps of when it was maintained.
+#[derive(Debug, Clone)]
+pub(crate) struct LastPass {
+    /// When it ended, by the wall clock.
+    pub(crate) finished: SystemTime,
+    /// How.
+    pub(crate) outcome: PassOutcome,
+}
+
+/// How a Maintenance Pass ended: [`MaintenanceError`]'s cases beside success, with what each says kept
+/// as a value that outlives the pass.
+#[derive(Debug, Clone)]
+pub(crate) enum PassOutcome {
+    /// It ran and reclaimed this much.
+    Succeeded(Maintained),
+    /// The history could not be opened, so `git` never ran; why.
+    Unreadable(String),
+    /// The `git` failed its check before the pass.
+    Unavailable(keepster_store::GitUnavailable),
+    /// The pass ran and `git` failed it.
+    Failed(keepster_store::GitUnavailable),
 }
 
 /// The passes one Root owes now, each with when it became owed.
@@ -170,6 +198,23 @@ impl Housekeeping {
         let due = roots.entry(id).or_default();
         due.maintained = Some(now);
         due.maintenance_since = None;
+    }
+
+    /// Record how the Root `id`'s Maintenance Pass just ended.
+    fn passed(&self, id: RootId, outcome: PassOutcome) {
+        self.roots().entry(id).or_default().last_pass = Some(LastPass {
+            finished: crate::roots::now(),
+            outcome,
+        });
+    }
+
+    /// How each Root's last Maintenance Pass since the daemon started ended, for every Root that had
+    /// one.
+    pub(crate) fn last_passes(&self) -> HashMap<RootId, LastPass> {
+        self.roots()
+            .iter()
+            .filter_map(|(id, due)| due.last_pass.clone().map(|pass| (*id, pass)))
+            .collect()
     }
 
     /// Forget every Root not among `registered`.
@@ -418,15 +463,26 @@ pub(crate) fn maintain(
         }
         Err(error) => {
             tracing::warn!(root = %id, %error, "the history could not be opened for maintenance");
+            state
+                .housekeeping
+                .passed(id, PassOutcome::Unreadable(error.to_string()));
             return Err(MaintenanceError::History(error));
         }
     };
 
-    let git = crate::git::proven(state, generation, git).map_err(MaintenanceError::Unavailable)?;
+    let git = crate::git::proven(state, generation, git).map_err(|unavailable| {
+        state
+            .housekeeping
+            .passed(id, PassOutcome::Unavailable(unavailable.clone()));
+        MaintenanceError::Unavailable(unavailable)
+    })?;
     match store.maintain(&git) {
         Ok(maintained) => {
             crate::git::succeeded(state, generation);
             state.housekeeping.maintained(id, now);
+            state
+                .housekeeping
+                .passed(id, PassOutcome::Succeeded(maintained));
             tracing::info!(root = %id, git = %git.path().display(), reclaimed = maintained.reclaimed_bytes, "maintained");
             state.publish(Event::MaintenanceCompleted {
                 root: id.to_string(),
@@ -435,6 +491,9 @@ pub(crate) fn maintain(
         }
         Err(unavailable) => {
             tracing::warn!(root = %id, %unavailable, "a Maintenance Pass failed");
+            state
+                .housekeeping
+                .passed(id, PassOutcome::Failed(unavailable.clone()));
             if !crate::git::failed(state, generation, unavailable.clone()) {
                 state.housekeeping.maintained(id, now);
             }

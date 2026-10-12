@@ -210,6 +210,22 @@ impl Runtimes {
             .map(|runtime| *lock(&runtime.activity))
     }
 
+    /// How many directory watches every Root's watcher holds together now, and how many they may hold
+    /// together where the platform has such a budget — a diagnostics bundle's watch counters
+    /// (ticket 63).
+    pub(crate) fn watches(&self) -> (usize, Option<usize>) {
+        let in_use = self
+            .runtimes()
+            .values()
+            .map(|runtime| match lock(&runtime.activity).watch {
+                Watch::Armed(count) => count,
+                _ => 0,
+            })
+            .sum();
+
+        (in_use, self.ceiling)
+    }
+
     /// Whether `watches` more directory watches for the Root `id` fit under the ceiling beside every
     /// other Root's.
     fn fits(&self, id: RootId, watches: usize) -> bool {

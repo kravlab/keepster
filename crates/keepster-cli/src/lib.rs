@@ -30,10 +30,11 @@ pub mod ui;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs, ForgetArgs,
-    GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs,
-    PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand, ServiceInstallArgs,
-    SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiagnoseArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs,
+    ForgetArgs, GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, PinArgs,
+    PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand,
+    ServiceInstallArgs, SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs,
+    UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;

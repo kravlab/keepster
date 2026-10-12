@@ -87,6 +87,29 @@ pub enum RegistryError {
     },
 }
 
+/// Whether a Root the Registry holds is watched, or kept with its history after an unwatch (ticket 53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// It has a record: the Root is watched.
+    Watched,
+    /// It has the record of a Root no longer watched, whose history decays down the ladder.
+    Unwatched,
+}
+
+/// One Root the Registry holds, watched or not, and its record or why that record cannot be read.
+///
+/// What a report needs and [`RegistryEntry`] does not carry: a diagnostics bundle lists every Root the
+/// store keeps history for, not only the watched ones.
+#[derive(Debug)]
+pub struct HeldEntry {
+    /// The Root's identity, taken from the directory's name.
+    pub id: RootId,
+    /// Whether it is watched.
+    pub standing: Standing,
+    /// The record, or the reason it is unreadable.
+    pub record: Result<RootRecord, RegistryError>,
+}
+
 /// Every Root's own directory, under one base the daemon owns.
 #[derive(Debug, Clone)]
 pub struct Registry {
@@ -103,6 +126,13 @@ impl Registry {
         create_private_dir(&base)?;
 
         Ok(Self { base })
+    }
+
+    /// The Registry under `base` as it is, for reading only: unlike [`Registry::open`], nothing is
+    /// created and no permission is changed, so a report run beside a daemon that is not running
+    /// leaves the disk as it found it.
+    pub fn at(base: impl Into<PathBuf>) -> Self {
+        Self { base: base.into() }
     }
 
     /// The directory that holds one Root's record and, from ticket 38, its History Store.
@@ -207,6 +237,32 @@ impl Registry {
         }
 
         Ok(found)
+    }
+
+    /// Every Root this Registry holds, watched or not, ordered by identity, each with its record or
+    /// why that record cannot be read.
+    ///
+    /// A directory with both files is watched: the record wins, as it does for [`Registry::list`]. A
+    /// directory with neither holds no Root this build recognises and is left out, as it is there.
+    pub fn held(&self) -> Result<Vec<HeldEntry>, RegistryError> {
+        let mut held = Vec::new();
+        for id in self.identities()? {
+            let dir = self.root_dir(id);
+            let (standing, file) = if dir.join(RECORD_FILE).is_file() {
+                (Standing::Watched, RECORD_FILE)
+            } else if dir.join(UNWATCHED_FILE).is_file() {
+                (Standing::Unwatched, UNWATCHED_FILE)
+            } else {
+                continue;
+            };
+            held.push(HeldEntry {
+                id,
+                standing,
+                record: read_record(&dir.join(file)),
+            });
+        }
+
+        Ok(held)
     }
 
     /// Whether the Root is watched or, no longer watched, still has its history here.

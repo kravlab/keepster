@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use keepster_service::rotating::RotatingFile;
+use keepster_service::rotating::{RotatingFile, Tail, tail};
 use tempfile::TempDir;
 
 const NAME: &str = "daemon.log";
@@ -224,4 +224,99 @@ fn a_ceiling_is_divided_among_a_fixed_number_of_files() {
 
     assert_eq!(keep, 4, "the current file and four rotated ones");
     assert_eq!(size * (keep as u64 + 1), 50 * 1024 * 1024);
+}
+
+fn write(directory: &Path, name: &str, text: &str) {
+    std::fs::write(directory.join(name), text).expect("a log file");
+}
+
+#[test]
+fn a_tail_within_its_budget_is_every_file_whole_newest_first() {
+    let directory = TempDir::new().expect("a directory");
+    write(directory.path(), NAME, "c1\nc2\n");
+    write(directory.path(), &format!("{NAME}.1"), "b1\n");
+    write(directory.path(), &format!("{NAME}.2"), "a1\n");
+
+    let found = tail(directory.path(), NAME, 1024).expect("read");
+
+    assert_eq!(
+        found,
+        vec![
+            Tail {
+                name: NAME.to_owned(),
+                size: 6,
+                text: "c1\nc2\n".to_owned(),
+                truncated: false,
+            },
+            Tail {
+                name: format!("{NAME}.1"),
+                size: 3,
+                text: "b1\n".to_owned(),
+                truncated: false,
+            },
+            Tail {
+                name: format!("{NAME}.2"),
+                size: 3,
+                text: "a1\n".to_owned(),
+                truncated: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_tail_that_spends_its_budget_in_a_file_keeps_its_last_whole_lines_and_stops() {
+    let directory = TempDir::new().expect("a directory");
+    write(directory.path(), NAME, "new\n");
+    write(
+        directory.path(),
+        &format!("{NAME}.1"),
+        "first line\nsecond\nthird\n",
+    );
+    write(directory.path(), &format!("{NAME}.2"), "never read\n");
+
+    // Four bytes for the current file leave ten: "ond\nthird\n" cuts into "second", which is dropped.
+    let found = tail(directory.path(), NAME, 14).expect("read");
+
+    assert_eq!(
+        found.len(),
+        2,
+        "the budget is spent before the oldest file: {found:?}"
+    );
+    assert_eq!(found[0].text, "new\n");
+    assert!(!found[0].truncated);
+    assert_eq!(
+        found[1],
+        Tail {
+            name: format!("{NAME}.1"),
+            size: 24,
+            text: "third\n".to_owned(),
+            truncated: true,
+        },
+        "never half a line"
+    );
+}
+
+#[test]
+fn a_log_never_written_has_no_tail() {
+    let directory = TempDir::new().expect("a directory");
+
+    assert_eq!(tail(directory.path(), NAME, 1024).expect("read"), vec![]);
+}
+
+#[test]
+fn a_rotated_file_that_is_not_there_is_skipped_and_the_older_ones_still_read() {
+    let directory = TempDir::new().expect("a directory");
+    write(directory.path(), NAME, "newest\n");
+    write(directory.path(), &format!("{NAME}.2"), "older\n");
+
+    let found = tail(directory.path(), NAME, 1024).expect("read");
+
+    assert_eq!(
+        found
+            .iter()
+            .map(|tail| (tail.name.as_str(), tail.text.as_str()))
+            .collect::<Vec<_>>(),
+        [(NAME, "newest\n"), (&*format!("{NAME}.2"), "older\n")]
+    );
 }

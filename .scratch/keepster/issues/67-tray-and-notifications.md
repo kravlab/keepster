@@ -38,3 +38,7 @@ and the event stream, and no notification carries a tray-only action.
 - **From ticket 62.** The tray "takes its level from the event stream", but no event says a raise began or
   ended yet: `LogLevels::raise` and `end` in `keepster-daemon/src/logging.rs` are where one belongs. The
   writer to reuse for `tray.log` is `keepster_service::rotating::RotatingFile`, with its own smaller ceiling.
+- **From ticket 63.** `keepster diagnose` collects only `daemon.log` and its rotations today. Once the tray
+  writes `tray.log`, the bundle must hold its tail too: add it beside the daemon's in
+  `keepster-daemon/src/diagnostics.rs` (`log_tail`, and `on_disk` for the bundle collected without the
+  daemon), with its own line in the inventory in `keepster-daemon/src/bundle.rs`.

@@ -18,4 +18,5 @@ mod reconciliation;
 mod registry;
 mod retention;
 mod search;
+mod topology;
 mod withheld;

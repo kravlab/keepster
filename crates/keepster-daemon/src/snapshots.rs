@@ -632,7 +632,7 @@ fn parse_moment(name: &str, text: &str) -> Result<std::time::SystemTime, Problem
 ///
 /// From the identity rather than the clock reading or the commit, so a capture's answer and the
 /// timeline agree to the millisecond, and a rebuilt index reports exactly what the original did.
-fn taken_at(id: SnapshotId) -> String {
+pub(crate) fn taken_at(id: SnapshotId) -> String {
     jiff::Timestamp::try_from(id.moment())
         .map(|moment| moment.to_string())
         .unwrap_or_default()
@@ -742,6 +742,7 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
         | StoreError::Index { .. }
         | StoreError::IndexUnusable { .. }
         | StoreError::Discard { .. }
+        | StoreError::Measure { .. }
         | StoreError::WorkingTree { .. }
         | StoreError::UnnameableMoment(_)
         | StoreError::Delivery(_) => ProblemResponse::new(

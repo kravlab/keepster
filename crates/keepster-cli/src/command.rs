@@ -110,6 +110,24 @@ pub enum Command {
     /// Show the daemon's log level, raise it for a while, or end a raise. A raise always ends by
     /// itself: `keepster log-level debug --for 30m`.
     LogLevel(LogLevelArgs),
+
+    /// Write a diagnostics bundle for a bug report into one local zip, after printing what is in it
+    /// and what each file discloses. Paths are included as they are; nothing is ever sent anywhere.
+    Diagnose(DiagnoseArgs),
+}
+
+/// Options of `keepster diagnose`. There are none that choose what goes in: a bundle trimmed by a
+/// flag would look exactly like a complete one (ADR 0013).
+#[derive(Debug, Args)]
+pub struct DiagnoseArgs {
+    /// Print the inventory of what the bundle would hold, and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Where to write the bundle. Defaults to `keepster-diagnose-<moment>.zip` in the current
+    /// directory; an existing file is never overwritten.
+    #[arg(short, long, value_name = "PATH", conflicts_with = "dry_run")]
+    pub output: Option<PathBuf>,
 }
 
 /// Options of `keepster log-level`.

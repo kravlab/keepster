@@ -7,7 +7,7 @@
 //! does this.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -18,6 +18,73 @@ const ROTATED: usize = 4;
 /// that the files together never hold more than it.
 pub fn files_for(ceiling: u64) -> (u64, usize) {
     (ceiling / (ROTATED as u64 + 1), ROTATED)
+}
+
+/// The end of one of the log's files, as a diagnostics bundle carries it (ticket 63).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tail {
+    /// The file's name in the log directory.
+    pub name: String,
+    /// The file's whole size, in bytes.
+    pub size: u64,
+    /// Its last lines, whole lines only.
+    pub text: String,
+    /// Whether the lines before these were left out.
+    pub truncated: bool,
+}
+
+/// The end of the log `name` in `directory`, reading at most `budget` bytes: the current file, then
+/// each rotated one, newest first. A file that would take the tail past `budget` keeps only its last
+/// whole lines within it, and every older file is left out — lines before a gap would be read as the
+/// ones just before it.
+///
+/// A file that is not there is skipped, as a log rotated fewer times than it keeps has gaps. Each file
+/// is read as text, any bytes that are not UTF-8 replaced: the log writes text, and the bundle is for a
+/// person to read before sharing.
+pub fn tail(directory: &Path, name: &str, budget: u64) -> io::Result<Vec<Tail>> {
+    let mut tails = Vec::new();
+    let mut left = budget;
+    let names =
+        std::iter::once(name.to_owned()).chain((1..=ROTATED).map(|n| format!("{name}.{n}")));
+    for file in names {
+        if left == 0 {
+            break;
+        }
+        let mut opened = match File::open(directory.join(&file)) {
+            Ok(opened) => opened,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let size = opened.metadata()?.len();
+        let start = size.saturating_sub(left);
+        let truncated = start > 0;
+        // One byte more than the budget when cutting, to tell whether the cut fell just after a newline.
+        let from = start.saturating_sub(u64::from(truncated));
+        opened.seek(SeekFrom::Start(from))?;
+        let mut bytes = Vec::new();
+        // Bounded, because the daemon may be appending to the current file meanwhile.
+        opened.take(size - from).read_to_end(&mut bytes)?;
+        left = left.saturating_sub(size - start);
+        let kept = if truncated {
+            bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(&[][..], |newline| &bytes[newline + 1..])
+        } else {
+            &bytes[..]
+        };
+        tails.push(Tail {
+            name: file,
+            size,
+            text: String::from_utf8_lossy(kept).into_owned(),
+            truncated,
+        });
+        if truncated {
+            break;
+        }
+    }
+
+    Ok(tails)
 }
 
 /// The log: `name` in `directory`, rotated to `name.1` … `name.<keep>`, `.1` the newest.

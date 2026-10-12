@@ -15,10 +15,13 @@ pub use history::{
     CaptureRequest, CapturedSnapshot, Comparison, Content, ContentFound, ContentPlan,
     ContentVersion, DIFF_MAX_SIZE, Depth, DiffLine, DiffTarget, Entry, EntryKind, ExportScope,
     FileChange, FileDiff, Forgotten, HistoryStore, Hunk, IncompletePath, LineKind, LinkNames,
-    Listing, Maintained, Pass, PathFound, Preflight, PreviewOptions, RestoreScope, Retained,
-    SearchCounts, Selected, Selection, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
-    WithheldMet, WithheldPath, Within, Written, destination_naming, preview,
+    Listing, Maintained, Pass, PathFound, PinShape, Preflight, PreviewOptions, RestoreScope,
+    Retained, SearchCounts, SegmentShape, Selected, Selection, SnapshotSummary, StoreError,
+    TimelinePage, TimelineQuery, Topology, Watermark, WithheldMet, WithheldPath, Within, Written,
+    destination_naming, preview,
 };
 pub use index::INDEX_SCHEMA_VERSION;
 pub use keepster_core::WithheldReason;
-pub use registry::{CONTAINER_VERSION, Registry, RegistryEntry, RegistryError, RootRecord};
+pub use registry::{
+    CONTAINER_VERSION, HeldEntry, Registry, RegistryEntry, RegistryError, RootRecord, Standing,
+};

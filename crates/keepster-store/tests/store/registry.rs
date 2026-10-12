@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use keepster_core::RootId;
-use keepster_store::{Registry, RootRecord};
+use keepster_store::{Registry, RegistryError, RootRecord, Standing};
 
 #[test]
 fn a_record_being_rewritten_is_never_read_half_written() {
@@ -155,4 +155,64 @@ fn a_root_s_place_on_its_volume_is_recorded_and_survives_an_unwatch() {
 
     registry.remove(placed.id).expect("unwatched");
     assert_eq!(registry.unwatched().expect("read"), vec![placed]);
+}
+
+#[test]
+fn reading_a_registry_that_does_not_exist_creates_nothing() {
+    let parent = tempfile::tempdir().expect("a temporary directory");
+    let base = parent.path().join("keepster");
+
+    let registry = Registry::at(&base);
+
+    assert!(
+        registry.held().is_err(),
+        "a base that is not there cannot be listed, and saying so is the answer"
+    );
+    assert!(!base.exists(), "a reader leaves the disk as it found it");
+}
+
+#[test]
+fn every_root_the_registry_holds_is_reported_watched_unwatched_or_unreadable() {
+    let base = tempfile::tempdir().expect("a temporary store base");
+    let registry = Registry::open(base.path()).expect("an empty registry");
+    let watched = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH),
+        path: PathBuf::from("/code/watched"),
+        volume: None,
+    };
+    let unwatched = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+        path: PathBuf::from("/code/unwatched"),
+        volume: None,
+    };
+    let broken = RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2));
+    registry.insert(&watched).expect("written");
+    registry.insert(&unwatched).expect("written");
+    registry.remove(unwatched.id).expect("unwatched");
+    std::fs::create_dir_all(base.path().join(broken.to_string())).expect("a Root directory");
+    std::fs::write(
+        base.path().join(broken.to_string()).join("root.toml"),
+        "not = [valid",
+    )
+    .expect("a damaged record");
+
+    let held = Registry::at(base.path()).held().expect("listed");
+
+    assert_eq!(
+        held.iter()
+            .map(|entry| (entry.id, entry.standing))
+            .collect::<Vec<_>>(),
+        vec![
+            (watched.id, Standing::Watched),
+            (unwatched.id, Standing::Unwatched),
+            (broken, Standing::Watched),
+        ],
+        "in registration order, each with how it stands"
+    );
+    assert_eq!(held[0].record.as_ref().ok(), Some(&watched));
+    assert_eq!(held[1].record.as_ref().ok(), Some(&unwatched));
+    assert!(
+        matches!(held[2].record, Err(RegistryError::Unreadable { .. })),
+        "a record this build cannot read is reported, not dropped"
+    );
 }

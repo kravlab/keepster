@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use keepster_core::{ChangeKind, Record, RootPath, SIDECAR, Sidecar, SnapshotId};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::history::{StoreError, mode_changes};
 
@@ -858,7 +858,9 @@ fn record_changes(
 }
 
 /// Every Segment ref and every Pin ref, by the source the index names it, and the commit at its tip.
-fn source_tips(repository: &git2::Repository) -> Result<BTreeMap<String, git2::Oid>, git2::Error> {
+pub(crate) fn source_tips(
+    repository: &git2::Repository,
+) -> Result<BTreeMap<String, git2::Oid>, git2::Error> {
     let mut tips = BTreeMap::new();
 
     for (refs, prefix) in [
@@ -1097,6 +1099,41 @@ fn recount_changes(
     };
 
     written().map_err(index_failed(path, "written"))
+}
+
+/// The watermarks of the index at `path` as they stand, or `None` when there is no index there.
+///
+/// For a report, so it changes nothing: the file is opened read-only, never created, and an index this
+/// build would rebuild — another schema, a damaged file — is reported as unusable instead of being
+/// discarded, which would destroy the very evidence the report is for.
+pub(crate) fn watermarks_at(
+    path: &Path,
+) -> Result<Option<BTreeMap<String, git2::Oid>>, StoreError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let failed = |operation| index_failed(path, operation);
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(failed("opened"))?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(failed("opened"))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(failed("read"))?;
+    if version != SCHEMA_VERSION {
+        return Err(StoreError::IndexUnusable {
+            path: path.to_path_buf(),
+            reason: "it holds another schema than this build's, so the daemon rebuilds it",
+        });
+    }
+
+    read_watermarks(&connection)
+        .map(Some)
+        .map_err(failed("read"))
 }
 
 fn read_watermarks(connection: &Connection) -> rusqlite::Result<BTreeMap<String, git2::Oid>> {

@@ -6,6 +6,37 @@
     "version": "1"
   },
   "paths": {
+    "/v1/diagnostics": {
+      "get": {
+        "tags": [
+          "status"
+        ],
+        "summary": "Everything the daemon knows that a diagnostics bundle carries.",
+        "operationId": "get_diagnostics",
+        "responses": {
+          "200": {
+            "description": "Every section of a diagnostics bundle, each carrying its own failure. Never a byte of a file from history. Served on the control channel alone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diagnostics"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/events": {
       "get": {
         "tags": [
@@ -2964,6 +2995,79 @@
           "withheld"
         ]
       },
+      "DiagnosticConfiguration": {
+        "type": "object",
+        "description": "The effective configuration: the global level on its own, and every Root's.",
+        "required": [
+          "global",
+          "roots"
+        ],
+        "properties": {
+          "global": {
+            "$ref": "#/components/schemas/GlobalConfiguration",
+            "description": "The defaults and the global file's own table — what every Root starts from, and what the keys\ndescribing the daemon are set by."
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RootConfigurationReport"
+            },
+            "description": "Every watched Root's effective configuration, in registration order."
+          }
+        }
+      },
+      "Diagnostics": {
+        "type": "object",
+        "description": "What the daemon knows that a diagnostics bundle carries, as `GET /v1/diagnostics` serves it on the\ncontrol channel alone (ticket 63).\n\nThe bundle discloses by inventory and never redacts (ADR 0013): paths are here as they are, because\nthe defects this exists for cannot be diagnosed without them. What is never here is a byte of any\nfile from history — every section is read from status, configuration, the Registry, refs, commit\nmessages and the index, and none from a blob. Each section carries its own failure, so one that\ncannot be read leaves the others whole.",
+        "required": [
+          "status",
+          "environment",
+          "configuration",
+          "registry",
+          "topology",
+          "watermarks",
+          "log"
+        ],
+        "properties": {
+          "configuration": {
+            "$ref": "#/components/schemas/DiagnosticConfiguration",
+            "description": "The effective configuration with the level that set each key."
+          },
+          "environment": {
+            "$ref": "#/components/schemas/Environment",
+            "description": "What the daemon runs on and with."
+          },
+          "log": {
+            "$ref": "#/components/schemas/LogTail",
+            "description": "The tail of the daemon's log, and the format it is written in."
+          },
+          "registry": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryRecord"
+            },
+            "description": "Every Root the Registry holds, watched or not, with its record as written."
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status",
+            "description": "The health surface, exactly as `GET /v1/status` serves it."
+          },
+          "topology": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RootTopology"
+            },
+            "description": "What each Root's store holds, one entry per Root the Registry holds."
+          },
+          "watermarks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RootWatermarks"
+            },
+            "description": "How far each Root's derived index got, one entry per Root the Registry holds."
+          }
+        }
+      },
       "Diff": {
         "type": "object",
         "description": "What changed from a Snapshot to another Snapshot or the Working Tree — the answer of\n`GET /v1/roots/{id}/diff` (ticket 46).\n\nComputed by the daemon, which holds both sides, so binary detection, rename detection and the size\npast which no hunks are computed are decided once and every client shows the same lines.",
@@ -3267,6 +3371,50 @@
           "withheld",
           "omitted"
         ]
+      },
+      "Environment": {
+        "type": "object",
+        "description": "What the daemon runs on, and with.",
+        "required": [
+          "os",
+          "arch",
+          "filesystems",
+          "watches",
+          "git",
+          "maintenance"
+        ],
+        "properties": {
+          "arch": {
+            "type": "string",
+            "description": "The processor architecture, as Rust names it: `x86_64`, `aarch64`."
+          },
+          "filesystems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RootFilesystem"
+            },
+            "description": "The filesystem under each Root whose record can be read, in registration order."
+          },
+          "git": {
+            "$ref": "#/components/schemas/GitStatus",
+            "description": "The external `git` maintenance runs with, or why there is none: the discovery result."
+          },
+          "maintenance": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenancePass"
+            },
+            "description": "How each Root's last Maintenance Pass since the daemon started ended, in registration order. A\nRoot with no pass since then has no entry: the record is kept in memory, not on disk."
+          },
+          "os": {
+            "type": "string",
+            "description": "The operating system, as Rust names it: `linux`, `macos`, `windows`."
+          },
+          "watches": {
+            "$ref": "#/components/schemas/WatchCounters",
+            "description": "The directory watches every Root holds together, against the daemon-wide ceiling."
+          }
+        }
       },
       "Event": {
         "oneOf": [
@@ -3980,6 +4128,37 @@
           }
         }
       },
+      "GlobalConfiguration": {
+        "type": "object",
+        "description": "The global level of the configuration.",
+        "required": [
+          "keys",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "description": "The global file, when its current version is invalid and not applied, in the standard error\nshape."
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The global file, where there is one."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigKey"
+            },
+            "description": "Every key of the schema, with its value and the level that set it, in the order the schema\nlists them. Empty while the global file has never had a valid version."
+          }
+        }
+      },
       "InstallHint": {
         "type": "object",
         "description": "How a person installs `git` here.",
@@ -4240,6 +4419,36 @@
           }
         }
       },
+      "LogFileTail": {
+        "type": "object",
+        "description": "The end of one log file.",
+        "required": [
+          "name",
+          "size",
+          "text",
+          "truncated"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file's name in the log directory: `daemon.log`, `daemon.log.1`, …"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The file's whole size, in bytes.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "Its last lines, whole lines only."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the lines before these were left out."
+          }
+        }
+      },
       "LogLevelRequest": {
         "type": "object",
         "description": "A raise of the log level, which always ends: `PUT /v1/log/level`.",
@@ -4289,6 +4498,80 @@
               "null"
             ],
             "description": "When a raised level ends, as an RFC 3339 moment. Present only while a raise lasts: a state that\nchanges what the daemon does is never silent."
+          }
+        }
+      },
+      "LogTail": {
+        "type": "object",
+        "description": "The tail of the daemon's log.",
+        "required": [
+          "format",
+          "files"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the log could not be read, when it could not."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogFileTail"
+            },
+            "description": "The current file and then each rotated one, newest first, until the tail's budget is spent.\nEmpty when the daemon writes no log file, or when its log could not be read."
+          },
+          "format": {
+            "type": "string",
+            "description": "The format the daemon writes lines in, `text` or `json`, as `log.format` set it at the start. A\nrotated file written before a restart may be in the other."
+          }
+        }
+      },
+      "MaintenancePass": {
+        "type": "object",
+        "description": "How one Root's last Maintenance Pass ended.",
+        "required": [
+          "root",
+          "finished_at",
+          "outcome"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the pass did not run, when it did not."
+          },
+          "finished_at": {
+            "type": "string",
+            "description": "When it ended, as an RFC 3339 moment."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "How: `succeeded`; `failed`, when `git` ran and failed it; `git_unavailable`, when the `git` failed\nits check before the pass; `history_unreadable`, when the store could not be opened so `git`\nnever ran. An open set, as error codes are."
+          },
+          "reclaimed_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What a pass that succeeded reclaimed, in bytes.",
+            "minimum": 0
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          },
+          "stderr": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What `git` wrote to its error stream, word for word, when it failed. A pass that succeeded keeps\nnone: `git` runs quietly, and its error stream is kept only when it fails."
           }
         }
       },
@@ -4452,6 +4735,33 @@
               "$ref": "#/components/schemas/Unsearched"
             },
             "description": "Roots whose history could not be read, and so were not searched."
+          }
+        }
+      },
+      "PinTopology": {
+        "type": "object",
+        "description": "One Pin.",
+        "required": [
+          "snapshot",
+          "tip"
+        ],
+        "properties": {
+          "format": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The content format of the Snapshot it holds; absent when it names none this build knows of.",
+            "minimum": 0
+          },
+          "snapshot": {
+            "type": "string",
+            "description": "The pinned Snapshot's identity, which is the ref's name."
+          },
+          "tip": {
+            "type": "string",
+            "description": "The commit it names."
           }
         }
       },
@@ -4986,6 +5296,52 @@
           }
         }
       },
+      "RegistryRecord": {
+        "type": "object",
+        "description": "One Root the Registry holds, with its record as written.",
+        "required": [
+          "id",
+          "standing"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why its record cannot be read, when it cannot."
+          },
+          "id": {
+            "type": "string",
+            "description": "The Root's identity, which is its directory's name."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where its directory is, from its record."
+          },
+          "standing": {
+            "type": "string",
+            "description": "`watched`, or `unwatched` for a Root whose history is kept after an unwatch."
+          },
+          "volume": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The identity of the volume it was registered on."
+          },
+          "within_volume": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its place within that volume, `/`-separated."
+          }
+        }
+      },
       "Reported": {
         "type": "string",
         "description": "A row whose owning behaviour has not been built yet.\n\nIt exists so that `status` can say \"not known\" instead of a comfortable default: ticket 05 forbids\nthe tool to look healthier than it is. Each variant below is added by the ticket that can actually\ndetermine the fact, and adding one is an additive change to `/v1`.",
@@ -5311,6 +5667,87 @@
           }
         }
       },
+      "RootConfigurationReport": {
+        "type": "object",
+        "description": "One Root's effective configuration, or why it has none.",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "configuration": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RootConfiguration",
+                "description": "Its configuration, as `GET /v1/roots/{id}/config` serves it."
+              }
+            ]
+          },
+          "problem": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Problem",
+                "description": "Why it has none: no file it depends on ever had a valid version."
+              }
+            ]
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          }
+        }
+      },
+      "RootFilesystem": {
+        "type": "object",
+        "description": "The filesystem under one Root.",
+        "required": [
+          "root",
+          "path"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the volume could not be asked: most often, the directory is not there."
+          },
+          "filesystem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The filesystem's type as the platform names it: `ext4`, `nfs4`, `fuse.sshfs`, `apfs`. Absent\nwhen the volume could not be asked, or when the platform does not say."
+          },
+          "mount_point": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the volume is mounted."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where its directory is."
+          },
+          "remote": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the platform reports the volume as remote."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          }
+        }
+      },
       "RootState": {
         "type": "string",
         "description": "What a Root's state means for the insurance it provides.",
@@ -5319,6 +5756,65 @@
           "degraded",
           "unavailable"
         ]
+      },
+      "RootTopology": {
+        "type": "object",
+        "description": "What one Root's store holds.",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the store could not be read."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          },
+          "store": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StoreTopology",
+                "description": "The store's shape. Absent, without an error, for a Root nothing was ever captured from."
+              }
+            ]
+          }
+        }
+      },
+      "RootWatermarks": {
+        "type": "object",
+        "description": "How far one Root's derived index got.",
+        "required": [
+          "root",
+          "sources"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the store or its index could not be read as it is. The index is never repaired to read it:\na report that rebuilt what it reports on would hide what it exists to show."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root's identity."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WatermarkReport"
+            },
+            "description": "Every source the index tracks or should track, in source order. Empty for a Root nothing was\never captured from."
+          }
+        }
       },
       "RuleEffect": {
         "type": "string",
@@ -5378,6 +5874,69 @@
             "format": "int64",
             "description": "Its distinct versions under the path asked.",
             "minimum": 0
+          }
+        }
+      },
+      "SegmentTopology": {
+        "type": "object",
+        "description": "One Segment.",
+        "required": [
+          "name",
+          "tip",
+          "snapshots",
+          "foreign"
+        ],
+        "properties": {
+          "foreign": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many hold none: written by something other than Keepster.",
+            "minimum": 0
+          },
+          "format": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The content format its Snapshots are in; absent when it names none this build knows of.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "The ref's last component: the period, perhaps followed by a sibling's format."
+          },
+          "newest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SnapshotPoint",
+                "description": "Its newest Snapshot."
+              }
+            ]
+          },
+          "oldest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SnapshotPoint",
+                "description": "Its oldest Snapshot."
+              }
+            ]
+          },
+          "snapshots": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of its commits hold a Snapshot.",
+            "minimum": 0
+          },
+          "tip": {
+            "type": "string",
+            "description": "The commit at its tip."
           }
         }
       },
@@ -5497,6 +6056,24 @@
           }
         }
       },
+      "SnapshotPoint": {
+        "type": "object",
+        "description": "A Snapshot named by its identity and the moment it carries.",
+        "required": [
+          "id",
+          "taken_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Its identity."
+          },
+          "taken_at": {
+            "type": "string",
+            "description": "When it was taken, in UTC, as RFC 3339."
+          }
+        }
+      },
       "Status": {
         "type": "object",
         "description": "The whole health surface, as `GET /v1/status` serves it and as `keepster status --json` prints it\nverbatim.\n\nOne payload, not two: a parallel CLI schema would double the versioning cost and drift at the\nfirst added field (ticket 07). It is built from live daemon state and never from logs, because a\ndead daemon writes nothing and that is indistinguishable from a quiet healthy one (ticket 05).",
@@ -5551,6 +6128,44 @@
             "format": "int32",
             "description": "The grammar of a Snapshot's metadata sidecar. Its record types only ever grow: one this build\ndoes not know is skipped and reported.",
             "minimum": 0
+          }
+        }
+      },
+      "StoreTopology": {
+        "type": "object",
+        "description": "The shape of one store, read from its refs and commit messages — never a blob.",
+        "required": [
+          "segments",
+          "pins",
+          "history_bytes",
+          "index_bytes"
+        ],
+        "properties": {
+          "history_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The bytes the repository takes on disk.",
+            "minimum": 0
+          },
+          "index_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The bytes the derived index takes on disk; zero when there is none.",
+            "minimum": 0
+          },
+          "pins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PinTopology"
+            },
+            "description": "Every Pin's ref, in name order."
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SegmentTopology"
+            },
+            "description": "Every Segment's ref, in name order — which is chronological."
           }
         }
       },
@@ -5682,6 +6297,57 @@
                 "description": "The on-disk formats this build writes and reads up to. Absent from a daemon older than the\nfield, which says nothing rather than something false."
               }
             ]
+          }
+        }
+      },
+      "WatchCounters": {
+        "type": "object",
+        "description": "The directory watches in use, against the ceiling the daemon keeps under the platform's budget.",
+        "required": [
+          "in_use"
+        ],
+        "properties": {
+          "ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many they may hold together, where the platform has such a budget (Linux's inotify); absent\nwhere it has none.",
+            "minimum": 0
+          },
+          "in_use": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many directory watches every Root's watcher holds together now.",
+            "minimum": 0
+          }
+        }
+      },
+      "WatermarkReport": {
+        "type": "object",
+        "description": "How far the index got with one source: a Segment, or a Pin as `pins/` and its identity.",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "indexed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit the index caught up to; absent for a source not indexed yet. Equal to `tip` once the\nindex is up to date."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source, as the index names it."
+          },
+          "tip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit at its tip now; absent for a source the index names after its ref went."
           }
         }
       },
