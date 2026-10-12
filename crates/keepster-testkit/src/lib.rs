@@ -66,6 +66,11 @@ pub struct Stopped {
 }
 
 impl Stopped {
+    /// The control channel the next start will listen on, which nothing listens on now.
+    pub fn control_path(&self) -> PathBuf {
+        control_path(&resolved(self.directory.path()))
+    }
+
     /// Start a fresh daemon over the same control channel and the same store.
     pub async fn start(self) -> Harness {
         Harness::start_in(self.directory, self.options).await
@@ -169,26 +174,13 @@ impl Harness {
     async fn start_in(directory: TempDir, options: Options) -> Self {
         let base = resolved(directory.path());
         let control_path = control_path(&base);
-        let store_base = base.join("store");
-        let config_path = base.join("config.toml");
         // Everything a test makes is on one volume the platform can name, as on most machines; a test
         // about volumes mounts others inside it.
         options.volumes.mount(&base, Some(HARNESS_VOLUME));
 
-        let daemon = keepster_daemon::start(DaemonConfig {
-            control_path: control_path.clone(),
-            runtime_dir: base.clone(),
-            // Any free port: tests run in parallel, and a fixed one would be taken by the first.
-            loopback_port: Some(0),
-            store_base,
-            config_path: Some(config_path),
-            watch_ceiling: options.watch_ceiling,
-            retry_after: options.retry_after,
-            housekeeping: options.housekeeping,
-            volumes: Some(Arc::clone(&options.volumes) as Arc<dyn keepster_daemon::Volumes>),
-        })
-        .await
-        .expect("the daemon binds its control channel");
+        let daemon = keepster_daemon::start(daemon_config(&base, &options))
+            .await
+            .expect("the daemon binds its control channel");
 
         Self {
             client: DaemonClient::new(control_path),
@@ -197,6 +189,14 @@ impl Harness {
             options,
             directory,
         }
+    }
+
+    /// Start a second daemon over this one's runtime directory, control channel and store, as a second
+    /// `keepster daemon` by the same user would — which the first one's lock is there to refuse.
+    pub async fn start_another(
+        &self,
+    ) -> Result<keepster_daemon::RunningDaemon, keepster_daemon::StartError> {
+        keepster_daemon::start(daemon_config(&self.base, &self.options)).await
     }
 
     /// What this daemon is told is mounted where, for a test to unmount and remount at will.
@@ -413,6 +413,22 @@ impl Harness {
     /// `POST` JSON to the given path and parse the answer, requiring success.
     pub async fn post_json(&self, path: &str, body: &serde_json::Value) -> serde_json::Value {
         json_body("POST", path, self.post(path, body).await)
+    }
+}
+
+/// How a test's daemon over `base` is started.
+fn daemon_config(base: &Path, options: &Options) -> DaemonConfig {
+    DaemonConfig {
+        control_path: control_path(base),
+        runtime_dir: base.to_path_buf(),
+        // Any free port: tests run in parallel, and a fixed one would be taken by the first.
+        loopback_port: Some(0),
+        store_base: base.join("store"),
+        config_path: Some(base.join("config.toml")),
+        watch_ceiling: options.watch_ceiling,
+        retry_after: options.retry_after,
+        housekeeping: options.housekeeping,
+        volumes: Some(Arc::clone(&options.volumes) as Arc<dyn keepster_daemon::Volumes>),
     }
 }
 

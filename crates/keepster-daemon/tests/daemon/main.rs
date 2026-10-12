@@ -5,8 +5,10 @@
 mod cli_diff;
 mod cli_follow;
 mod cli_history;
+mod cli_lifecycle;
 mod cli_restore;
 mod cli_roots;
+mod cli_service;
 mod cli_status;
 mod cli_ui;
 mod configuration;
@@ -16,6 +18,7 @@ mod export;
 mod forget;
 mod housekeeping;
 mod jobs;
+mod lifecycle;
 mod links;
 mod listener;
 mod modes;

@@ -9,6 +9,7 @@
 // routed nor documented, and this is what turns that silent omission into a build failure (ticket 40).
 #![deny(dead_code)]
 
+mod autostart;
 mod configuration;
 mod content;
 mod diff;
@@ -44,9 +45,7 @@ use keepster_core::RootId;
 
 use axum::extract::State;
 use axum::{Json, Router};
-use keepster_api::{
-    API_VERSION, DaemonStatus, Problem, Reported, Status, StoreFormat, VersionInfo,
-};
+use keepster_api::{API_VERSION, DaemonStatus, Problem, Status, StoreFormat, VersionInfo};
 use keepster_store::Registry;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -138,7 +137,11 @@ impl Drop for RunningDaemon {
 ///
 /// Binding happens before the task is spawned, so a caller that gets an `Ok` can connect
 /// immediately without polling for readiness.
-pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
+pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
+    // First of all: index recovery below may discard a damaged index, which beside a running daemon
+    // would unlink a database that daemon holds open, and the control channel is rebound after it. Only
+    // the lock's holder may do either (ticket 61).
+    let pid_lock = lock_pid_file(&config.runtime_dir.join(keepster_service::PID_FILE)).await?;
     let registry = Registry::open(&config.store_base).map_err(io::Error::other)?;
     let registry = tokio::task::spawn_blocking(move || {
         // Before anything is served, so no request races the rewrite (ADR 0010).
@@ -209,6 +212,8 @@ pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
         _ => None,
     };
     let task = tokio::spawn(async move {
+        // Held for as long as anything below runs, and released only once it has all stopped.
+        let _pid_lock = pid_lock;
         let events = Arc::clone(&state.events);
         let housekeeping_state = Arc::clone(&state.housekeeping);
         let (signal, stopping) = tokio::sync::watch::channel(false);
@@ -282,6 +287,77 @@ async fn bind_loopback(
     let gate = loopback::Gate::new(tcp.local_addr()?, allowed_origins, token_path)?;
 
     Ok((Arc::new(gate), tcp))
+}
+
+/// Take the pid file's lock, or say which daemon holds it.
+///
+/// A lock just released can still read as held for a moment: a process this one spawns holds a copy of
+/// every descriptor between its fork and its exec, the lock's included — and a daemon spawns `git`, as
+/// a test process spawns everything. A held lock is therefore asked again for a little while before it
+/// is believed; a daemon that is really running holds it throughout, and is refused a second later.
+async fn lock_pid_file(path: &Path) -> Result<keepster_service::PidLock, StartError> {
+    const ATTEMPTS: u32 = 20;
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let mut attempt = 1;
+    loop {
+        match keepster_service::lock_pid_file(path) {
+            Ok(lock) => return Ok(lock),
+            Err(keepster_service::PidLockError::Held { pid }) if attempt >= ATTEMPTS => {
+                return Err(StartError::AlreadyRunning { pid });
+            }
+            Err(keepster_service::PidLockError::Held { .. }) => {
+                attempt += 1;
+                tokio::time::sleep(PAUSE).await;
+            }
+            Err(keepster_service::PidLockError::Io(error)) => return Err(error.into()),
+        }
+    }
+}
+
+/// Why a daemon did not start.
+#[derive(Debug)]
+pub enum StartError {
+    /// Another daemon holds the pid file's lock — over the same runtime directory, so the same user.
+    /// `pid` is what it wrote there, if it had yet.
+    AlreadyRunning {
+        /// The live daemon's process id.
+        pid: Option<u32>,
+    },
+    /// Anything else that kept it from binding or reading its state.
+    Io(io::Error),
+}
+
+impl From<io::Error> for StartError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning { pid: Some(pid) } => {
+                write!(
+                    formatter,
+                    "a daemon is already running for this user (pid {pid})"
+                )
+            }
+            Self::AlreadyRunning { pid: None } => {
+                write!(formatter, "a daemon is already running for this user")
+            }
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AlreadyRunning { .. } => None,
+            Self::Io(error) => Some(error),
+        }
+    }
 }
 
 /// How long a stopping daemon waits for a Retention or Maintenance Pass in flight, inside the service
@@ -377,6 +453,8 @@ struct DaemonState {
     store_base: PathBuf,
     /// The loopback listener, or why there is none (ticket 60).
     listener: Arc<loopback::Listener>,
+    /// What the platform last said about autostart and linger (ticket 61).
+    service: Arc<autostart::Readings>,
 }
 
 impl DaemonState {
@@ -410,6 +488,7 @@ impl DaemonState {
             previewing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             store_base,
             listener: Arc::new(listener),
+            service: Arc::new(autostart::Readings::default()),
         }
     }
 
@@ -604,15 +683,17 @@ async fn status(
 ) -> Result<Json<Status>, problem::ProblemResponse> {
     let registered = roots::reported(&state, &state.registry())?;
     let (maintenance, git) = git::report(&state);
+    let service = state.service.rows().await;
 
     Ok(Json(Status {
         daemon: DaemonStatus {
             version: version_info(),
             pid: std::process::id(),
             uptime_seconds: state.started.elapsed().as_secs(),
-            // Reported as unknown until ticket 61 can determine them.
-            autostart: Reported::Unknown,
-            linger: Reported::Unknown,
+            autostart: service.autostart,
+            autostart_reason: service.autostart_reason,
+            linger: service.linger,
+            linger_reason: service.linger_reason,
             maintenance,
             git,
             listener: Some(state.listener.status()),

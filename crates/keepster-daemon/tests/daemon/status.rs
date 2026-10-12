@@ -20,11 +20,16 @@ async fn status_reports_the_daemon_and_no_roots_before_any_are_registered() {
         .expect("uptime is a whole number of seconds");
     assert!(uptime < 60, "a freshly started daemon reported {uptime}s");
 
-    // Rows whose owners have not landed report `unknown` rather than a comfortable default: ticket 05
-    // forbids looking healthier than the truth. Ticket 61 fills autostart and linger. Maintenance is
+    // Autostart and linger are read from the machine the test runs on, so only their shape is asserted
+    // here; `cli_service` asserts their values in a sandbox whose units a test controls. Maintenance is
     // ticket 52's, and depends on the machine's `git`, which the housekeeping tests look at.
-    assert_eq!(body["daemon"]["autostart"], "unknown");
-    assert_eq!(body["daemon"]["linger"], "unknown");
+    for row in ["autostart", "linger"] {
+        assert!(
+            ["available", "unavailable", "unknown"]
+                .contains(&body["daemon"][row].as_str().unwrap_or("")),
+            "{row}: {body}"
+        );
+    }
     assert!(
         ["available", "unavailable"]
             .contains(&body["daemon"]["maintenance"].as_str().unwrap_or("")),

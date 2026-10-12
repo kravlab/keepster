@@ -9,6 +9,8 @@ use clap::Parser;
 use keepster_cli::{Cli, Command, exit};
 use keepster_daemon::DaemonConfig;
 
+mod supervised;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -23,6 +25,23 @@ async fn main() -> ExitCode {
         );
         return ExitCode::from(exit::OTHER);
     };
+
+    // With no `--control-path`, the daemon is the platform's supervised one: when it is not running,
+    // the service manager is asked to start it, and `status` says why it is not (ticket 61). An explicit
+    // path names some other daemon, which nothing here may start.
+    if cli.control_path.is_none() && !keepster_service::daemon_answers(&control_path) {
+        match &cli.command {
+            Command::Daemon | Command::Service(_) => {}
+            Command::Status(_) => {
+                return ExitCode::from(supervised::unreachable(&control_path));
+            }
+            _ => {
+                if let Err(code) = supervised::reach(&control_path).await {
+                    return ExitCode::from(code);
+                }
+            }
+        }
+    }
 
     let code = match &cli.command {
         Command::Daemon => {
@@ -70,6 +89,7 @@ async fn main() -> ExitCode {
         Command::Job(args) => keepster_cli::job(args, &control_path).await,
         Command::Forget(args) => keepster_cli::forget(args, &control_path).await,
         Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
+        Command::Service(command) => supervised::service(command, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -85,6 +105,15 @@ async fn run_daemon(
     store_base: PathBuf,
     config_path: Option<PathBuf>,
 ) -> u8 {
+    // Taken over before the daemon starts, so a stop asked for while it recovers its indexes is not a
+    // kill: the stop sequence runs as soon as there is a daemon to stop.
+    let stop = match StopSignals::listen() {
+        Ok(stop) => stop,
+        Err(error) => {
+            eprintln!("keepster: could not wait for a stop signal: {error}");
+            return exit::OTHER;
+        }
+    };
     let daemon = match keepster_daemon::start(DaemonConfig {
         control_path,
         runtime_dir,
@@ -99,13 +128,19 @@ async fn run_daemon(
     .await
     {
         Ok(daemon) => daemon,
+        // Exited with the code the systemd unit is told not to restart on: a refused second daemon is not
+        // a failure to supervise (ticket 61). It is also the CLI's state-conflict code.
+        Err(error @ keepster_daemon::StartError::AlreadyRunning { .. }) => {
+            eprintln!("keepster: {error}; this one exits");
+            return keepster_service::autostart::REFUSED_EXIT;
+        }
         Err(error) => {
             eprintln!("keepster: could not start the daemon: {error}");
             return exit::OTHER;
         }
     };
 
-    if let Err(error) = tokio::signal::ctrl_c().await {
+    if let Err(error) = stop.requested().await {
         eprintln!("keepster: could not wait for a stop signal: {error}");
         return exit::OTHER;
     }
@@ -116,6 +151,41 @@ async fn run_daemon(
             eprintln!("keepster: the daemon stopped with an error: {error}");
             exit::OTHER
         }
+    }
+}
+
+/// What asks the daemon to stop: SIGTERM from systemd or launchd — which is how a service manager stops
+/// a service — or an interrupt from a terminal.
+///
+/// Either way the stop sequence follows: drain the capture in flight, then flush every pending debounce
+/// window (ticket 05). Task Scheduler ends a task outright, which the store survives as it survives any
+/// kill.
+struct StopSignals {
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    /// Take the signals over now, replacing their default of ending the process.
+    fn listen() -> std::io::Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+        })
+    }
+
+    /// Wait until a stop is asked for.
+    #[cfg(unix)]
+    async fn requested(mut self) -> std::io::Result<()> {
+        tokio::select! {
+            interrupted = tokio::signal::ctrl_c() => interrupted,
+            _ = self.terminate.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn requested(self) -> std::io::Result<()> {
+        tokio::signal::ctrl_c().await
     }
 }
 

@@ -763,7 +763,9 @@ name = "keepster-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix",
  "tempfile",
+ "thiserror",
  "tokio",
  "windows-sys 0.61.2",
 ]

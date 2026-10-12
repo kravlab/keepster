@@ -99,11 +99,18 @@ pub struct DaemonStatus {
     pub pid: u32,
     /// How long this daemon has been serving, measured monotonically.
     pub uptime_seconds: u64,
-    /// Whether autostart is installed. Filled by ticket 61.
+    /// Whether the daemon comes back at login: its autostart unit is installed and enabled (ticket 61).
     pub autostart: Reported,
-    /// Whether coverage survives logout. Filled by ticket 61, and on macOS it reads as unavailable
-    /// because a LaunchAgent dies at logout.
+    /// Why autostart is unavailable: `not_installed` — a state of its own, never read as stopped — or
+    /// `disabled`. An open set, as error codes are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart_reason: Option<String>,
+    /// Whether coverage survives the user's logout (ticket 61).
     pub linger: Reported,
+    /// Why it does not: `logout_gap` where the platform ends a user's agents at logout (macOS,
+    /// Windows), or `disabled` where linger could be switched on and is not (Linux). An open set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger_reason: Option<String>,
     /// Whether store maintenance can run at all, which depends on the external `git` (ticket 52). While
     /// it cannot, nothing Retention removes is reclaimed, and `keepster status` exits non-zero.
     pub maintenance: Reported,

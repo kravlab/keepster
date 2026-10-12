@@ -28,3 +28,10 @@ and the event stream, and no notification carries a tray-only action.
 - [ ] The CLI gains the restart, start and stop service verbs
 - [ ] The tray's autostart is installed by the install command, which reports honestly on a machine with no graphical
       session
+
+## Comments
+- **From ticket 61.** `keepster_service::autostart::{start, autostart}` is the "ask the service manager"
+  implementation the tray's start offer and the CLI's `service start` should share; `restart` and `stop`
+  have no platform function yet. Once `keepster service restart` exists, name it in the listener-off
+  refusal (`loopback.rs`, ticket 60), which says "restart the daemon" today. The Windows task runs the
+  console binary, so a window appears at logon until the daemon gets a windowless entry point.

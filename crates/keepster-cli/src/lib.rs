@@ -31,8 +31,8 @@ pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs, ForgetArgs,
     GrepArgs, JobArgs, LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs,
-    ReconcileArgs, ResolutionArgs, RestoreArgs, SnapshotArgs, StatusArgs, TokenCommand, UiArgs,
-    UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
+    ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand, ServiceInstallArgs, SnapshotArgs,
+    StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;

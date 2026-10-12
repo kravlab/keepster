@@ -29,7 +29,9 @@ fn status_with(roots: Vec<Root>) -> Status {
             pid: 1,
             uptime_seconds: 0,
             autostart: Reported::Unknown,
+            autostart_reason: None,
             linger: Reported::Unknown,
+            linger_reason: None,
             maintenance: Reported::Available,
             git: GitStatus {
                 path: Some("/usr/bin/git".to_owned()),

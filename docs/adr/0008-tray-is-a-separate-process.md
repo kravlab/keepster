@@ -67,3 +67,12 @@ is three platform facts that are invisible from the code.
   only in v1, with Developer ID plus notarisation the precondition of any other channel; the Windows installer must
   create a Start-menu shortcut carrying an AUMID, which is what makes a toast display at all; and `ksni`, which
   keeps GTK and X11 out of the Linux build, is `Unlicense` rather than MIT/Apache-2.0.
+
+## Amendment (ticket 61)
+
+On Windows the daemon is no longer a per-user service: ticket 27 replaced it with a Scheduled Task registered at
+logon, which runs in the user's own session with an interactive token. The window-station argument above therefore
+no longer forces the split on Windows, though it may still prevent the daemon from drawing until ticket 82 says
+what such a task's process can do. The decision stands on the record's other grounds: macOS needs a bundle to
+notify, and a component inside the daemon on some platforms and outside it on others would fork every lifecycle
+discussion — the argument the Linux bullet already makes.

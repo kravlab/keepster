@@ -2826,7 +2826,14 @@
             "properties": {
               "autostart": {
                 "$ref": "#/components/schemas/Reported",
-                "description": "Whether autostart is installed. Filled by ticket 61."
+                "description": "Whether the daemon comes back at login: its autostart unit is installed and enabled (ticket 61)."
+              },
+              "autostart_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why autostart is unavailable: `not_installed` — a state of its own, never read as stopped — or\n`disabled`. An open set, as error codes are."
               },
               "git": {
                 "$ref": "#/components/schemas/GitStatus",
@@ -2834,7 +2841,14 @@
               },
               "linger": {
                 "$ref": "#/components/schemas/Reported",
-                "description": "Whether coverage survives logout. Filled by ticket 61, and on macOS it reads as unavailable\nbecause a LaunchAgent dies at logout."
+                "description": "Whether coverage survives the user's logout (ticket 61)."
+              },
+              "linger_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why it does not: `logout_gap` where the platform ends a user's agents at logout (macOS,\nWindows), or `disabled` where linger could be switched on and is not (Linux). An open set."
               },
               "listener": {
                 "oneOf": [

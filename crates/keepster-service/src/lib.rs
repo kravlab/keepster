@@ -8,10 +8,13 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+pub mod autostart;
+mod pid;
 mod volume;
 #[cfg(windows)]
 mod windows;
 
+pub use pid::{PID_FILE, PidLock, PidLockError, lock_pid_file};
 pub use volume::{Volume, mount_points, volume_of};
 
 #[cfg(windows)]
@@ -210,4 +213,50 @@ pub fn declare_no_web_ui(config_path: &Path) -> io::Result<NoWebUi> {
     }
 
     Ok(NoWebUi::Created)
+}
+
+/// Create `directory` and its parents, readable by their owner alone where the platform has modes.
+pub(crate) fn create_private_dir(directory: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+
+    builder.create(directory)
+}
+
+/// Whether a daemon answers on the control channel at `path` right now.
+///
+/// Connecting is the test, not the presence of a file: a socket a crash left behind is a file nothing
+/// listens on.
+pub fn daemon_answers(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(path).is_ok()
+    }
+
+    #[cfg(windows)]
+    {
+        // Opening a pipe instance is a connection; the daemon has the next instance ready at once. Every
+        // instance busy at this instant is a daemon that answers too, just not this microsecond.
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(_) => true,
+            Err(error) => {
+                error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32)
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        false
+    }
 }

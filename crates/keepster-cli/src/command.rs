@@ -101,6 +101,34 @@ pub enum Command {
 
     /// Open the web UI in a browser, signed in — or, with `token rotate`, end every browser session.
     Ui(UiArgs),
+
+    /// Install, remove or inspect the daemon's autostart: a systemd user unit, a LaunchAgent, or a
+    /// Scheduled Task at logon. Needs no administrator rights, and never touches history.
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+/// The subcommands of `keepster service`.
+#[derive(Debug, Subcommand)]
+pub enum ServiceCommand {
+    /// Register the daemon with this platform's service manager, start it, and check that it answers.
+    Install(ServiceInstallArgs),
+
+    /// Stop the daemon and remove its autostart. History, Roots and configuration are left as they are.
+    Uninstall,
+
+    /// Say whether autostart is installed, whether the daemon is running, and whether coverage
+    /// survives logout.
+    Status,
+}
+
+/// Options of `keepster service install`.
+#[derive(Debug, Args)]
+pub struct ServiceInstallArgs {
+    /// Declare that this machine has no web UI: when this creates the global configuration, it writes
+    /// the loopback listener off. An existing configuration is never rewritten.
+    #[arg(long)]
+    pub no_web_ui: bool,
 }
 
 /// Options of `keepster ui`.

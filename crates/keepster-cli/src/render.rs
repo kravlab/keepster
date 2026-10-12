@@ -46,8 +46,16 @@ pub fn write_human(
     }
     writeln!(out, "  pid          {}", daemon.pid)?;
     writeln!(out, "  uptime       {}s", daemon.uptime_seconds)?;
-    writeln!(out, "  autostart    {}", reported(daemon.autostart))?;
-    writeln!(out, "  linger       {}", reported(daemon.linger))?;
+    writeln!(
+        out,
+        "  autostart    {}",
+        autostart(daemon.autostart, daemon.autostart_reason.as_deref())
+    )?;
+    writeln!(
+        out,
+        "  linger       {}",
+        linger(daemon.linger, daemon.linger_reason.as_deref())
+    )?;
     writeln!(out, "  maintenance  {}", reported(daemon.maintenance))?;
     write_git(&daemon.git, shell_git, out)?;
     if let Some(listener) = &daemon.listener {
@@ -55,6 +63,37 @@ pub fn write_human(
     }
 
     write_roots(&status.roots, out)
+}
+
+/// Whether the daemon comes back at login, and what to do when it does not.
+pub fn autostart(row: Reported, reason: Option<&str>) -> String {
+    match (row, reason) {
+        (Reported::Unavailable, Some("not_installed")) => {
+            "not installed — the daemon will not come back after a reboot; run `keepster service \
+             install`"
+                .to_owned()
+        }
+        (Reported::Unavailable, Some("disabled")) => {
+            "installed but disabled — the daemon will not come back after a reboot; run `keepster \
+             service install`"
+                .to_owned()
+        }
+        (row, _) => reported(row).to_owned(),
+    }
+}
+
+/// Whether coverage survives logout. The gap a platform imposes is said plainly, never hidden
+/// (ticket 05).
+pub fn linger(row: Reported, reason: Option<&str>) -> String {
+    match (row, reason) {
+        (Reported::Unavailable, Some("logout_gap")) => {
+            "unavailable — coverage ends at logout".to_owned()
+        }
+        (Reported::Unavailable, Some("disabled")) => {
+            "off — coverage ends at logout; `loginctl enable-linger` keeps it running".to_owned()
+        }
+        (row, _) => reported(row).to_owned(),
+    }
 }
 
 /// Whether the daemon has a network surface. Off is a choice, said as one rather than as a fault.
