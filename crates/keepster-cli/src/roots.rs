@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{ErrorCode, Problem, RegisterRoot, Reported, Root, Status};
+use keepster_api::{ErrorCode, Pins, Problem, RegisterRoot, Reported, Root, Status};
 use serde::de::DeserializeOwned;
 
 use crate::client::{ClientError, DaemonClient, Response};
@@ -246,7 +246,26 @@ pub async fn unwatch(args: &UnwatchArgs, control_path: &Path) -> u8 {
             if args.purge {
                 println!("erased the history of {}", root.path);
             } else {
-                println!("stopped watching {} (its history is kept)", root.path);
+                // The history decays down the ladder to its last state, pinned by the daemon, and stays
+                // reachable by its identity alone (ticket 53). A Root that never captured anything has
+                // neither, and is not told it has.
+                let pinned = client
+                    .get(&format!("/v1/roots/{}/pins", root.id))
+                    .await
+                    .ok()
+                    .filter(|response| response.status.is_success())
+                    .and_then(|response| serde_json::from_slice::<Pins>(&response.body).ok())
+                    .is_some_and(|pins| !pins.snapshots.is_empty());
+                if pinned {
+                    println!(
+                        "stopped watching {}; its history is kept, decaying to its last state, which \
+                         is pinned: `keepster pins -r {}` lists it, and watching the directory again \
+                         resumes it",
+                        root.path, root.id
+                    );
+                } else {
+                    println!("stopped watching {} (it had no history to keep)", root.path);
+                }
             }
 
             exit::SUCCESS

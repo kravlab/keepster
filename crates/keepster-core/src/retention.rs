@@ -172,6 +172,16 @@ impl Default for Ladder {
     }
 }
 
+/// What becomes of a Root's newest Snapshot past the last Tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Newest {
+    /// It survives however old: the record of a watched Root's present state.
+    Survives,
+    /// It ages like any other: a Root no longer watched has its last state held by a Pin instead,
+    /// which unpinned lets the whole history decay away by the user's own act (ticket 53, ticket 07).
+    Ages,
+}
+
 /// One Segment and the Snapshots it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentContents {
@@ -206,7 +216,8 @@ impl RetentionPlan {
     }
 }
 
-/// What a Retention pass at `now` does to `segments` under `ladder`.
+/// What a Retention pass at `now` does to `segments` under `ladder`, the newest Snapshot surviving or
+/// ageing as `newest` says.
 ///
 /// A period's survivor is the last Snapshot in it across every Segment, so a Tier coarser than the
 /// Segments deletes all but the one holding it, and a Tier as fine as them thins within each. A Segment
@@ -216,12 +227,14 @@ pub fn plan_retention(
     segments: &[SegmentContents],
     now: SystemTime,
     ladder: &Ladder,
+    newest: Newest,
 ) -> RetentionPlan {
     let newest = segments
         .iter()
         .flat_map(|segment| segment.snapshots.iter())
         .max()
-        .copied();
+        .copied()
+        .filter(|_| newest == Newest::Survives);
     // The last Snapshot of every period, for each period length the ladder keeps by.
     let mut last: HashMap<(u128, u128), SnapshotId> = HashMap::new();
     for tier in ladder.tiers() {

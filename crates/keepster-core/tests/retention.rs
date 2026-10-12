@@ -5,8 +5,8 @@
 use std::time::{Duration, SystemTime};
 
 use keepster_core::{
-    InvalidLadder, Keep, Ladder, RetentionPlan, SegmentContents, SegmentName, SnapshotId, Thinning,
-    Tier, plan_retention,
+    InvalidLadder, Keep, Ladder, Newest, RetentionPlan, SegmentContents, SegmentName, SnapshotId,
+    Thinning, Tier, plan_retention,
 };
 
 /// 2026-09-30T14:00:00Z.
@@ -90,7 +90,7 @@ fn the_last_day_is_never_thinned() {
     ]);
 
     assert_eq!(
-        plan_retention(&store, at(NOW), &Ladder::default()),
+        plan_retention(&store, at(NOW), &Ladder::default(), Newest::Survives),
         RetentionPlan::default()
     );
 }
@@ -100,7 +100,7 @@ fn an_hour_wholly_past_the_first_tier_keeps_its_last_snapshot() {
     let hour = NOW - 2 * DAY;
     let store = segments(&[hour + 60, hour + 120, hour + 1800, NOW - 60]);
 
-    let plan = plan_retention(&store, at(NOW), &Ladder::default());
+    let plan = plan_retention(&store, at(NOW), &Ladder::default(), Newest::Survives);
 
     assert_eq!(
         plan,
@@ -121,12 +121,17 @@ fn a_segment_straddling_a_boundary_waits_until_it_has_crossed() {
     let store = segments(&[straddling + 60, straddling + 3000, NOW - 60]);
 
     assert_eq!(
-        plan_retention(&store, at(NOW - 30 * 60), &Ladder::default()),
+        plan_retention(
+            &store,
+            at(NOW - 30 * 60),
+            &Ladder::default(),
+            Newest::Survives
+        ),
         RetentionPlan::default(),
         "half of it is younger than 24 h"
     );
     assert_eq!(
-        plan_retention(&store, at(NOW), &Ladder::default())
+        plan_retention(&store, at(NOW), &Ladder::default(), Newest::Survives)
             .thin
             .len(),
         1,
@@ -146,7 +151,7 @@ fn a_tier_coarser_than_the_segment_deletes_whole_segments() {
         NOW - 60,
     ]);
 
-    let plan = plan_retention(&store, at(NOW), &Ladder::default());
+    let plan = plan_retention(&store, at(NOW), &Ladder::default(), Newest::Survives);
 
     assert_eq!(
         plan,
@@ -163,7 +168,7 @@ fn past_the_last_tier_everything_goes_except_the_newest_snapshot() {
     let old = NOW - 40 * DAY;
     let store = segments(&[old + 60, old + 120, old + HOUR + 60, old + 2 * HOUR + 60]);
 
-    let plan = plan_retention(&store, at(NOW), &Ladder::default());
+    let plan = plan_retention(&store, at(NOW), &Ladder::default(), Newest::Survives);
 
     assert_eq!(
         plan,
@@ -187,12 +192,12 @@ fn a_second_pass_over_the_result_changes_nothing() {
     let store = segments(&moments);
     let ladder = Ladder::default();
 
-    let first = plan_retention(&store, at(NOW), &ladder);
+    let first = plan_retention(&store, at(NOW), &ladder, Newest::Survives);
     let after = applied(store, &first);
     assert_ne!(first, RetentionPlan::default());
 
     assert_eq!(
-        plan_retention(&after, at(NOW), &ladder),
+        plan_retention(&after, at(NOW), &ladder, Newest::Survives),
         RetentionPlan::default(),
         "thinning happens at most once per Segment"
     );
@@ -277,4 +282,21 @@ fn what_a_tier_keeps_is_written_by_name_or_by_period() {
         assert_eq!(keep.name(), name);
     }
     assert_eq!(Keep::parse("fortnightly"), None);
+}
+
+#[test]
+fn a_root_no_longer_watched_lets_even_its_newest_snapshot_age() {
+    let old = NOW - 40 * DAY;
+    let store = segments(&[old + 60, old + HOUR + 60]);
+
+    let plan = plan_retention(&store, at(NOW), &Ladder::default(), Newest::Ages);
+
+    assert_eq!(
+        plan,
+        RetentionPlan {
+            delete: vec![name(old), name(old + HOUR)],
+            thin: Vec::new(),
+        },
+        "its last state is its Pin's to hold, not the ladder's (ticket 53)"
+    );
 }

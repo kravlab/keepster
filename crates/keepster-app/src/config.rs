@@ -1362,6 +1362,19 @@ impl Configuration {
             .collect()
     }
 
+    /// The ladder a Root no longer watched decays by: the global file's, with its blocks for the Root —
+    /// never the Root's own file, which may have gone with its directory (ticket 53). `None` while the
+    /// global file has no valid version: the ladder that cannot be read is the one it would be thinned
+    /// by.
+    pub fn unwatched_ladder(&mut self, id: RootId, root_path: &Path) -> Option<Ladder> {
+        self.refresh_global();
+
+        self.global
+            .in_force
+            .as_ref()
+            .map(|global| effective(global, id, root_path, None).retention)
+    }
+
     /// The `git` the global file in force names, if it names one.
     pub fn git_path(&mut self) -> Option<PathBuf> {
         self.refresh_global();

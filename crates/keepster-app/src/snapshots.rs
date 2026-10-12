@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, Ladder, RootId, RootPath, SnapshotId};
+use keepster_core::{CapturePolicy, Ladder, Newest, RootId, RootPath, SnapshotId};
 use keepster_store::{
     CaptureRequest, Comparison, Depth, DiffTarget, HistoryStore, Listing, Pass, RegistryError,
-    Retained, RootRecord, StoreError, TimelinePage, TimelineQuery,
+    Retained, RootRecord, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
 };
 
 /// The directory inside a Root's own directory that holds its History Store.
@@ -152,13 +152,52 @@ pub fn newest(location: &StoreLocation) -> Result<Option<SnapshotId>, StoreError
     Ok(page.snapshots.first().map(|snapshot| snapshot.id))
 }
 
+/// Pin the Snapshot `id` of a Root's history, saying whether it was not pinned already (ticket 53).
+///
+/// The caller holds the store's lock: a Maintenance Pass must not prune between reading the Snapshot
+/// and writing its Pin.
+pub fn pin(location: &StoreLocation, id: SnapshotId) -> Result<bool, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.pin(id),
+        None => Err(StoreError::SnapshotNotFound(id)),
+    }
+}
+
+/// Unpin the Snapshot `id` of a Root's history, saying whether it was pinned.
+pub fn unpin(location: &StoreLocation, id: SnapshotId) -> Result<bool, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.unpin(id),
+        None => Ok(false),
+    }
+}
+
+/// Every pinned Snapshot of a Root's history, newest first.
+pub fn pins(location: &StoreLocation) -> Result<Vec<SnapshotSummary>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.pins(),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Pin a Root's newest Snapshot — the state its history decays to once it is no longer watched — and
+/// say which, or `None` for a Root that never captured anything (ticket 07).
+pub fn pin_newest(location: &StoreLocation) -> Result<Option<SnapshotId>, StoreError> {
+    let Some(newest) = newest(location)? else {
+        return Ok(None);
+    };
+    pin(location, newest)?;
+
+    Ok(Some(newest))
+}
+
 /// When the last Maintenance Pass over a Root's history finished, if it is recorded (ticket 52).
 pub fn maintained_at(location: &StoreLocation) -> Option<SystemTime> {
     HistoryStore::maintained_at(&location.store)
 }
 
-/// One Retention pass over a Root's history at `now` under `ladder` (ticket 51): what survives is
-/// planned from the Segments as they are, and carried out. A Root never captured has nothing to keep.
+/// One Retention pass over a Root's history at `now` under `ladder` (ticket 51), its newest Snapshot
+/// surviving or ageing as `newest` says: what survives is planned from the Segments as they are, and
+/// carried out. A Root never captured has nothing to keep.
 ///
 /// The caller holds the store's lock, as for a capture: re-chaining a Segment while a capture appends
 /// to the same store would leave one of them unreferenced (ticket 06).
@@ -166,9 +205,10 @@ pub fn retain(
     location: &StoreLocation,
     ladder: &Ladder,
     now: SystemTime,
+    newest: Newest,
 ) -> Result<Retained, StoreError> {
     match open_for_reading(location)? {
-        Some(store) => store.retain(ladder, now),
+        Some(store) => store.retain(ladder, now, newest),
         None => Ok(Retained::default()),
     }
 }

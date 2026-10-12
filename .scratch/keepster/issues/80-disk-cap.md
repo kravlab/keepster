@@ -17,4 +17,7 @@ Root, because a global cap lets one busy Root evict another's history.
 - [ ] A cap exceeded runs a Maintenance Pass at once rather than waiting for the daily one, still in an idle window
       and never overlapping a capture
 - [ ] With maintenance unavailable, capture pauses at the cap instead of filling the disk, and `status` says why
+- [ ] The cap stays pin-unaware (ADR 0002): it drops Segment refs and never a Pin ref, so every pinned Snapshot —
+      the last state of a Root no longer watched included — is part of its floor, and a cap that cannot be met
+      because of Pins overshoots and reports it (moved here from ticket 53)
 - [ ] `status` reports each Root's store size and whether it is over its cap, and `store.over_cap` is announced

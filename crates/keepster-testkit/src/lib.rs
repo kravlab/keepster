@@ -255,6 +255,14 @@ impl Harness {
             .unwrap_or_else(|error| panic!("PATCH {path} failed: {error}"))
     }
 
+    /// `PUT` the given path, without a body, failing the test if the daemon could not be reached.
+    pub async fn put(&self, path: &str) -> Response {
+        self.client
+            .put(path)
+            .await
+            .unwrap_or_else(|error| panic!("PUT {path} failed: {error}"))
+    }
+
     /// `DELETE` the given path, failing the test if the daemon could not be reached.
     pub async fn delete(&self, path: &str) -> Response {
         self.client

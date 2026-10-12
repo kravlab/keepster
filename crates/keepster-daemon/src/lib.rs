@@ -17,6 +17,7 @@ mod explain;
 mod git;
 mod housekeeping;
 mod openapi;
+mod pins;
 mod problem;
 mod restore;
 mod roots;
@@ -396,6 +397,8 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(snapshots::reconcile))
         .routes(routes!(snapshots::entries))
         .routes(routes!(snapshots::content))
+        .routes(routes!(pins::list))
+        .routes(routes!(pins::pin, pins::unpin))
         .routes(routes!(diff::diff))
         .routes(routes!(restore::restore))
         .routes(routes!(explain::explain))

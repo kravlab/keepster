@@ -65,6 +65,55 @@ pub enum Command {
 
     /// Compare a Root's Working Tree against its latest Snapshot now, and capture what differs.
     Reconcile(ReconcileArgs),
+
+    /// Pin a Snapshot, so that it survives Retention unconditionally until it is unpinned.
+    Pin(PinArgs),
+
+    /// Give a pinned Snapshot back to Retention.
+    Unpin(UnpinArgs),
+
+    /// List a Root's pinned Snapshots, newest first.
+    Pins(PinsArgs),
+}
+
+/// Options of `keepster pin`.
+#[derive(Debug, Args)]
+pub struct PinArgs {
+    /// Which Snapshot, as `cat -s` takes it: `latest` (the default), `~N`, an identity, a moment or a
+    /// duration ago.
+    #[arg(value_name = "SELECTOR")]
+    pub snapshot: Option<String>,
+
+    /// Which Root, as a full identity — of a Root no longer watched too — an unambiguous prefix of one,
+    /// or a path. Defaults to the Root holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+}
+
+/// Options of `keepster unpin`.
+#[derive(Debug, Args)]
+pub struct UnpinArgs {
+    /// Which Snapshot, as `cat -s` takes it: `latest`, `~N`, an identity, a moment or a duration ago.
+    #[arg(value_name = "SELECTOR")]
+    pub snapshot: String,
+
+    /// Which Root, as a full identity — of a Root no longer watched too — an unambiguous prefix of one,
+    /// or a path. Defaults to the Root holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+}
+
+/// Options of `keepster pins`.
+#[derive(Debug, Args)]
+pub struct PinsArgs {
+    /// Which Root, as a full identity — of a Root no longer watched too — an unambiguous prefix of one,
+    /// or a path. Defaults to the Root holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print the pinned Snapshots as JSON, as the timeline items are.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `keepster reconcile`.

@@ -8,7 +8,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{CapturePolicy, Ladder, RootId, RootPath, SnapshotId, Trigger, plan_retention};
+use keepster_core::{
+    CapturePolicy, Ladder, Newest, RootId, RootPath, SnapshotId, Trigger, plan_retention,
+};
 use keepster_store::{HistoryStore, TimelineQuery};
 
 /// 2026-09-30T14:00:00Z.
@@ -115,7 +117,10 @@ fn a_month_of_history_goes_down_the_ladder() {
     }
     let ladder = Ladder::default();
 
-    let retained = fixture.store.retain(&ladder, at(NOW)).expect("a pass");
+    let retained = fixture
+        .store
+        .retain(&ladder, at(NOW), Newest::Survives)
+        .expect("a pass");
 
     assert_eq!(retained.index_lag, None);
     let segments = fixture.store.segments().expect("Segments");
@@ -188,7 +193,7 @@ fn a_month_of_history_goes_down_the_ladder() {
         "only the counter, never the stable file"
     );
 
-    let again = plan_retention(&segments, at(NOW), &ladder);
+    let again = plan_retention(&segments, at(NOW), &ladder, Newest::Survives);
     assert!(again.is_empty(), "a second pass changes nothing: {again:?}");
 
     // The next capture still has its baseline.
@@ -211,7 +216,7 @@ fn a_rebuilt_index_agrees_with_one_caught_up_after_thinning() {
     }
     fixture
         .store
-        .retain(&Ladder::default(), at(NOW))
+        .retain(&Ladder::default(), at(NOW), Newest::Survives)
         .expect("a pass");
     let caught_up = fixture.timeline(None);
 
@@ -282,7 +287,7 @@ fn a_segment_this_product_did_not_write_is_left_alone() {
 
     let retained = fixture
         .store
-        .retain(&Ladder::default(), at(NOW))
+        .retain(&Ladder::default(), at(NOW), Newest::Survives)
         .expect("a pass");
 
     assert_eq!(retained.removed_snapshots, 0, "{retained:?}");

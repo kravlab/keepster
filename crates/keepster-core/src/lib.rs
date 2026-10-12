@@ -31,7 +31,8 @@ pub use restore::{
     PathPlan, Plan, Resolution, Step, Unrecoverable, plan, target_of,
 };
 pub use retention::{
-    InvalidLadder, Keep, Ladder, RetentionPlan, SegmentContents, Thinning, Tier, plan_retention,
+    InvalidLadder, Keep, Ladder, Newest, RetentionPlan, SegmentContents, Thinning, Tier,
+    plan_retention,
 };
 pub use root::{RootId, containing, overlapping};
 pub use rules::{

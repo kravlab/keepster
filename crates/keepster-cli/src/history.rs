@@ -268,7 +268,7 @@ fn refused(error: ClientError) -> u8 {
 ///
 /// A reader that stopped early — `keepster log | head -1` — closed the pipe on purpose, so that is
 /// success, as it is for `cat`; a script under `pipefail` must not fail because it read enough.
-fn write_log(items: &[serde_json::Value], json: bool, out: &mut impl Write) -> u8 {
+pub(crate) fn write_log(items: &[serde_json::Value], json: bool, out: &mut impl Write) -> u8 {
     let written = if json {
         serde_json::to_writer(&mut *out, items)
             .map_err(io::Error::from)
@@ -364,21 +364,34 @@ pub(crate) async fn selected(
     typed: &str,
     now: SystemTime,
 ) -> Result<String, u8> {
+    selected_in(client, &root.id, &root.path, typed, now).await
+}
+
+/// The Snapshot a selector names in the history of the Root `id`, called `named` in a message — which
+/// may be a Root no longer watched, known by its identity alone.
+pub(crate) async fn selected_in(
+    client: &DaemonClient,
+    id: &str,
+    named: &str,
+    typed: &str,
+    now: SystemTime,
+) -> Result<String, u8> {
     let parsed = selector::parse(typed, now).map_err(|message| {
         eprintln!("keepster: {message}");
         exit::USAGE
     })?;
 
-    resolve_snapshot(client, root, &parsed).await
+    resolve_snapshot(client, id, named, &parsed).await
 }
 
 /// Reduce a selector to one Snapshot's identity through ordinary timeline queries.
 async fn resolve_snapshot(
     client: &DaemonClient,
-    root: &Root,
+    id: &str,
+    named: &str,
     selected: &Selector,
 ) -> Result<String, u8> {
-    let base = format!("/v1/roots/{}/snapshots", root.id);
+    let base = format!("/v1/roots/{id}/snapshots");
 
     let (query, skip, described) = match selected {
         Selector::Id(id) => return Ok(id.clone()),
@@ -418,7 +431,7 @@ async fn resolve_snapshot(
         match page.next_cursor {
             Some(next) => cursor = Some(next),
             None => {
-                eprintln!("keepster: {} has {described}", root.path);
+                eprintln!("keepster: {named} has {described}");
                 return Err(exit::NOT_FOUND);
             }
         }
@@ -539,6 +552,9 @@ fn write_snapshot(snapshot: &Snapshot, out: &mut impl Write) -> io::Result<()> {
     }
     if snapshot.incomplete {
         write!(out, "  [incomplete]")?;
+    }
+    if snapshot.pinned {
+        write!(out, "  [pinned]")?;
     }
 
     writeln!(out)

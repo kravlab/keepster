@@ -268,7 +268,7 @@
         ],
         "responses": {
           "204": {
-            "description": "The Root is no longer watched; its history is kept unless `purge` was asked for."
+            "description": "The Root is no longer watched; its history is kept, its last state pinned, unless `purge` was asked for — which also erases the history of a Root no longer watched."
           },
           "400": {
             "description": "`purge` is not a boolean.",
@@ -281,7 +281,7 @@
             }
           },
           "404": {
-            "description": "No such Root is registered.",
+            "description": "No such Root is watched — or, with `purge`, kept since it was unwatched.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -291,7 +291,7 @@
             }
           },
           "500": {
-            "description": "The Registry could not be written.",
+            "description": "The Registry could not be written, or the history could not be pinned.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -629,6 +629,194 @@
           },
           "409": {
             "description": "The Root is unavailable, or its configuration cannot be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/pins": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "List the Root's pinned Snapshots — including those of a Root no longer watched, whose last state\nwas pinned when it was unwatched.",
+        "operationId": "list_pins",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pinned Snapshots, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pins"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is watched, or kept since it was unwatched.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/pins/{snapshot}": {
+      "put": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Pin a Snapshot, so that it survives Retention unconditionally. Pinning a pinned one changes nothing.",
+        "operationId": "pin_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The Snapshot is pinned."
+          },
+          "404": {
+            "description": "No such Root or Snapshot.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Pin could not be written.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Unpin a Snapshot, which is Retention's again for as long as its Segment holds it. Unpinning one that\nis not pinned changes nothing.",
+        "operationId": "unpin_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The Snapshot is not pinned."
+          },
+          "404": {
+            "description": "No such Root, or no such Snapshot identity.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Root is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Pin could not be removed.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2461,6 +2649,22 @@
           }
         }
       },
+      "Pins": {
+        "type": "object",
+        "description": "A Root's pinned Snapshots, as `GET /v1/roots/{id}/pins` serves them: few enough to need no page.",
+        "required": [
+          "snapshots"
+        ],
+        "properties": {
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Snapshot"
+            },
+            "description": "The pinned Snapshots, newest first."
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "A failure, in the one shape every endpoint uses.\n\nRFC 9457 Problem Details plus a `code` extension: a standard shape is what a third-party client's\nlibrary already parses, and `code` — not the prose of `title` or `detail` — is the stable part\nclients branch on. The code set is deliberately **open** (ADR 0005): a client must treat a code it\ndoes not know as its HTTP status.",
@@ -2980,6 +3184,10 @@
               "type": "string"
             },
             "description": "The Root-relative paths that were meant to be captured and are not held as they are, each one\nthe reason this Snapshot is incomplete.\n\nNamed by the answer to a capture. The timeline carries the flag but not the list: each is a\nrecord of the Snapshot itself, which `entries` lists with why."
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Whether it is pinned, and so survives Retention unconditionally until it is unpinned (ADR 0002)."
           },
           "segment": {
             "type": "string",

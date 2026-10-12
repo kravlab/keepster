@@ -9,6 +9,9 @@
 //! quiet for a while — and, so that a Root that never goes quiet is still kept within its ladder, not
 //! longer than its own ceiling. Both take the store's lock as a capture does, without waiting for it: a
 //! capture in flight wins, and the pass is tried again at the next look.
+//!
+//! A Root no longer watched is kept too: its history decays down the global ladder to the last state
+//! pinned when it was unwatched, by the very passes a watched Root has (ticket 53).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use keepster_api::Event;
 use keepster_app::snapshots::{self, StoreLocation};
-use keepster_core::{RootId, SegmentName};
+use keepster_core::{Newest, RootId, SegmentName};
 
 use crate::DaemonState;
 
@@ -211,32 +214,57 @@ pub(crate) async fn run_continually(state: DaemonState) {
     }
 }
 
-/// One look at every registered Root, running the passes each one owes and may run now.
+/// One look at every Root whose history is kept — watched or not — running the passes each one owes
+/// and may run now.
 fn pass_over_every_root(state: &DaemonState) {
-    let records = match state.registry().readable() {
-        Ok(records) => records,
+    let listed = {
+        let registry = state.registry();
+        registry
+            .readable()
+            .and_then(|watched| registry.unwatched().map(|unwatched| (watched, unwatched)))
+    };
+    let (watched, unwatched) = match listed {
+        Ok(listed) => listed,
         Err(error) => {
             tracing::warn!(%error, "the Registry could not be read for housekeeping");
             return;
         }
     };
-    state
-        .housekeeping
-        .forget_except(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+    let kept: Vec<RootId> = watched
+        .iter()
+        .chain(&unwatched)
+        .map(|record| record.id)
+        .collect();
+    state.housekeeping.forget_except(&kept);
     // A `git` installed or upgraded since the last look is found here, never under another lock.
     crate::git::refresh(state);
 
-    for record in records {
+    let every = watched
+        .iter()
+        .map(|record| (record, Standing::Watched))
+        .chain(unwatched.iter().map(|record| (record, Standing::Unwatched)));
+    for (record, standing) in every {
         // A stopping daemon's last captures must not find a store taken by a pass just starting.
         if state.housekeeping.stopping.load(Ordering::SeqCst) {
             return;
         }
-        consider(state, &record);
+        consider(state, record, standing);
     }
 }
 
+/// Whether a Root whose history is kept is watched, which decides the ladder and the fate of its newest
+/// Snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// Watched: its own configuration's ladder, and its newest Snapshot is the record of its present.
+    Watched,
+    /// No longer watched: the global ladder, and its last state is held by the Pin unwatching made
+    /// (ticket 53).
+    Unwatched,
+}
+
 /// Run the passes the Root `record` owes, if it owes any and may run them now.
-fn consider(state: &DaemonState, record: &keepster_store::RootRecord) {
+fn consider(state: &DaemonState, record: &keepster_store::RootRecord, standing: Standing) {
     let id = record.id;
     let timing = state.housekeeping.timing;
     let now = crate::roots::now();
@@ -258,7 +286,14 @@ fn consider(state: &DaemonState, record: &keepster_store::RootRecord) {
     // A Root without a configuration in force is not captured, and its history is not touched either:
     // the ladder it would be thinned by is the one that cannot be read. Its warnings are the capture's
     // to log, not each look's.
-    let Ok(loaded) = state.effective(id, &record.path) else {
+    let ladder = match standing {
+        Standing::Watched => state
+            .effective(id, &record.path)
+            .ok()
+            .map(|loaded| loaded.retention),
+        Standing::Unwatched => state.config().unwatched_ladder(id, &record.path),
+    };
+    let Some(ladder) = ladder else {
         return;
     };
 
@@ -284,12 +319,17 @@ fn consider(state: &DaemonState, record: &keepster_store::RootRecord) {
         // A capture is in flight: it wins, and the passes are tried at the next look.
         Err(TryLockError::WouldBlock) => return,
     };
-    if !state.registry().contains(id) {
+    // Erased while this waited: opening the store now would bring it back as an orphan.
+    if !state.registry().holds(id) {
         return;
     }
 
     if owed.retention.is_some() {
-        retain(state, id, &location, &loaded.retention, now, segment);
+        let newest = match standing {
+            Standing::Watched => Newest::Survives,
+            Standing::Unwatched => Newest::Ages,
+        };
+        retain(state, id, &location, &ladder, newest, now, segment);
     }
     if let (Some(_), Some((generation, git))) = (owed.maintenance, git) {
         maintain(state, id, &location, generation, git, now);
@@ -302,10 +342,11 @@ fn retain(
     id: RootId,
     location: &StoreLocation,
     ladder: &keepster_core::Ladder,
+    newest: Newest,
     now: std::time::SystemTime,
     segment: SegmentName,
 ) {
-    match snapshots::retain(location, ladder, now) {
+    match snapshots::retain(location, ladder, now, newest) {
         Ok(retained) => {
             state.housekeeping.retained(id, segment);
             if let Some(reason) = &retained.index_lag {

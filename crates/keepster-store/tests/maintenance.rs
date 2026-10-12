@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use keepster_core::{CapturePolicy, Ladder, RootId, RootPath, Trigger};
+use keepster_core::{CapturePolicy, Ladder, Newest, RootId, RootPath, Trigger};
 #[cfg(not(windows))]
 use keepster_core::{Platform, git_candidates};
 use keepster_store::{Depth, Git, GitUnavailable, HistoryStore};
@@ -123,7 +123,7 @@ fn the_pass_reclaims_what_retention_condemned_and_a_deleted_ref_alone_frees_noth
 
     let retained = fixture
         .store
-        .retain(&Ladder::default(), at(NOW))
+        .retain(&Ladder::default(), at(NOW), Newest::Survives)
         .expect("a pass");
     assert!(retained.deleted_segments > 0, "{retained:?}");
     assert_eq!(

@@ -237,6 +237,9 @@ pub struct Snapshot {
     /// With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
+    /// Whether it is pinned, and so survives Retention unconditionally until it is unpinned (ADR 0002).
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A path a Snapshot holds no content for, on purpose.
@@ -974,6 +977,14 @@ pub struct Timeline {
     /// The `cursor` that fetches the next, older page; absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+/// A Root's pinned Snapshots, as `GET /v1/roots/{id}/pins` serves them: few enough to need no page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Pins {
+    /// The pinned Snapshots, newest first.
+    pub snapshots: Vec<Snapshot>,
 }
 
 /// The paths a Snapshot holds under a directory, as `…/entries` serves them.

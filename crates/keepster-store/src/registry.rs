@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 /// The file that records one Root, beside that Root's History Store.
 const RECORD_FILE: &str = "root.toml";
 
+/// The record of a Root no longer watched, whose history decays down the ladder to its pinned last
+/// state (ticket 53). A file of its own rather than a flag in the record, so that a build from before
+/// it sees what it always saw there: a directory without a record, an orphaned store it leaves alone.
+const UNWATCHED_FILE: &str = "unwatched.toml";
+
 /// The container format this build writes and understands.
 ///
 /// Ticket 26 governs the four version numbers of the store; this is the container one, the only one
@@ -177,17 +182,64 @@ impl Registry {
 
     /// Deregister a Root, keeping everything it holds.
     ///
-    /// Only the record goes: the directory and its History Store stay, which is what makes unwatching
-    /// reversible (ticket 07). A directory without a record is precisely an orphaned store, the thing
-    /// ticket 53 teaches Retention to decay.
+    /// The record becomes the record of a Root no longer watched: the directory and its History Store
+    /// stay, which is what makes unwatching reversible (ticket 07), and the path stays with them, so
+    /// that watching that directory again finds this history rather than starting another (ticket 53).
     pub fn remove(&self, id: RootId) -> Result<(), RegistryError> {
-        let record = self.root_dir(id).join(RECORD_FILE);
+        let dir = self.root_dir(id);
 
-        fs::remove_file(&record).map_err(|source| RegistryError::Io {
-            path: record,
-            operation: "removed",
+        rename(&dir.join(RECORD_FILE), &dir.join(UNWATCHED_FILE))
+    }
+
+    /// Every Root no longer watched whose record this build can read, ordered by identity.
+    pub fn unwatched(&self) -> Result<Vec<RootRecord>, RegistryError> {
+        let mut found = Vec::new();
+        for id in self.identities()? {
+            let dir = self.root_dir(id);
+            let unwatched = dir.join(UNWATCHED_FILE);
+            if unwatched.is_file() && !dir.join(RECORD_FILE).is_file() {
+                found.extend(read_record(&unwatched).ok());
+            }
+        }
+
+        Ok(found)
+    }
+
+    /// Whether the Root is watched or, no longer watched, still has its history here.
+    pub fn holds(&self, id: RootId) -> bool {
+        let dir = self.root_dir(id);
+
+        dir.join(RECORD_FILE).is_file() || dir.join(UNWATCHED_FILE).is_file()
+    }
+
+    /// Watch again a Root no longer watched, at the path it was unwatched at.
+    pub fn rewatch(&self, id: RootId) -> Result<(), RegistryError> {
+        let dir = self.root_dir(id);
+
+        rename(&dir.join(UNWATCHED_FILE), &dir.join(RECORD_FILE))
+    }
+
+    /// Every identity a directory under the base is named by.
+    fn identities(&self) -> Result<Vec<RootId>, RegistryError> {
+        let listed = |source| RegistryError::Io {
+            path: self.base.clone(),
+            operation: "listed",
             source,
-        })
+        };
+        let mut ids = Vec::new();
+        for directory in fs::read_dir(&self.base).map_err(listed)? {
+            let directory = directory.map_err(listed)?;
+            if let Some(id) = directory
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<RootId>().ok())
+            {
+                ids.push(id);
+            }
+        }
+        ids.sort();
+
+        Ok(ids)
     }
 
     /// Erase a Root and everything it holds.
@@ -284,6 +336,25 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
     write().map_err(|source| RegistryError::Io {
         path: path.to_path_buf(),
         operation: "written",
+        source,
+    })
+}
+
+/// Move a record from one name to the other atomically, flushing the directory as [`write_record`]
+/// does.
+fn rename(from: &Path, to: &Path) -> Result<(), RegistryError> {
+    let moved = || -> io::Result<()> {
+        fs::rename(from, to)?;
+        #[cfg(unix)]
+        if let Some(parent) = to.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    };
+
+    moved().map_err(|source| RegistryError::Io {
+        path: from.to_path_buf(),
+        operation: "moved",
         source,
     })
 }

@@ -7,9 +7,13 @@
 //! rebuild (ADR 0010).
 //!
 //! Two invariants make that safe. The commit and the ref update always precede the index write, so the
-//! index can only *lag* git and never name a commit that does not exist. And a per-Segment watermark —
-//! the tip each Segment was indexed up to — turns "the daemon was killed" into a catch-up over exactly
-//! the code path a full rebuild takes, so the rare path is the common one and cannot rot.
+//! index can only *lag* git and never name a commit that does not exist. And a per-source watermark —
+//! the tip each Segment, and each Pin, was indexed up to — turns "the daemon was killed" into a catch-up
+//! over exactly the code path a full rebuild takes, so the rare path is the common one and cannot rot.
+//!
+//! A Snapshot can have two copies: the commit in its Segment, and the parentless one its Pin re-created
+//! (ADR 0002). Every copy is indexed, and the Snapshot is read from its Pin while it has one — so it is
+//! there for as long as either copy is, and Retention never has to know which.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -25,18 +29,32 @@ use crate::history::{StoreError, mode_changes};
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// The schema. `STRICT` so a value of the wrong type is an error rather than a silent coercion; no
 /// row ids, because every table already has a natural key.
 const SCHEMA: &str = "
+    CREATE TABLE copies (
+        source     TEXT    NOT NULL,
+        id         TEXT    NOT NULL,
+        commit_id  TEXT    NOT NULL,
+        trigger    TEXT    NOT NULL,
+        omitted    INTEGER NOT NULL,
+        PRIMARY KEY (source, id)
+    ) STRICT, WITHOUT ROWID;
+
+    CREATE INDEX copies_by_id ON copies (id);
+
+    CREATE UNIQUE INDEX one_chained_copy ON copies (id) WHERE source NOT LIKE 'pins/%';
+
     CREATE TABLE snapshots (
         id         TEXT    NOT NULL PRIMARY KEY,
         segment    TEXT    NOT NULL,
         commit_id  TEXT    NOT NULL,
         trigger    TEXT    NOT NULL,
         omitted    INTEGER NOT NULL,
-        changed    INTEGER NOT NULL
+        changed    INTEGER NOT NULL,
+        pinned     INTEGER NOT NULL
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE changes (
@@ -49,7 +67,7 @@ const SCHEMA: &str = "
     CREATE INDEX changes_by_snapshot ON changes (snapshot);
 
     CREATE TABLE watermarks (
-        segment TEXT NOT NULL PRIMARY KEY,
+        source  TEXT NOT NULL PRIMARY KEY,
         tip     TEXT NOT NULL
     ) STRICT, WITHOUT ROWID;
 
@@ -82,12 +100,19 @@ pub(crate) struct Observation {
 /// second one is prepared to wait.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Where the index reads a Pin from: a source of its own, beside the Segments, named so that no Segment
+/// name — a calendar hour — can be mistaken for one.
+const PIN_SOURCE: &str = "pins/";
+
 /// One Snapshot as the index holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexedSnapshot {
     pub(crate) id: SnapshotId,
+    /// The Segment it was taken into — still its name when only its Pin is left.
     pub(crate) segment: String,
+    /// The copy it is read from: its Pin's while it has one.
     pub(crate) commit: git2::Oid,
+    pub(crate) pinned: bool,
     pub(crate) trigger: String,
     pub(crate) omitted: u64,
     pub(crate) changed: u64,
@@ -95,10 +120,11 @@ pub(crate) struct IndexedSnapshot {
     pub(crate) change: Option<ChangeKind>,
 }
 
-/// One Snapshot found in git and not yet in the index.
+/// One copy of a Snapshot found in git and not yet in the index.
 struct Unindexed {
     id: SnapshotId,
-    segment: String,
+    /// The Segment it was found in, or `pins/` and its identity.
+    source: String,
     commit: git2::Oid,
     trigger: String,
     omitted: u64,
@@ -302,7 +328,7 @@ impl Index {
         transaction.commit().map_err(&failed)
     }
 
-    /// Bring the index up to date with the Segment refs, re-reading only what changed.
+    /// Bring the index up to date with the Segment and Pin refs, re-reading only what changed.
     ///
     /// A Segment whose tip still equals its watermark costs nothing; one whose watermark is an ancestor
     /// of its tip costs only the new commits. A Segment that vanished, or whose commits were recreated
@@ -311,11 +337,12 @@ impl Index {
     /// against the Snapshot before it in identity order, across Segments, so besides every row written
     /// here the one after each row written or removed is counted again: it has a new predecessor. That
     /// also places a Snapshot sorting before ones already indexed — a clock that went backwards —
-    /// without rebuilding anything else.
+    /// without rebuilding anything else. A Pin is a source of one commit, so pinning and unpinning are
+    /// caught up the same way: a Snapshot goes only once neither copy is left.
     pub(crate) fn catch_up(&mut self, repository: &git2::Repository) -> Result<(), StoreError> {
         // A read path calls this on every request, so the common answer — nothing to do — must not
         // take the write lock.
-        let glance = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
+        let glance = source_tips(repository).map_err(git_failed_at(repository, "read"))?;
         if self.watermarks()? == glance {
             return Ok(());
         }
@@ -331,7 +358,7 @@ impl Index {
         // tips read here are at least as new as any watermark already committed. Tips read before the
         // lock could be older than the watermarks a capture wrote meanwhile — which would look like a
         // rewritten Segment and read it again back to the older state.
-        let tips = segment_tips(repository).map_err(git_failed_at(repository, "read"))?;
+        let tips = source_tips(repository).map_err(git_failed_at(repository, "read"))?;
         // Read inside the write lock: a capture or another read may have caught up meanwhile.
         let marks = read_watermarks(&transaction).map_err(index_failed(&path, "read"))?;
         if marks == tips {
@@ -339,36 +366,37 @@ impl Index {
         }
 
         let mut from = marks.clone();
-        let mut removed = Vec::new();
-        for (segment, mark) in &marks {
-            let rewritten = match tips.get(segment) {
+        let mut touched: BTreeSet<SnapshotId> = BTreeSet::new();
+        for (source, mark) in &marks {
+            let rewritten = match tips.get(source) {
                 None => true,
                 Some(tip) => {
                     tip != mark && !repository.graph_descendant_of(*tip, *mark).unwrap_or(false)
                 }
             };
             if rewritten {
-                removed.extend(
-                    remove_segment(&transaction, segment)
-                        .map_err(index_failed(&path, "written"))?,
+                touched.extend(
+                    remove_source(&transaction, source).map_err(index_failed(&path, "written"))?,
                 );
-                from.remove(segment);
+                from.remove(source);
             }
         }
 
         let found =
             unindexed(repository, &tips, &from).map_err(git_failed_at(repository, "read"))?;
-        let mut recount: BTreeSet<SnapshotId> = BTreeSet::new();
-        for snapshot in &found {
-            insert(&transaction, snapshot).map_err(index_failed(&path, "written"))?;
-            recount.insert(snapshot.id);
+        for copy in &found {
+            insert(&transaction, copy).map_err(index_failed(&path, "written"))?;
+            touched.insert(copy.id);
         }
-        for moved in removed
-            .iter()
-            .chain(found.iter().map(|snapshot| &snapshot.id))
-        {
+        let mut recount: BTreeSet<SnapshotId> = BTreeSet::new();
+        for id in &touched {
+            if resolve(&transaction, *id).map_err(index_failed(&path, "written"))? {
+                recount.insert(*id);
+            }
+        }
+        for id in &touched {
             if let Some(next) =
-                successor(&transaction, *moved).map_err(index_failed(&path, "written"))?
+                successor(&transaction, *id).map_err(index_failed(&path, "written"))?
             {
                 recount.insert(next);
             }
@@ -380,11 +408,11 @@ impl Index {
         transaction
             .execute("DELETE FROM watermarks", [])
             .map_err(index_failed(&path, "written"))?;
-        for (segment, tip) in &tips {
+        for (source, tip) in &tips {
             transaction
                 .execute(
-                    "INSERT INTO watermarks (segment, tip) VALUES (?1, ?2)",
-                    params![segment, tip.to_string()],
+                    "INSERT INTO watermarks (source, tip) VALUES (?1, ?2)",
+                    params![source, tip.to_string()],
                 )
                 .map_err(index_failed(&path, "written"))?;
         }
@@ -396,7 +424,7 @@ impl Index {
     pub(crate) fn snapshot(&self, id: SnapshotId) -> Result<Option<IndexedSnapshot>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL
+                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
                  FROM snapshots WHERE id = ?1",
                 [id.to_string()],
                 indexed_snapshot,
@@ -429,7 +457,7 @@ impl Index {
                 let mut statement = self
                     .connection
                     .prepare(
-                        "SELECT id, segment, commit_id, trigger, omitted, changed, NULL
+                        "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
                          FROM snapshots
                          WHERE id < ?1 AND id >= ?2
                          ORDER BY id DESC LIMIT ?3",
@@ -443,7 +471,8 @@ impl Index {
                 let mut statement = self
                     .connection
                     .prepare(
-                        "SELECT s.id, s.segment, s.commit_id, s.trigger, s.omitted, s.changed, c.kind
+                        "SELECT s.id, s.segment, s.commit_id, s.trigger, s.omitted, s.changed, c.kind,
+                                s.pinned
                          FROM changes c JOIN snapshots s ON s.id = c.snapshot
                          WHERE c.path = ?1 AND s.id < ?2 AND s.id >= ?3
                          ORDER BY s.id DESC LIMIT ?4",
@@ -459,6 +488,22 @@ impl Index {
         };
 
         rows.map_err(self.failed("read"))
+    }
+
+    /// Every pinned Snapshot, newest first.
+    pub(crate) fn pinned(&self) -> Result<Vec<IndexedSnapshot>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
+                 FROM snapshots WHERE pinned = 1 ORDER BY id DESC",
+            )
+            .map_err(self.failed("read"))?;
+
+        statement
+            .query_map([], indexed_snapshot)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(self.failed("read"))
     }
 
     fn watermarks(&self) -> Result<BTreeMap<String, git2::Oid>, StoreError> {
@@ -630,20 +675,35 @@ fn record_changes(
     changes.into_iter().collect()
 }
 
-/// Every Segment ref and the commit at its tip.
-fn segment_tips(repository: &git2::Repository) -> Result<BTreeMap<String, git2::Oid>, git2::Error> {
+/// Every Segment ref and every Pin ref, by the source the index names it, and the commit at its tip.
+fn source_tips(repository: &git2::Repository) -> Result<BTreeMap<String, git2::Oid>, git2::Error> {
     let mut tips = BTreeMap::new();
 
-    for reference in repository.references_glob(&format!("{}/*", crate::history::SEGMENT_REFS))? {
-        let reference = reference?;
-        // A ref name that is not UTF-8 was not written by us, so it names no Segment.
-        let Ok(name) = reference.name() else {
-            continue;
-        };
-        let Some(segment) = name.rsplit('/').next().map(ToOwned::to_owned) else {
-            continue;
-        };
-        tips.insert(segment, reference.peel_to_commit()?.id());
+    for (refs, prefix) in [
+        (crate::history::SEGMENT_REFS, ""),
+        (crate::history::PIN_REFS, PIN_SOURCE),
+    ] {
+        for reference in repository.references_glob(&format!("{refs}/*"))? {
+            let reference = reference?;
+            // A ref name that is not UTF-8 was not written by us, so it names no Segment or Pin.
+            let Ok(name) = reference.name() else {
+                continue;
+            };
+            let Some(leaf) = name.rsplit('/').next() else {
+                continue;
+            };
+            let tip = if prefix.is_empty() {
+                reference.peel_to_commit()?.id()
+            } else {
+                // A Pin is a leaf naming one commit (ADR 0002): a ref nested deeper, or one that names
+                // something else, was not written by us — and must not cost every read of the store.
+                match reference.peel_to_commit() {
+                    Ok(commit) if name.len() == refs.len() + 1 + leaf.len() => commit.id(),
+                    _ => continue,
+                }
+            };
+            tips.insert(format!("{prefix}{leaf}"), tip);
+        }
     }
 
     Ok(tips)
@@ -657,8 +717,8 @@ fn unindexed(
 ) -> Result<Vec<Unindexed>, git2::Error> {
     let mut found = Vec::new();
 
-    for (segment, tip) in tips {
-        let mark = marks.get(segment);
+    for (source, tip) in tips {
+        let mark = marks.get(source);
         if mark == Some(tip) {
             continue;
         }
@@ -676,10 +736,18 @@ fn unindexed(
             let Some(trailers) = commit.message().ok().and_then(trailers) else {
                 continue;
             };
+            // A Pin is one commit, and only of the Snapshot its ref names: anything else under
+            // `pins/` was not written by us.
+            let foreign_pin = source.strip_prefix(PIN_SOURCE).is_some_and(|pinned| {
+                pinned != trailers.id.to_string() || commit.parent_count() != 0
+            });
+            if foreign_pin {
+                continue;
+            }
 
             found.push(Unindexed {
                 id: trailers.id,
-                segment: segment.clone(),
+                source: source.clone(),
                 commit: commit.id(),
                 trigger: trailers.trigger,
                 omitted: trailers.omitted,
@@ -690,36 +758,81 @@ fn unindexed(
     Ok(found)
 }
 
-/// Index one Snapshot, its changes still to be counted. A Segment read again lost its rows first, so an
-/// identity already indexed is two commits claiming one Snapshot, and refused.
-fn insert(transaction: &rusqlite::Transaction<'_>, snapshot: &Unindexed) -> rusqlite::Result<()> {
+/// Index one copy of a Snapshot. A source read again lost its copies first, so an identity already in
+/// another Segment is two chained commits claiming one Snapshot, and refused; a Pin is a copy of its own.
+fn insert(transaction: &rusqlite::Transaction<'_>, copy: &Unindexed) -> rusqlite::Result<()> {
     transaction.execute(
-        "INSERT INTO snapshots (id, segment, commit_id, trigger, omitted, changed)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        "INSERT INTO copies (source, id, commit_id, trigger, omitted) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
-            snapshot.id.to_string(),
-            snapshot.segment,
-            snapshot.commit.to_string(),
-            snapshot.trigger,
-            i64::try_from(snapshot.omitted).unwrap_or(i64::MAX),
+            copy.source,
+            copy.id.to_string(),
+            copy.commit.to_string(),
+            copy.trigger,
+            i64::try_from(copy.omitted).unwrap_or(i64::MAX),
         ],
     )?;
 
     Ok(())
 }
 
-/// Drop every row of `segment`, returning the identities it held.
-fn remove_segment(
+/// Drop every copy `source` held, returning the identities they were of.
+fn remove_source(
     transaction: &rusqlite::Transaction<'_>,
-    segment: &str,
+    source: &str,
 ) -> rusqlite::Result<Vec<SnapshotId>> {
-    let mut statement = transaction.prepare("SELECT id FROM snapshots WHERE segment = ?1")?;
+    let mut statement = transaction.prepare("SELECT id FROM copies WHERE source = ?1")?;
     let ids = statement
-        .query_map([segment], |row| parse_id(row, 0))?
+        .query_map([source], |row| parse_id(row, 0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    transaction.execute("DELETE FROM snapshots WHERE segment = ?1", [segment])?;
+    transaction.execute("DELETE FROM copies WHERE source = ?1", [source])?;
 
     Ok(ids)
+}
+
+/// Make the Snapshot `id` what its copies say: read from its Pin while it has one, from its Segment
+/// otherwise, and gone once neither is left. Says whether it is there to be counted.
+fn resolve(transaction: &rusqlite::Transaction<'_>, id: SnapshotId) -> rusqlite::Result<bool> {
+    let mut statement = transaction.prepare(
+        "SELECT source, commit_id, trigger, omitted FROM copies WHERE id = ?1
+         ORDER BY source LIKE 'pins/%' DESC",
+    )?;
+    let copies = statement
+        .query_map([id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let Some((source, commit, trigger, omitted)) = copies.first() else {
+        transaction.execute("DELETE FROM snapshots WHERE id = ?1", [id.to_string()])?;
+        return Ok(false);
+    };
+
+    let pinned = source.starts_with(PIN_SOURCE);
+    let segment = match copies
+        .iter()
+        .find(|(source, ..)| !source.starts_with(PIN_SOURCE))
+    {
+        Some((chained, ..)) => chained.clone(),
+        // Only the Pin is left: the Segment it was taken into is still the one its moment names, every
+        // Segment this store writes being an hour (ADR 0001).
+        None => keepster_core::SegmentName::hourly(id.moment())
+            .map(|name| name.as_str().to_owned())
+            .unwrap_or_default(),
+    };
+    transaction.execute(
+        "INSERT INTO snapshots (id, segment, commit_id, trigger, omitted, changed, pinned)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)
+         ON CONFLICT (id) DO UPDATE SET
+             segment = excluded.segment, commit_id = excluded.commit_id,
+             trigger = excluded.trigger, omitted = excluded.omitted, pinned = excluded.pinned",
+        params![id.to_string(), segment, commit, trigger, omitted, pinned],
+    )?;
+
+    Ok(true)
 }
 
 /// The first indexed Snapshot after `id`.
@@ -785,7 +898,7 @@ fn recount_changes(
 }
 
 fn read_watermarks(connection: &Connection) -> rusqlite::Result<BTreeMap<String, git2::Oid>> {
-    let mut statement = connection.prepare("SELECT segment, tip FROM watermarks")?;
+    let mut statement = connection.prepare("SELECT source, tip FROM watermarks")?;
     statement
         .query_map([], |row| Ok((row.get::<_, String>(0)?, parse_oid(row, 1)?)))?
         .collect()
@@ -798,6 +911,7 @@ fn indexed_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSnapshot
         id: parse_id(row, 0)?,
         segment: row.get(1)?,
         commit: parse_oid(row, 2)?,
+        pinned: row.get(7)?,
         trigger: row.get(3)?,
         omitted: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
         changed: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),

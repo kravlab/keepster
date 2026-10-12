@@ -153,6 +153,11 @@ impl DaemonClient {
         self.send("PATCH", path, Some(body), &[]).await
     }
 
+    /// Perform a `PUT` without a body against the daemon: a resource whose address says all of it.
+    pub async fn put(&self, path: &str) -> Result<Response, ClientError> {
+        self.send("PUT", path, None, &[]).await
+    }
+
     /// Perform a `DELETE` against the daemon.
     pub async fn delete(&self, path: &str) -> Result<Response, ClientError> {
         self.send("DELETE", path, None, &[]).await

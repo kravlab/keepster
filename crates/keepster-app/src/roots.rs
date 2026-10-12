@@ -4,8 +4,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::RootId;
-use keepster_store::{Registry, RegistryEntry, RegistryError, RootRecord};
+use keepster_core::{RootId, SnapshotId};
+use keepster_store::{Registry, RegistryEntry, RegistryError, RootRecord, StoreError};
+
+use crate::snapshots;
 
 /// Why a directory could not become a Watched Root.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,10 @@ pub enum RegisterError {
 
 /// Register a directory as a Watched Root and return what the Registry now holds.
 ///
+/// A directory unwatched before is watched again under its old identity, its history decayed down the
+/// ladder meanwhile rather than frozen, so there is nothing to warn about (ticket 53). The match is on
+/// the path exactly as it was registered: the same rule that keeps moves explicit.
+///
 /// The path is made absolute but **not** canonicalised: resolving symlinks here would silently decide
 /// something ticket 49 owns — whether a Root registered through a link follows the link or its target.
 /// `now` is a parameter because the identity embeds it (ADR 0012).
@@ -72,6 +78,16 @@ pub fn register(
     let existing = registry.readable()?;
     if let Some(existing) = keepster_core::overlapping(&path, &paths_of(&existing)) {
         return Err(RegisterError::Overlaps { path, existing });
+    }
+
+    if let Some(unwatched) = registry
+        .unwatched()?
+        .into_iter()
+        .rev()
+        .find(|record| record.path == path)
+    {
+        registry.rewatch(unwatched.id)?;
+        return Ok(unwatched);
     }
 
     let record = RootRecord {
@@ -135,24 +151,39 @@ pub enum RootError {
     /// The Registry itself failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// The history could not be pinned before the Root stopped being watched.
+    #[error(transparent)]
+    Store(#[from] StoreError),
 }
 
-/// Deregister a Root, keeping its History Store — or, with `purge`, erase that store too.
+/// Deregister a Root, keeping its History Store — or, with `purge`, erase that store too — and say
+/// which Snapshot was pinned for it.
 ///
 /// Unwatching is often temporary and the history is the insurance the tool exists to provide, so
-/// erasing takes an explicit request; the watched directory itself is never touched either way.
-pub fn deregister(registry: &Registry, id: RootId, purge: bool) -> Result<(), RootError> {
-    if !registry.contains(id) {
+/// erasing takes an explicit request; the watched directory itself is never touched either way. The
+/// history kept goes on decaying down the ladder, to its newest Snapshot, pinned here first so that it
+/// survives (ticket 07) — before the Root stops being watched, so a Root never decays unpinned, and a
+/// history that cannot be pinned is not unwatched. A Root no longer watched can still be purged: `purge`
+/// is the one way to erase a history, whatever became of its directory. The caller holds the store's
+/// lock.
+pub fn deregister(
+    registry: &Registry,
+    id: RootId,
+    purge: bool,
+) -> Result<Option<SnapshotId>, RootError> {
+    let watched = registry.contains(id);
+    if !watched && !(purge && registry.holds(id)) {
         return Err(RootError::NotFound { id });
     }
 
     if purge {
         registry.purge(id)?;
-    } else {
-        registry.remove(id)?;
+        return Ok(None);
     }
+    let pinned = snapshots::pin_newest(&snapshots::location(&registry.root_dir(id)))?;
+    registry.remove(id)?;
 
-    Ok(())
+    Ok(pinned)
 }
 
 /// Record that a Root's directory is now somewhere else.

@@ -107,6 +107,7 @@ fn every_route_the_api_serves_is_described() {
         described,
         [
             "DELETE /v1/roots/{id}",
+            "DELETE /v1/roots/{id}/pins/{snapshot}",
             "GET /v1/events",
             "GET /v1/openapi.json",
             "GET /v1/roots",
@@ -114,6 +115,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/roots/{id}/config",
             "GET /v1/roots/{id}/diff",
             "GET /v1/roots/{id}/explain",
+            "GET /v1/roots/{id}/pins",
             "GET /v1/roots/{id}/snapshots",
             "GET /v1/roots/{id}/snapshots/{snapshot}/content",
             "GET /v1/roots/{id}/snapshots/{snapshot}/entries",
@@ -124,6 +126,7 @@ fn every_route_the_api_serves_is_described() {
             "POST /v1/roots/{id}/reconcile",
             "POST /v1/roots/{id}/restore",
             "POST /v1/roots/{id}/snapshots",
+            "PUT /v1/roots/{id}/pins/{snapshot}",
         ]
     );
 }
@@ -309,15 +312,18 @@ fn every_operation_has_its_own_stable_name() {
             "get_status",
             "get_version",
             "list_entries",
+            "list_pins",
             "list_roots",
             "list_snapshots",
             "move_root",
+            "pin_snapshot",
             "read_content",
             "reconcile_root",
             "register_root",
             "restore_root",
             "stream_events",
             "take_snapshot",
+            "unpin_snapshot",
             "unwatch_root",
         ]
     );

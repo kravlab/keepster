@@ -28,6 +28,7 @@ use crate::index::{self, Index, Observation};
 mod diff;
 mod error_name;
 mod maintenance;
+mod pins;
 mod restore;
 mod retention;
 
@@ -63,6 +64,9 @@ pub(crate) const OMITTED_TRAILER: &str = "Keepster-Omitted";
 /// Where a Segment's ref lives. One ref per period, and every name a leaf, because git's files backend
 /// cannot hold both `refs/x` and `refs/x/y` (ADR 0001).
 pub(crate) const SEGMENT_REFS: &str = "refs/keepster/segments";
+
+/// Where a Pin's ref lives, one per pinned Snapshot and named by it, every name a leaf (ADR 0002).
+pub(crate) const PIN_REFS: &str = "refs/keepster/pins";
 
 /// Who the store records as the author of a Snapshot.
 ///
@@ -241,6 +245,8 @@ pub struct SnapshotSummary {
     pub changed_paths: u64,
     /// With a timeline filtered by a path, how that path changed in this Snapshot.
     pub change: Option<ChangeKind>,
+    /// Whether it is pinned, and so survives Retention unconditionally (ADR 0002).
+    pub pinned: bool,
 }
 
 /// What a capture is for, beyond what it captures.
@@ -894,17 +900,7 @@ impl HistoryStore {
         found.truncate(query.limit);
 
         Ok(TimelinePage {
-            snapshots: found
-                .into_iter()
-                .map(|snapshot| SnapshotSummary {
-                    id: snapshot.id,
-                    segment: snapshot.segment,
-                    trigger: snapshot.trigger,
-                    omitted: snapshot.omitted,
-                    changed_paths: snapshot.changed,
-                    change: snapshot.change,
-                })
-                .collect(),
+            snapshots: found.into_iter().map(SnapshotSummary::from).collect(),
             more,
         })
     }
@@ -1112,6 +1108,13 @@ impl HistoryStore {
 
     /// The root tree of a Snapshot, found through the index.
     fn snapshot_tree(&self, snapshot: SnapshotId) -> Result<git2::Tree<'_>, StoreError> {
+        self.snapshot_commit(snapshot)?
+            .tree()
+            .map_err(self.failed("read"))
+    }
+
+    /// The commit the Snapshot is read from: its Pin's while it has one (ADR 0002).
+    fn snapshot_commit(&self, snapshot: SnapshotId) -> Result<git2::Commit<'_>, StoreError> {
         self.catch_up()?;
 
         let indexed = self
@@ -1121,7 +1124,6 @@ impl HistoryStore {
 
         self.repository
             .find_commit(indexed.commit)
-            .and_then(|commit| commit.tree())
             .map_err(self.failed("read"))
     }
 
@@ -2551,5 +2553,19 @@ fn entry_for(path: &WirePath, oid: git2::Oid, mode: u32) -> git2::IndexEntry {
         flags: 0,
         flags_extended: 0,
         path: path.as_str().as_bytes().to_vec(),
+    }
+}
+
+impl From<index::IndexedSnapshot> for SnapshotSummary {
+    fn from(snapshot: index::IndexedSnapshot) -> Self {
+        Self {
+            id: snapshot.id,
+            segment: snapshot.segment,
+            trigger: snapshot.trigger,
+            omitted: snapshot.omitted,
+            changed_paths: snapshot.changed,
+            change: snapshot.change,
+            pinned: snapshot.pinned,
+        }
     }
 }

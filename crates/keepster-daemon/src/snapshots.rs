@@ -25,9 +25,9 @@ use crate::roots::{self, RootAddress};
 #[into_params(parameter_in = Path)]
 pub(crate) struct SnapshotAddress {
     /// The Root's identity, in its canonical form.
-    id: String,
+    pub(crate) id: String,
     /// The Snapshot's identity, as the timeline returned it.
-    snapshot: String,
+    pub(crate) snapshot: String,
 }
 
 /// How many Snapshots a timeline page holds when the client does not say (ticket 07).
@@ -526,7 +526,8 @@ pub(crate) async fn content(
     crate::content::serve(location, snapshot, path, &headers).await
 }
 
-/// The Root a reading request is about, and where its history lives.
+/// The Root a reading request is about, and where its history lives — watched, or no longer watched
+/// and its history kept, which is read and pinned like any other (ticket 53).
 ///
 /// The Registry is held only long enough to find the directory: reads take no lock on the store
 /// (ticket 06), and they must not wait on a capture's walk either.
@@ -536,7 +537,11 @@ pub(crate) fn located(
 ) -> Result<(RootId, StoreLocation), ProblemResponse> {
     let id = roots::parse_id(id)?;
     let registry = state.registry();
-    roots::record(&registry, id)?;
+    // A watched Root is read through its record, which may be unreadable; one no longer watched has no
+    // record to read, only its history; anything else is not found, as `record` says.
+    if registry.contains(id) || !registry.holds(id) {
+        roots::record(&registry, id)?;
+    }
 
     Ok((id, snapshots::location(&registry.root_dir(id))))
 }
@@ -560,7 +565,7 @@ where
 }
 
 /// A Snapshot identity from a URL segment; anything else names no Snapshot.
-fn parse_snapshot(segment: &str) -> Result<SnapshotId, ProblemResponse> {
+pub(crate) fn parse_snapshot(segment: &str) -> Result<SnapshotId, ProblemResponse> {
     segment.parse().map_err(|_| snapshot_not_found(segment))
 }
 
@@ -623,11 +628,12 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
             .collect(),
         changed_paths: captured.changed_paths.clone().ok(),
         change: None,
+        pinned: false,
     }
 }
 
 /// How a Snapshot in the timeline appears on the wire.
-fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
+pub(crate) fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
     Snapshot {
         id: summary.id.to_string(),
         segment: summary.segment.clone(),
@@ -642,6 +648,7 @@ fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
             ChangeKind::Modified => Change::Modified,
             ChangeKind::Deleted => Change::Deleted,
         }),
+        pinned: summary.pinned,
     }
 }
 

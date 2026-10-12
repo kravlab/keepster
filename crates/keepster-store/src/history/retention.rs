@@ -5,7 +5,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::SystemTime;
 
-use keepster_core::{Ladder, SegmentContents, SegmentName, SnapshotId, Thinning, plan_retention};
+use keepster_core::{
+    Ladder, Newest, SegmentContents, SegmentName, SnapshotId, Thinning, plan_retention,
+};
 
 use super::{HistoryStore, SEGMENT_REFS, StoreError};
 use crate::index;
@@ -50,11 +52,16 @@ impl HistoryStore {
     /// A ref is moved only from the tip the pass read, so a Segment written to meanwhile is left as it
     /// is, for the next pass. The daemon keeps captures out of the pass's way with the store's lock all
     /// the same (ticket 06): the check is that a caller without it loses nothing.
-    pub fn retain(&self, ladder: &Ladder, now: SystemTime) -> Result<Retained, StoreError> {
+    pub fn retain(
+        &self,
+        ladder: &Ladder,
+        now: SystemTime,
+        newest: Newest,
+    ) -> Result<Retained, StoreError> {
         let read = self.read_segments()?;
         let contents: Vec<SegmentContents> =
             read.iter().map(|read| read.contents.clone()).collect();
-        let plan = plan_retention(&contents, now, ladder);
+        let plan = plan_retention(&contents, now, ladder, newest);
         let tips: HashMap<&SegmentName, git2::Oid> = read
             .iter()
             .map(|read| (&read.contents.name, read.tip))

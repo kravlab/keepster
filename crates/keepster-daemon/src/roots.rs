@@ -148,10 +148,10 @@ pub(crate) struct DeleteQuery {
     tag = "roots",
     params(RootAddress, DeleteQuery),
     responses(
-        (status = 204, description = "The Root is no longer watched; its history is kept unless `purge` was asked for."),
+        (status = 204, description = "The Root is no longer watched; its history is kept, its last state pinned, unless `purge` was asked for — which also erases the history of a Root no longer watched."),
         (status = 400, description = "`purge` is not a boolean.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
-        (status = 500, description = "The Registry could not be written.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "No such Root is watched — or, with `purge`, kept since it was unwatched.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The Registry could not be written, or the history could not be pinned.", body = Problem, content_type = "application/problem+json"),
     ),
 )]
 pub(crate) async fn deregister(
@@ -167,24 +167,40 @@ pub(crate) async fn deregister(
         )
     })?;
     let id = parse_id(&id)?;
-    // Erasing waits for a capture already in the store, and a capture that waited for this re-checks the
-    // Registry before it opens the store, so an erased store never comes back as an orphan. The store's
-    // lock is taken before the Registry, the one order every holder of both keeps.
-    let store = state.store_lock(id);
-    let _held = query.purge.then(|| {
-        store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    });
-    let registry = state.registry();
-    roots::deregister(&registry, id, query.purge).map_err(root_problem)?;
-    state.publish(Event::RootUnregistered {
-        root: id.to_string(),
-        purged: query.purge,
-    });
-    configuration::reload_with(&state, &registry);
+    let purge = query.purge;
 
-    Ok(StatusCode::NO_CONTENT)
+    // Off the async runtime: the store's lock may wait for a capture's walk, and pinning writes to git.
+    tokio::task::spawn_blocking(move || {
+        // Erasing waits for a capture already in the store, and a capture that waited for this
+        // re-checks the Registry before it opens the store, so an erased store never comes back as an
+        // orphan. Keeping the history pins its last state, which a Maintenance Pass must not prune under
+        // (ticket 53). The store's lock is taken before the Registry, the one order every holder of both
+        // keeps.
+        let store = state.store_lock(id);
+        let _held = store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let registry = state.registry();
+        let pinned = roots::deregister(&registry, id, purge).map_err(root_problem)?;
+        if let Some(pinned) = pinned {
+            tracing::info!(root = %id, snapshot = %pinned, "no longer watched; its last state is pinned");
+        }
+        state.publish(Event::RootUnregistered {
+            root: id.to_string(),
+            purged: purge,
+        });
+        configuration::reload_with(&state, &registry);
+
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
+    .map_err(|joined| {
+        ProblemResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::RegistryFailed,
+            joined.to_string(),
+        )
+    })?
 }
 
 /// Record that a Root's directory has moved.
@@ -460,6 +476,7 @@ fn root_problem(error: RootError) -> ProblemResponse {
         )
         .with_detail("path", path.to_string_lossy()),
         RootError::Registry(error) => registry_problem(error),
+        RootError::Store(error) => crate::snapshots::store_problem(error),
     }
 }
 

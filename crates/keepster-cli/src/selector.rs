@@ -104,7 +104,7 @@ fn duration_seconds(text: &str) -> Option<i64> {
 ///
 /// A moment always contains a `-` or a `:` and a duration ends in a unit after digits, so the three
 /// forms cannot be mistaken for one another.
-fn is_identity(text: &str) -> bool {
+pub(crate) fn is_identity(text: &str) -> bool {
     text.len() == 26
         && text.chars().all(|character| {
             character.is_ascii_digit()
