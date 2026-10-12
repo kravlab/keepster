@@ -4,6 +4,7 @@
 //! daemon's state by whether git can reproduce it, and this crate is where both halves live so that no
 //! use-case above it can write them in the wrong order.
 
+mod format;
 mod git;
 mod history;
 mod index;
@@ -17,5 +18,6 @@ pub use history::{
     Retained, SnapshotSummary, StoreError, TimelinePage, TimelineQuery, WithheldPath, Written,
     destination_naming,
 };
+pub use index::INDEX_SCHEMA_VERSION;
 pub use keepster_core::WithheldReason;
-pub use registry::{Registry, RegistryEntry, RegistryError, RootRecord};
+pub use registry::{CONTAINER_VERSION, Registry, RegistryEntry, RegistryError, RootRecord};

@@ -35,7 +35,9 @@ use keepster_core::RootId;
 
 use axum::extract::State;
 use axum::{Json, Router};
-use keepster_api::{API_VERSION, DaemonStatus, Problem, Reported, Status, VersionInfo};
+use keepster_api::{
+    API_VERSION, DaemonStatus, Problem, Reported, Status, StoreFormat, VersionInfo,
+};
 use keepster_store::Registry;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -113,6 +115,10 @@ impl Drop for RunningDaemon {
 pub async fn start(config: DaemonConfig) -> io::Result<RunningDaemon> {
     let registry = Registry::open(&config.store_base).map_err(io::Error::other)?;
     let registry = tokio::task::spawn_blocking(move || {
+        // Before anything is served, so no request races the rewrite (ADR 0010).
+        if let Err(error) = registry.upgrade() {
+            tracing::warn!(%error, "an older Registry record could not be rewritten in this version");
+        }
         recover_indexes(&registry);
         registry
     })
@@ -217,6 +223,12 @@ pub fn version_info() -> VersionInfo {
         build_version: env!("CARGO_PKG_VERSION").to_owned(),
         build_hash: build_hash().to_owned(),
         api_version: API_VERSION.to_owned(),
+        store_format: Some(StoreFormat {
+            container: keepster_store::CONTAINER_VERSION,
+            content: keepster_core::ContentFormat::CURRENT.number(),
+            sidecar: keepster_core::SIDECAR_VERSION,
+            index: keepster_store::INDEX_SCHEMA_VERSION,
+        }),
     }
 }
 

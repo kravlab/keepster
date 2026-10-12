@@ -247,7 +247,8 @@ fn ended(job: &Job) -> u8 {
                 }
                 for reference in &result.left_alone {
                     eprintln!(
-                        "keepster: warning: {reference} names no commit and was left as it is"
+                        "keepster: warning: {reference} cannot be read by this build and was left as \
+                         it is: whatever it holds was not forgotten"
                     );
                 }
             }

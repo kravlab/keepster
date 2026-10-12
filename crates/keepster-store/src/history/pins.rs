@@ -75,6 +75,14 @@ impl HistoryStore {
             .collect())
     }
 
+    /// Every Segment, and every Pin as `pins/` and its identity, in a content format this build cannot
+    /// read — a newer one: their Snapshots are listed nowhere, so they are named here (ADR 0010).
+    pub fn unreadable(&self) -> Result<Vec<String>, StoreError> {
+        self.catch_up()?;
+
+        self.index()?.unreadable()
+    }
+
     /// Which Snapshot the Pin at `reference` holds, if it holds one as a Pin does: one parentless commit
     /// carrying the Snapshot's own trailers.
     fn pinned_at(&self, reference: &str) -> Result<Option<SnapshotId>, StoreError> {

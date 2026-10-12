@@ -37,10 +37,20 @@ pub(crate) async fn list(
 ) -> Result<Json<Pins>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
 
-    let pinned = blocking(move || snapshots::pins(&location)).await?;
+    let (pinned, unreadable) = blocking(move || {
+        Ok((
+            snapshots::pins(&location)?,
+            snapshots::unreadable(&location)?,
+        ))
+    })
+    .await?;
 
     Ok(Json(Pins {
         snapshots: pinned.iter().map(describe_summary).collect(),
+        unreadable: unreadable
+            .into_iter()
+            .filter(|source| source.starts_with("pins/"))
+            .collect(),
     }))
 }
 

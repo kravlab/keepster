@@ -1876,7 +1876,7 @@
         "allOf": [
           {
             "$ref": "#/components/schemas/VersionInfo",
-            "description": "Which build and which API, the same three fields the version handshake returns."
+            "description": "Which build, which API and which store format: the fields the version handshake returns."
           },
           {
             "type": "object",
@@ -2976,7 +2976,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Forget: refs among the Segments' and Pins' names that name no commit, which it could not read and\nleft as they are — not written by Keepster, and named so that nothing is passed over in silence."
+            "description": "Forget: refs among the Segments' and Pins' names this build could not read, and so left as they\nare — naming no commit, or written by a newer Keepster in a content format this build does not\nknow — named because what they hold was not forgotten, and nothing is passed over in silence."
           },
           "reclaimed_bytes": {
             "type": [
@@ -3139,6 +3139,13 @@
               "$ref": "#/components/schemas/Snapshot"
             },
             "description": "The pinned Snapshots, newest first."
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The Pins, as `pins/` and the Snapshot's identity, written by a newer Keepster in a format this\nbuild cannot read: pinned still, and not listed above. Absent while there are none."
           }
         }
       },
@@ -3533,6 +3540,15 @@
               "null"
             ],
             "description": "The machine-readable reason behind a state that is not `Watching`, so a client can branch on it\nrather than on prose. Absent while the Root is `Watching`."
+          },
+          "unrecognized_records": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many records of the last Snapshot's metadata a newer Keepster wrote that this build does not\nunderstand: skipped, and not carried into the Snapshots this build takes (ADR 0010). Absent\nwhile there are none.",
+            "minimum": 0
           }
         }
       },
@@ -3717,6 +3733,42 @@
           }
         }
       },
+      "StoreFormat": {
+        "type": "object",
+        "description": "The four version numbers of the store, each governing something disjoint (ADR 0010): only the\ncontainer's can ever be rewritten, history is never migrated, and the index is rebuilt.",
+        "required": [
+          "container",
+          "content",
+          "sidecar",
+          "index"
+        ],
+        "properties": {
+          "container": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The shape of a Root's directory in the store, recorded in its `root.toml` — the one number\nrewritten automatically when it moves. A newer one makes the Root `unavailable` with\n`store_too_new`.",
+            "minimum": 0
+          },
+          "content": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How Snapshots are laid out in a Segment, recorded with each Segment. Each keeps the one it was\nwritten in; one newer than this build's is listed as unreadable, and capture carries on in a\nSegment of this build's own.",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The derived index's schema: any other one is rebuilt, never migrated.",
+            "minimum": 0
+          },
+          "sidecar": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The grammar of a Snapshot's metadata sidecar. Its record types only ever grow: one this build\ndoes not know is skipped and reported.",
+            "minimum": 0
+          }
+        }
+      },
       "Timeline": {
         "type": "object",
         "description": "One page of a Root's chronology, as `GET /v1/roots/{id}/snapshots` serves it.\n\nNewest first, and paged by cursor rather than offset: the list grows at one end and erodes at the\nother, so an offset would shift under the reader in both directions (ticket 07).",
@@ -3737,6 +3789,13 @@
               "$ref": "#/components/schemas/Snapshot"
             },
             "description": "The Snapshots on this page, newest first."
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The Segments, and the Pins as `pins/` and the Snapshot's identity, written by a newer Keepster in\na format this build cannot read. Their Snapshots are on no page; they are not lost, and a build\nthat reads their format lists them again. Absent while there are none."
           }
         }
       },
@@ -3768,6 +3827,17 @@
           "build_version": {
             "type": "string",
             "description": "The product version of this build. The only version a user cites; it implies nothing about\nthe API version or the store format, which move independently (ticket 27)."
+          },
+          "store_format": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StoreFormat",
+                "description": "The on-disk formats this build writes and reads up to. Absent from a daemon older than the\nfield, which says nothing rather than something false."
+              }
+            ]
           }
         }
       },

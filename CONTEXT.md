@@ -101,6 +101,13 @@ changing the configured period affects only Segments created afterwards, so a st
 periods indefinitely.
 _Avoid_: segment size, granularity, bucket width
 
+**Content Format**:
+How a Segment's Snapshots are laid out, recorded in the Segment's root commit. Like the Segment Period, a property
+of the Segment fixed when it is created: a build writes its own into new Segments, reads every one up to its own,
+and never migrates one. A Segment in a newer format is unreadable to an older build — listed as such, never
+rewritten — and capture carries on beside it in a sibling: a Segment of the same period in the build's own format.
+_Avoid_: store version, schema, migration
+
 **Retention Ladder**:
 The ordered list of Tiers that expresses a Root's Retention, from the newest and densest to the oldest and
 sparsest.

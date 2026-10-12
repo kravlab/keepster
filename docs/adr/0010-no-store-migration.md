@@ -43,6 +43,13 @@ store may hold a mix indefinitely. Content format is the same shape of fact.
   with `store_too_new`, because neither reading nor writing is safe when the ref namespace is unknown. A Segment
   newer than the daemon costs only that Segment: capture continues into a new Segment of the daemon's own format,
   so the insurance keeps working forward while some history is temporarily opaque.
+- **A period may hold one Segment per format.** No capture appends to a Segment of another format, so the first
+  capture in a period whose Segment holds another one opens the period's sibling in its own, named
+  `<period>.<format>` (`2026-09-30T14.2`): it sorts inside its period, stays a leaf, and is found again without
+  counting. Every commit carries the trailer, so a Segment thinned of its root and a Pin standing alone still say
+  their format; and since no build appends across formats, a commit that names its format speaks for its whole
+  Segment. A reader asks the tip and walks to the root only when the tip does not say — a Segment written before
+  the trailer existed, which is the first format.
 - **`Unavailable` widens.** It was defined through an unreachable directory; its operative meaning — nothing can be
   captured, the Root is never deregistered, the store is kept — covers a store this build cannot open just as well.
   `Degraded` does not fit, because it promises that watching continues on worse terms.

@@ -36,6 +36,14 @@ pub fn write_human(
         daemon.version.build_version, daemon.version.build_hash
     )?;
     writeln!(out, "  api          {}", daemon.version.api_version)?;
+    match &daemon.version.store_format {
+        Some(format) => writeln!(
+            out,
+            "  store format container {}, content {}, sidecar {}, index {}",
+            format.container, format.content, format.sidecar, format.index
+        )?,
+        None => writeln!(out, "  store format unknown")?,
+    }
     writeln!(out, "  pid          {}", daemon.pid)?;
     writeln!(out, "  uptime       {}s", daemon.uptime_seconds)?;
     writeln!(out, "  autostart    {}", reported(daemon.autostart))?;
@@ -73,6 +81,13 @@ pub fn write_roots(roots: &[Root], out: &mut impl Write) -> io::Result<()> {
         // Ticket 07: a Root whose directory is gone is shown with its last known path and the exact
         // command that repairs it, because a move is only ever explicit — the daemon cannot tell a move
         // from a deletion and must not guess.
+        if let Some(records) = root.unrecognized_records {
+            writeln!(
+                out,
+                "      {records} metadata record(s) from a newer Keepster are not understood by this \
+                 build and are not carried forward"
+            )?;
+        }
         if root.state_code.as_deref() == Some("root_missing") {
             writeln!(
                 out,

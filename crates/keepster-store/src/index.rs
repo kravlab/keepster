@@ -29,7 +29,10 @@ use crate::history::{StoreError, mode_changes};
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-const SCHEMA_VERSION: i64 = 4;
+pub const INDEX_SCHEMA_VERSION: u32 = 5;
+
+/// The same, as SQLite reads it.
+const SCHEMA_VERSION: i64 = INDEX_SCHEMA_VERSION as i64;
 
 /// The schema. `STRICT` so a value of the wrong type is an error rather than a silent coercion; no
 /// row ids, because every table already has a natural key.
@@ -71,6 +74,10 @@ const SCHEMA: &str = "
     CREATE TABLE watermarks (
         source  TEXT NOT NULL PRIMARY KEY,
         tip     TEXT NOT NULL
+    ) STRICT, WITHOUT ROWID;
+
+    CREATE TABLE unreadable (
+        source  TEXT NOT NULL PRIMARY KEY
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE observed (
@@ -388,8 +395,22 @@ impl Index {
             }
         }
 
-        let found =
+        let (found, unreadable) =
             unindexed(repository, &tips, &from).map_err(git_failed_at(repository, "read"))?;
+        // Whether a source is readable is learned again whenever it moved, so a source rewritten,
+        // dropped or read anew loses what was known of it first.
+        for source in marks.keys().chain(tips.keys()) {
+            if marks.get(source) != tips.get(source) {
+                transaction
+                    .execute("DELETE FROM unreadable WHERE source = ?1", [source])
+                    .map_err(index_failed(&path, "written"))?;
+            }
+        }
+        for source in &unreadable {
+            transaction
+                .execute("INSERT INTO unreadable (source) VALUES (?1)", [source])
+                .map_err(index_failed(&path, "written"))?;
+        }
         for copy in &found {
             insert(&transaction, copy).map_err(index_failed(&path, "written"))?;
             touched.insert(copy.id);
@@ -509,6 +530,20 @@ impl Index {
 
         statement
             .query_map([], indexed_snapshot)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(self.failed("read"))
+    }
+
+    /// Every Segment and Pin in a content format this build cannot read, by the source the index names
+    /// it: unreadable, and reported wherever its Snapshots would have been listed (ADR 0010).
+    pub(crate) fn unreadable(&self) -> Result<Vec<String>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT source FROM unreadable ORDER BY source")
+            .map_err(self.failed("read"))?;
+
+        statement
+            .query_map([], |row| row.get(0))
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
             .map_err(self.failed("read"))
     }
@@ -719,17 +754,27 @@ fn source_tips(repository: &git2::Repository) -> Result<BTreeMap<String, git2::O
     Ok(tips)
 }
 
-/// Every Snapshot reachable from a Segment's tip and not from its watermark.
+/// Every Snapshot reachable from a Segment's tip and not from its watermark — and every source moved
+/// since that this build cannot read.
 fn unindexed(
     repository: &git2::Repository,
     tips: &BTreeMap<String, git2::Oid>,
     marks: &BTreeMap<String, git2::Oid>,
-) -> Result<Vec<Unindexed>, git2::Error> {
+) -> Result<(Vec<Unindexed>, Vec<String>), git2::Error> {
     let mut found = Vec::new();
+    let mut unreadable = Vec::new();
 
     for (source, tip) in tips {
         let mark = marks.get(source);
         if mark == Some(tip) {
+            continue;
+        }
+        // A Segment or Pin in a format newer than this build is opaque: indexing it would put
+        // Snapshots in the timeline that nothing here can read (ADR 0010).
+        let readable = crate::format::of(repository, *tip)?
+            .is_some_and(keepster_core::ContentFormat::is_readable);
+        if !readable {
+            unreadable.push(source.clone());
             continue;
         }
 
@@ -766,7 +811,7 @@ fn unindexed(
         }
     }
 
-    Ok(found)
+    Ok((found, unreadable))
 }
 
 /// Index one copy of a Snapshot. A source read again lost its copies first, so an identity already in

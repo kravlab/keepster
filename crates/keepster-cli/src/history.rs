@@ -83,6 +83,10 @@ async fn timeline(
 
         let page: serde_json::Value = answered(client.get(&url).await)?;
         let next = page["next_cursor"].as_str().map(ToOwned::to_owned);
+        // Said once, with the first page: history this build cannot read is not history that is gone.
+        if cursor.is_none() && since.is_none() {
+            warn_unreadable(&page["unreadable"]);
+        }
         for item in page["snapshots"].as_array().into_iter().flatten() {
             // Identities order by time, so the first one not newer than `since` ends what is new.
             if since.is_some_and(|since| item["id"].as_str().is_none_or(|id| id <= since)) {
@@ -97,6 +101,24 @@ async fn timeline(
     }
 
     Ok(items)
+}
+
+/// Say which Segments and Pins a newer Keepster wrote that this build cannot list (ADR 0010): history
+/// this build cannot read is not history that is gone.
+pub(crate) fn warn_unreadable(unreadable: &serde_json::Value) {
+    let names: Vec<&str> = unreadable
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    if !names.is_empty() {
+        eprintln!(
+            "keepster: warning: history written by a newer Keepster cannot be read by this build and is \
+             not listed: {}",
+            names.join(", ")
+        );
+    }
 }
 
 /// How many Snapshots `--follow` prints before it starts following, unless `-n` says otherwise — what

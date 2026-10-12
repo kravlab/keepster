@@ -133,6 +133,7 @@ pub fn timeline(
         None => Ok(TimelinePage {
             snapshots: Vec::new(),
             more: false,
+            unreadable: Vec::new(),
         }),
     }
 }
@@ -175,6 +176,15 @@ pub fn unpin(location: &StoreLocation, id: SnapshotId) -> Result<bool, StoreErro
 pub fn pins(location: &StoreLocation) -> Result<Vec<SnapshotSummary>, StoreError> {
     match open_for_reading(location)? {
         Some(store) => store.pins(),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The Segments and Pins of a Root's history that this build cannot read, written by a newer one: none
+/// for a Root that never captured anything.
+pub fn unreadable(location: &StoreLocation) -> Result<Vec<String>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.unreadable(),
         None => Ok(Vec::new()),
     }
 }

@@ -18,11 +18,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
-    CapturePolicy, ChangeKind, Header, IGNORE_FILE, Incomplete, Kind, ModeKind, ModeTable, Parsed,
-    Record, RootId, RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId, SpecialKind, Trigger,
-    Verdict, Verify, WithheldReason, ignore_file_rules,
+    CapturePolicy, ChangeKind, ContentFormat, Header, IGNORE_FILE, Incomplete, Kind, ModeKind,
+    ModeTable, Parsed, Record, RootId, RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId,
+    SpecialKind, Trigger, Verdict, Verify, WithheldReason, ignore_file_rules,
 };
 
+use crate::format;
 use crate::index::{self, Index, Observation};
 
 mod diff;
@@ -69,6 +70,10 @@ pub(crate) const OMITTED_TRAILER: &str = "Keepster-Omitted";
 /// Snapshot Forget touched — one it may have left empty — is marked, in the Snapshot itself so that an
 /// index rebuild keeps the mark.
 pub(crate) const FORGOTTEN_TRAILER: &str = "Keepster-Forgotten";
+
+/// What the trailer naming the content format a Snapshot was written in is called (ADR 0010): on every
+/// commit, so a Segment thinned of its root and a Pin standing alone still say it.
+pub(crate) const FORMAT_TRAILER: &str = "Keepster-Format";
 
 /// Where a Segment's ref lives. One ref per period, and every name a leaf, because git's files backend
 /// cannot hold both `refs/x` and `refs/x/y` (ADR 0001).
@@ -326,6 +331,9 @@ pub struct TimelinePage {
     pub snapshots: Vec<SnapshotSummary>,
     /// Whether older Snapshots match beyond this page.
     pub more: bool,
+    /// The Segments, and the Pins as `pins/` and their identity, in a content format this build cannot
+    /// read — a newer one: their Snapshots are on no page, because nothing here can read them (ADR 0010).
+    pub unreadable: Vec<String>,
 }
 
 /// How deep a listing of entries goes.
@@ -664,8 +672,8 @@ impl HistoryStore {
             verify,
             record_unchanged,
         } = *request;
-        let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
-        let reference = format!("{SEGMENT_REFS}/{segment}");
+        let segment = self.segment_at(now)?;
+        let reference = retention::segment_ref(&segment);
         let (parent, baseline) = self.parent_and_baseline(&segment, &reference)?;
         let baseline_tree = match &baseline {
             Some(commit) => Some(commit.tree().map_err(self.failed("read"))?),
@@ -725,8 +733,10 @@ impl HistoryStore {
              {SNAPSHOT_TRAILER}: {id}\n\
              {ROOT_TRAILER}: {root_id}\n\
              {TRIGGER_TRAILER}: {trigger}\n\
-             {OMITTED_TRAILER}: {}\n",
-            walked.incomplete.len()
+             {OMITTED_TRAILER}: {}\n\
+             {FORMAT_TRAILER}: {}\n",
+            walked.incomplete.len(),
+            ContentFormat::CURRENT,
         );
         let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
 
@@ -762,23 +772,45 @@ impl HistoryStore {
         Ok(walked.pass(Some(snapshot), index_lag))
     }
 
+    /// The Segment a capture at `now` writes to: its hour's own, unless that holds another content
+    /// format — then the hour's sibling in this build's, since no capture ever appends across formats
+    /// (ADR 0010). Once the sibling exists, the hour's captures stay in it.
+    fn segment_at(&self, now: SystemTime) -> Result<SegmentName, StoreError> {
+        let period = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
+        let sibling = period.in_format(ContentFormat::CURRENT);
+        if self
+            .segment_tip(&retention::segment_ref(&sibling))?
+            .is_some()
+        {
+            return Ok(sibling);
+        }
+
+        match self.segment_tip(&retention::segment_ref(&period))? {
+            Some(tip)
+                if format::of(&self.repository, tip.id()).map_err(self.failed("read"))?
+                    != Some(ContentFormat::CURRENT) =>
+            {
+                Ok(sibling)
+            }
+            _ => Ok(period),
+        }
+    }
+
     /// The Snapshot a capture at `segment` would follow — its *parent*, the tip of that Segment — and the
     /// one whose tree it starts from — its *baseline*.
     ///
     /// Two different questions, and conflating them is what ADR 0004 warns about. The parent is the tip
     /// of this Segment, so a new Segment starts parentless (ADR 0001); the baseline is the newest Snapshot
-    /// anywhere at or before it, because the previous Snapshot's tree must be readable at every capture,
-    /// including the first of a new Segment.
+    /// this build reads anywhere at or before it, because the previous Snapshot's tree must be readable
+    /// at every capture, including the first of a new Segment — and because a period may hold a sibling
+    /// in another format whose newest Snapshot is newer than this Segment's tip (ADR 0010).
     fn parent_and_baseline(
         &self,
         segment: &SegmentName,
         reference: &str,
     ) -> Result<(Option<git2::Commit<'_>>, Option<git2::Commit<'_>>), StoreError> {
         let parent = self.segment_tip(reference)?;
-        let baseline = match &parent {
-            Some(parent) => Some(parent.clone()),
-            None => self.newest_snapshot_before(segment)?,
-        };
+        let baseline = self.newest_snapshot_before(segment)?;
 
         Ok((parent, baseline))
     }
@@ -914,6 +946,7 @@ impl HistoryStore {
         Ok(TimelinePage {
             snapshots: found.into_iter().map(SnapshotSummary::from).collect(),
             more,
+            unreadable: self.index()?.unreadable()?,
         })
     }
 
@@ -1488,11 +1521,13 @@ impl HistoryStore {
             .map(|error| format!("the evidence for the next pass could not be kept: {error}"))
     }
 
-    /// The newest Snapshot in any Segment at or before `segment`.
+    /// The newest Snapshot this build can read in any Segment at or before `segment`'s period.
     ///
-    /// Segment names sort chronologically as text (ADR 0001), so "the Snapshot before this one" is the
-    /// tip of the greatest ref name that does not exceed the current Segment — which is how the baseline
-    /// survives an hour boundary.
+    /// Segment names sort chronologically as text (ADR 0001), so "the Snapshot before this one" is in
+    /// the greatest period that does not exceed the current one — which is how the baseline survives an
+    /// hour boundary. A period may hold Segments of several formats (ADR 0010): the newest Snapshot
+    /// among those this build reads is the one, and one only a newer build reads is passed over, so the
+    /// baseline is never a tree this build would misread.
     fn newest_snapshot_before(
         &self,
         segment: &SegmentName,
@@ -1502,29 +1537,63 @@ impl HistoryStore {
             .references_glob(&format!("{SEGMENT_REFS}/*"))
             .map_err(self.failed("read"))?;
 
-        let mut newest: Option<String> = None;
+        let mut periods: BTreeMap<SegmentName, Vec<git2::Commit<'_>>> = BTreeMap::new();
         for reference in references {
             let reference = reference.map_err(self.failed("read"))?;
-            // A ref name that is not UTF-8 was not written by us, since every Segment name is a
-            // calendar hour, so it names no Segment and is passed over.
-            let Ok(name) = reference.name().map(ToOwned::to_owned) else {
+            // A ref whose name is no Segment's, or which names no commit, was not written by us.
+            let Some(name) = reference
+                .name()
+                .ok()
+                .and_then(|name| name.rsplit('/').next())
+                .and_then(SegmentName::parse)
+            else {
                 continue;
             };
-            let Some(period) = name.rsplit('/').next() else {
-                continue;
+            let tip = match reference.peel_to_commit() {
+                Ok(tip) => tip,
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        git2::ErrorCode::Peel | git2::ErrorCode::NotFound
+                    ) =>
+                {
+                    continue;
+                }
+                Err(source) => return Err(self.failed("read")(source)),
             };
-
-            if period <= segment.as_str()
-                && newest.as_deref().is_none_or(|best| name.as_str() > best)
-            {
-                newest = Some(name);
+            if name.period() <= segment.period() {
+                periods.entry(name.period()).or_default().push(tip);
             }
         }
 
-        match newest {
-            Some(name) => self.segment_tip(&name),
-            None => Ok(None),
+        for tips in periods.into_values().rev() {
+            let mut newest: Option<(SnapshotId, git2::Commit<'_>)> = None;
+            for tip in tips {
+                if !self.is_readable(tip.id())? {
+                    continue;
+                }
+                let Some(id) = tip.message().ok().and_then(index::trailers).map(|t| t.id) else {
+                    continue;
+                };
+                if newest.as_ref().is_none_or(|(best, _)| id > *best) {
+                    newest = Some((id, tip));
+                }
+            }
+            if let Some((_, tip)) = newest {
+                return Ok(Some(tip));
+            }
         }
+
+        Ok(None)
+    }
+
+    /// Whether this build reads the Segment or Pin whose tip is `tip`: whether it is in a format from the
+    /// first to this build's own. One in any other is unreadable — nothing reads it, nothing rewrites it,
+    /// and it costs only its own history (ADR 0010).
+    fn is_readable(&self, tip: git2::Oid) -> Result<bool, StoreError> {
+        Ok(format::of(&self.repository, tip)
+            .map_err(self.failed("read"))?
+            .is_some_and(keepster_core::ContentFormat::is_readable))
     }
 
     /// The newest Snapshot in a Segment, or nothing if the Segment does not exist yet.

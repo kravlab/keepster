@@ -70,3 +70,56 @@ fn a_record_being_rewritten_is_never_read_half_written() {
         "a completed write leaves no temporary file behind, found {leftovers:?}"
     );
 }
+
+#[test]
+fn a_record_from_an_older_container_is_rewritten_in_this_one_and_read_as_it_was() {
+    // ADR 0010: the container version is the only one rewritten automatically — small, atomic and not
+    // history. Every one older than this build's is read and then written back in its own.
+    let base = tempfile::tempdir().expect("a temporary store base");
+    let registry = Registry::open(base.path()).expect("an empty registry");
+    let id = RootId::generate(SystemTime::UNIX_EPOCH);
+    let dir = registry.root_dir(id);
+    std::fs::create_dir_all(&dir).expect("its directory");
+    let record = dir.join("root.toml");
+    std::fs::write(
+        &record,
+        format!("version = 0\nid = \"{id}\"\npath = \"/project\"\n"),
+    )
+    .expect("an older record");
+
+    let entries = registry.list().expect("a listing");
+    assert_eq!(
+        entries[0].record.as_ref().expect("readable"),
+        &RootRecord {
+            id,
+            path: PathBuf::from("/project"),
+        }
+    );
+    assert!(
+        std::fs::read_to_string(&record)
+            .expect("there")
+            .contains("version = 0"),
+        "reading writes nothing"
+    );
+
+    assert_eq!(registry.upgrade().expect("upgraded"), 1);
+
+    assert_eq!(
+        registry.list().expect("a listing")[0]
+            .record
+            .as_ref()
+            .expect("readable"),
+        entries[0].record.as_ref().expect("readable"),
+        "it describes what it did"
+    );
+    assert_eq!(registry.upgrade().expect("upgraded"), 0, "once");
+    let rewritten = std::fs::read_to_string(&record).expect("still there");
+    assert!(
+        rewritten.contains(&format!("version = {}", keepster_store::CONTAINER_VERSION)),
+        "{rewritten}"
+    );
+    assert!(
+        !dir.join("root.toml.new").exists(),
+        "replaced atomically, nothing left beside it"
+    );
+}

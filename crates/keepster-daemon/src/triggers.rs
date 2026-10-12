@@ -87,6 +87,9 @@ pub(crate) struct Activity {
     pub(crate) followed: u64,
     /// When the last pass ran — the last time the followed targets were covered.
     pub(crate) followed_at: Option<std::time::SystemTime>,
+    /// How many records of the previous Snapshot's metadata the last pass did not understand, and so
+    /// could not carry forward (ADR 0010).
+    pub(crate) unrecognized: u64,
 }
 
 /// How a Root's watcher stands.
@@ -290,6 +293,7 @@ fn start(
 fn record_pass(activity: &mut Activity, trigger: Trigger, passed: &Passed) {
     activity.coarse_mtime = passed.coarse_mtime;
     activity.followed = passed.followed;
+    activity.unrecognized = passed.unrecognized;
     activity.followed_at = Some(crate::roots::now());
     if trigger == Trigger::Reconcile {
         activity.reconciled = true;
@@ -564,6 +568,8 @@ struct Passed {
     incomplete: bool,
     /// How many links it followed.
     followed: u64,
+    /// How many records of the previous Snapshot's metadata it did not understand.
+    unrecognized: u64,
 }
 
 impl From<&keepster_store::Pass> for Passed {
@@ -572,6 +578,7 @@ impl From<&keepster_store::Pass> for Passed {
             coarse_mtime: pass.coarse_mtime,
             incomplete: pass.incomplete > 0,
             followed: pass.followed,
+            unrecognized: u64::try_from(pass.unrecognized.len()).unwrap_or(u64::MAX),
         }
     }
 }
@@ -633,4 +640,32 @@ fn lock(activity: &Mutex<Activity>) -> MutexGuard<'_, Activity> {
     activity
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use keepster_core::Trigger;
+
+    use super::{Activity, Passed, record_pass};
+
+    #[test]
+    fn records_the_last_pass_could_not_understand_are_counted_until_one_understands_them_all() {
+        // ADR 0010: an unknown sidecar record is skipped and reported — `status` says so per Root.
+        let mut activity = Activity::default();
+        let passed = |unrecognized| Passed {
+            coarse_mtime: false,
+            incomplete: false,
+            followed: 0,
+            unrecognized,
+        };
+
+        record_pass(&mut activity, Trigger::Manual, &passed(2));
+        assert_eq!(activity.unrecognized, 2);
+
+        record_pass(&mut activity, Trigger::Manual, &passed(0));
+        assert_eq!(
+            activity.unrecognized, 0,
+            "the last pass's, not a running total"
+        );
+    }
 }

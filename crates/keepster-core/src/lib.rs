@@ -41,7 +41,7 @@ pub use rules::{
     Classification, IGNORE_FILE, InvalidPattern, Kind, Level, PathGlob, Rule, RuleOrigin, RuleSet,
     UnreachableNegation, ignore_file_rules,
 };
-pub use segment::{SegmentName, UnnameableMoment};
+pub use segment::{ContentFormat, SegmentName, UnnameableMoment};
 pub use sidecar::{
     Header, Incomplete, ModeKind, ModeTable, Parsed, Record, SIDECAR, SIDECAR_VERSION, Sidecar,
     SidecarError, SpecialKind, WithheldReason,

@@ -36,7 +36,8 @@ impl HistoryStore {
     /// Every Segment Retention may act on, with its Snapshots oldest first.
     ///
     /// A ref under the Segments whose name is no calendar period, or whose chain holds a commit without
-    /// a Snapshot's trailers, was not written by this product, and Retention leaves it as it is.
+    /// a Snapshot's trailers, was not written by this product, and Retention leaves it as it is — as it
+    /// does a Segment in a content format newer than this build (ADR 0010).
     pub fn segments(&self) -> Result<Vec<SegmentContents>, StoreError> {
         Ok(self
             .read_segments()?
@@ -121,6 +122,11 @@ impl HistoryStore {
                 .peel_to_commit()
                 .map_err(self.failed("read"))?
                 .id();
+            // A Segment in a format newer than this build is not its to judge, let alone rewrite
+            // (ADR 0010): the build that wrote it retires it.
+            if !self.is_readable(tip)? {
+                continue;
+            }
             let mut snapshots = Vec::new();
             let mut foreign = false;
             for commit in self.chain(tip)? {

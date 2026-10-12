@@ -27,8 +27,9 @@ pub struct Forgotten {
     /// The removed paths whose file in the Working Tree still holds a removed version: the next
     /// Snapshot would capture it again, unless the path is excluded from now on.
     pub still_on_disk: Vec<RootPath>,
-    /// Refs under the Segments' or the Pins' names that name no commit, and so could not be read, let
-    /// alone rewritten: not ours, and reported rather than passed over in silence.
+    /// Refs under the Segments' or the Pins' names that this build could not read, let alone rewrite —
+    /// naming no commit, or holding a content format newer than its own (ADR 0010) — so whatever they
+    /// hold is still there: reported rather than passed over in silence.
     pub left_alone: Vec<String>,
 }
 
@@ -43,9 +44,12 @@ struct Filtered {
     incomplete_removed: u64,
 }
 
-/// Every source of Snapshots, and the refs among their names that name no commit.
+/// Every source of Snapshots, and the refs among their names this build cannot read.
 struct Sources {
     sources: Vec<Source>,
+    /// The sources in a content format newer than this build's: never rewritten, but what they hold is
+    /// still held.
+    opaque: Vec<Source>,
     left_alone: Vec<String>,
 }
 
@@ -99,6 +103,7 @@ impl HistoryStore {
         let Sources {
             sources,
             left_alone,
+            ..
         } = self.sources()?;
         let mut filter = Filter::new(self, rule, Writes::Trees);
         // Only the sources holding a matching path are rewritten, and only they are steps: a filtered
@@ -240,6 +245,7 @@ impl HistoryStore {
     /// as well: what a secret is in matters less than that it goes.
     fn sources(&self) -> Result<Sources, StoreError> {
         let mut sources = Vec::new();
+        let mut opaque = Vec::new();
         let mut left_alone = Vec::new();
         for (refs, chained) in [(SEGMENT_REFS, true), (PIN_REFS, false)] {
             let references = self
@@ -253,17 +259,24 @@ impl HistoryStore {
                     left_alone.push(name);
                     continue;
                 };
-                sources.push(Source {
+                let source = Source {
                     reference: name,
                     tip,
                     commits: if chained { self.chain(tip)? } else { vec![tip] },
                     chained,
-                });
+                };
+                if self.is_readable(tip)? {
+                    sources.push(source);
+                } else {
+                    left_alone.push(source.reference.clone());
+                    opaque.push(source);
+                }
             }
         }
 
         Ok(Sources {
             sources,
+            opaque,
             left_alone,
         })
     }
@@ -272,7 +285,10 @@ impl HistoryStore {
     fn blobs_held(&self) -> Result<HashSet<git2::Oid>, StoreError> {
         let mut held = HashSet::new();
         let mut seen = HashSet::new();
-        for source in self.sources()?.sources {
+        let Sources {
+            sources, opaque, ..
+        } = self.sources()?;
+        for source in sources.into_iter().chain(opaque) {
             for commit in source.commits {
                 let tree = self.tree_of(commit)?;
                 self.collect_blobs(tree, &mut seen, &mut held)?;

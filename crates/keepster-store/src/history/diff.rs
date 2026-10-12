@@ -9,13 +9,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use keepster_core::{
-    CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SegmentName, SnapshotId,
-};
+use keepster_core::{CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SnapshotId};
 
 use super::{
-    HistoryStore, IncompletePath, ModeChange, SEGMENT_REFS, StoreError, WithheldReason,
-    mode_changes, mode_kind,
+    HistoryStore, IncompletePath, ModeChange, StoreError, WithheldReason, mode_changes, mode_kind,
 };
 
 /// The size past which a file's versions are not compared line by line: 8 MiB, either side.
@@ -354,8 +351,8 @@ impl HistoryStore {
         policy: &CapturePolicy,
         now: SystemTime,
     ) -> Result<(git2::Tree<'_>, Working), StoreError> {
-        let segment = SegmentName::hourly(now).map_err(StoreError::UnnameableMoment)?;
-        let reference = format!("{SEGMENT_REFS}/{segment}");
+        let segment = self.segment_at(now)?;
+        let reference = super::retention::segment_ref(&segment);
         let (_, baseline) = self.parent_and_baseline(&segment, &reference)?;
         let baseline_tree = match &baseline {
             Some(commit) => Some(commit.tree().map_err(self.failed("read"))?),

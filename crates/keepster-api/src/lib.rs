@@ -44,6 +44,30 @@ pub struct VersionInfo {
     pub build_hash: String,
     /// The API version, `v1` for this build.
     pub api_version: String,
+    /// The on-disk formats this build writes and reads up to. Absent from a daemon older than the
+    /// field, which says nothing rather than something false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_format: Option<StoreFormat>,
+}
+
+/// The four version numbers of the store, each governing something disjoint (ADR 0010): only the
+/// container's can ever be rewritten, history is never migrated, and the index is rebuilt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StoreFormat {
+    /// The shape of a Root's directory in the store, recorded in its `root.toml` — the one number
+    /// rewritten automatically when it moves. A newer one makes the Root `unavailable` with
+    /// `store_too_new`.
+    pub container: u32,
+    /// How Snapshots are laid out in a Segment, recorded with each Segment. Each keeps the one it was
+    /// written in; one newer than this build's is listed as unreadable, and capture carries on in a
+    /// Segment of this build's own.
+    pub content: u32,
+    /// The grammar of a Snapshot's metadata sidecar. Its record types only ever grow: one this build
+    /// does not know is skipped and reported.
+    pub sidecar: u32,
+    /// The derived index's schema: any other one is rebuilt, never migrated.
+    pub index: u32,
 }
 
 /// The whole health surface, as `GET /v1/status` serves it and as `keepster status --json` prints it
@@ -65,7 +89,7 @@ pub struct Status {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DaemonStatus {
-    /// Which build and which API, the same three fields the version handshake returns.
+    /// Which build, which API and which store format: the fields the version handshake returns.
     #[serde(flatten)]
     pub version: VersionInfo,
     /// The daemon's process id, informational only — the pid file's lock, not its content, is the
@@ -170,6 +194,11 @@ pub struct Root {
     /// for a Root that follows none, or is not captured automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_targets: Option<FollowTargets>,
+    /// How many records of the last Snapshot's metadata a newer Keepster wrote that this build does not
+    /// understand: skipped, and not carried into the Snapshots this build takes (ADR 0010). Absent
+    /// while there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unrecognized_records: Option<u64>,
 }
 
 /// How the targets of a Root's followed links are covered.
@@ -1004,8 +1033,9 @@ pub struct JobResult {
     /// Forget: whether what it removed is kept out of history from now on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded: Option<bool>,
-    /// Forget: refs among the Segments' and Pins' names that name no commit, which it could not read and
-    /// left as they are — not written by Keepster, and named so that nothing is passed over in silence.
+    /// Forget: refs among the Segments' and Pins' names this build could not read, and so left as they
+    /// are — naming no commit, or written by a newer Keepster in a content format this build does not
+    /// know — named because what they hold was not forgotten, and nothing is passed over in silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_alone: Vec<String>,
 }
@@ -1124,6 +1154,11 @@ pub struct Timeline {
     /// The `cursor` that fetches the next, older page; absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// The Segments, and the Pins as `pins/` and the Snapshot's identity, written by a newer Keepster in
+    /// a format this build cannot read. Their Snapshots are on no page; they are not lost, and a build
+    /// that reads their format lists them again. Absent while there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
 }
 
 /// A Root's pinned Snapshots, as `GET /v1/roots/{id}/pins` serves them: few enough to need no page.
@@ -1132,6 +1167,10 @@ pub struct Timeline {
 pub struct Pins {
     /// The pinned Snapshots, newest first.
     pub snapshots: Vec<Snapshot>,
+    /// The Pins, as `pins/` and the Snapshot's identity, written by a newer Keepster in a format this
+    /// build cannot read: pinned still, and not listed above. Absent while there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
 }
 
 /// The paths a Snapshot holds under a directory, as `…/entries` serves them.

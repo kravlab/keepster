@@ -353,6 +353,7 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
             pending_paths: 0,
             oldest_pending_seconds: None,
             follow_targets: None,
+            unrecognized_records: None,
             state_code: Some(
                 match error {
                     RegistryError::TooNew { .. } => "store_too_new",
@@ -408,6 +409,7 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
             }),
             interval: interval.as_secs(),
         }),
+        unrecognized_records: (activity.unrecognized > 0).then_some(activity.unrecognized),
     }
 }
 

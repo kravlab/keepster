@@ -249,6 +249,91 @@ async fn a_configured_git_that_does_not_work_is_reported_and_never_replaced() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_git_below_the_floor_costs_maintenance_and_never_history() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // ADR 0010: the git floor does not travel with the store format — raising it changes no byte on
+    // disk, so a git too old is a `maintenance: unavailable` row and never a refusal to read history.
+    let daemon = Harness::start_with_housekeeping(QUICK, keepster_testkit::MANUAL).await;
+    let old = daemon.scratch("old-git").join("git");
+    std::fs::write(
+        &old,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'git version 2.31.8'; exit 0; fi\nexit 1\n",
+    )
+    .expect("a script");
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    // A test forking meanwhile can hold the script open for writing, and the kernel refuses to run a
+    // file open for writing (ETXTBSY): wait that moment out.
+    for _ in 0..200 {
+        match std::process::Command::new(&old).arg("--version").output() {
+            Err(error) if error.raw_os_error() == Some(26) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            _ => break,
+        }
+    }
+    let before = daemon.get_json("/v1/status").await["daemon"]["store_format"].clone();
+    let project = daemon.scratch("project");
+    std::fs::write(project.join("notes.txt"), b"kept").expect("a file");
+    let root = daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": project }))
+        .await["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let snapshot = daemon
+        .post_json(
+            &format!("/v1/roots/{root}/snapshots"),
+            &serde_json::json!({}),
+        )
+        .await["id"]
+        .as_str()
+        .expect("a Snapshot")
+        .to_owned();
+    daemon.write_global_config(
+        format!(
+            "[triggers]\nactive = []\n\n[git]\npath = {}\n",
+            toml_string(&old.display().to_string())
+        )
+        .as_bytes(),
+    );
+
+    let status = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = daemon.get_json("/v1/status").await;
+            if status["daemon"]["git"]["reason"] == "too_old" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the configured git is looked at");
+
+    assert_eq!(status["daemon"]["maintenance"], "unavailable", "{status}");
+    assert_eq!(
+        status["daemon"]["store_format"], before,
+        "the store's format is the same"
+    );
+    let timeline = daemon
+        .get_json(&format!("/v1/roots/{root}/snapshots"))
+        .await;
+    assert_eq!(
+        timeline["snapshots"][0]["id"],
+        snapshot.as_str(),
+        "{timeline}"
+    );
+    let read = daemon
+        .get(&format!(
+            "/v1/roots/{root}/snapshots/{snapshot}/content?path=notes.txt"
+        ))
+        .await;
+    assert_eq!(read.status.as_u16(), 200, "history is read as ever");
+    assert_eq!(read.body, b"kept");
+}
+
 const KEEPSTER: &str = env!("CARGO_BIN_EXE_keepster");
 
 /// `text` as a TOML basic string, so a Windows path's backslashes survive.

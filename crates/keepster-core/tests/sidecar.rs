@@ -293,3 +293,51 @@ fn the_header_s_defaults_are_the_modes_most_paths_have() {
         "a tie goes to the lower mode, so it never flips"
     );
 }
+
+#[test]
+fn every_record_type_is_spelled_as_it_always_was() {
+    // ADR 0010: the alphabet is append-only and no existing type changes its meaning — an older build
+    // skipping a new type behaves as it always did, while one meeting a redefined type would misread
+    // it confidently. Every spelling written today is pinned here; a new fact is a new type.
+    let sidecar = Sidecar::with_records(vec![
+        withheld("a", WithheldReason::TooLarge),
+        withheld("b", WithheldReason::SpecialFile(SpecialKind::Fifo)),
+        withheld("c", WithheldReason::SpecialFile(SpecialKind::Socket)),
+        withheld("d", WithheldReason::SpecialFile(SpecialKind::CharDevice)),
+        withheld("e", WithheldReason::SpecialFile(SpecialKind::BlockDevice)),
+        withheld("f", WithheldReason::ReservedName),
+        withheld("g", WithheldReason::UnrepresentablePath),
+        withheld("h", WithheldReason::OtherRoot),
+        withheld("i", WithheldReason::HistoryStore),
+        withheld("j", WithheldReason::CloudPlaceholder),
+        incomplete("k", Incomplete::Unstable),
+        incomplete("l", Incomplete::Error("eacces".to_owned())),
+        Record::Mode {
+            path: rp("m"),
+            mode: 0o600,
+        },
+    ]);
+
+    assert_eq!(
+        String::from_utf8(sidecar.to_bytes()).expect("text"),
+        "keepster-meta 1 file=0644 dir=0755\n\
+         w too_large a\n\
+         w special_file:fifo b\n\
+         w special_file:socket c\n\
+         w special_file:char_device d\n\
+         w special_file:block_device e\n\
+         w reserved_name f\n\
+         w unrepresentable_path g\n\
+         w other_root h\n\
+         w history_store i\n\
+         w cloud_placeholder j\n\
+         i unstable k\n\
+         i eacces l\n\
+         m 0600 m\n"
+    );
+    assert_eq!(
+        Sidecar::parse(&sidecar.to_bytes()).expect("parses").sidecar,
+        sidecar,
+        "and every one reads back as itself"
+    );
+}

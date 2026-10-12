@@ -7,7 +7,8 @@
 
 use hyper::StatusCode;
 use keepster_api::{
-    DaemonStatus, GitStatus, InstallHint, Reported, Root, RootState, Status, VersionInfo,
+    DaemonStatus, GitStatus, InstallHint, Reported, Root, RootState, Status, StoreFormat,
+    VersionInfo,
 };
 use keepster_cli::{ClientError, Response, outcome};
 
@@ -18,6 +19,12 @@ fn status_with(roots: Vec<Root>) -> Status {
                 build_version: "0.0.0".to_owned(),
                 build_hash: "unknown".to_owned(),
                 api_version: "v1".to_owned(),
+                store_format: Some(StoreFormat {
+                    container: 1,
+                    content: 1,
+                    sidecar: 1,
+                    index: 5,
+                }),
             },
             pid: 1,
             uptime_seconds: 0,
@@ -46,6 +53,7 @@ fn root(id: &str, state: RootState) -> Root {
         pending_paths: 0,
         oldest_pending_seconds: None,
         follow_targets: None,
+        unrecognized_records: None,
     }
 }
 
@@ -265,6 +273,44 @@ fn without_a_git_maintenance_runs_with_status_says_how_to_install_one_and_is_not
         10,
         "a Root not watched is the graver news"
     );
+}
+
+#[test]
+fn the_store_format_is_a_labelled_row_beside_the_build_and_the_api() {
+    let result = outcome(served(&status_with(Vec::new())), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(printed.contains("  api          v1"), "{printed}");
+    assert!(
+        printed.contains("  store format container 1, content 1, sidecar 1, index 5"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_daemon_that_does_not_say_its_store_format_reads_as_unknown_not_as_zero() {
+    let mut status = status_with(Vec::new());
+    status.daemon.version.store_format = None;
+
+    let printed =
+        String::from_utf8_lossy(&outcome(served(&status), false, None).stdout).into_owned();
+
+    assert!(printed.contains("  store format unknown"), "{printed}");
+}
+
+#[test]
+fn records_a_newer_keepster_wrote_are_named_under_their_root() {
+    let mut watched = root("01J0000000000000000000000A", RootState::Watching);
+    watched.unrecognized_records = Some(2);
+
+    let result = outcome(served(&status_with(vec![watched])), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("2 metadata record(s) from a newer Keepster are not understood"),
+        "{printed}"
+    );
+    assert_eq!(result.code, 0, "the Root is watched as ever");
 }
 
 #[test]

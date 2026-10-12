@@ -5,7 +5,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use keepster_core::SegmentName;
+use keepster_core::{ContentFormat, SegmentName};
 
 /// Every moment in these tests is representable, so a failure here is a defect rather than a case.
 fn hourly(moment: SystemTime) -> SegmentName {
@@ -81,6 +81,71 @@ fn a_segment_s_name_reads_back_as_the_span_it_covers() {
         "2026-09-30T14:00",
         "latest",
         "",
+    ] {
+        assert_eq!(SegmentName::parse(foreign), None, "{foreign}");
+    }
+}
+
+#[test]
+fn the_first_format_is_read_and_is_the_one_this_build_writes() {
+    // ADR 0010: every Segment written before the format was recorded is in the first.
+    assert_eq!(ContentFormat::FIRST, ContentFormat::new(1));
+    assert_eq!(ContentFormat::parse("1"), Some(ContentFormat::FIRST));
+    assert_eq!(ContentFormat::CURRENT, ContentFormat::new(1));
+    assert!(ContentFormat::FIRST.is_readable());
+}
+
+#[test]
+fn a_format_this_build_does_not_know_is_not_read() {
+    assert!(
+        !ContentFormat::new(2).is_readable(),
+        "newer than this build"
+    );
+    assert!(!ContentFormat::new(0).is_readable(), "no format was ever 0");
+    for unknown in ["two", "", "-1", "1.0"] {
+        assert_eq!(
+            ContentFormat::parse(unknown),
+            None,
+            "what is no number names no format: {unknown:?}"
+        );
+    }
+    assert_eq!(
+        ContentFormat::new(2).to_string(),
+        "2",
+        "as the trailer spells it"
+    );
+}
+
+#[test]
+fn a_segment_of_another_format_in_the_same_period_is_its_sibling() {
+    // ADR 0010: a capture never appends to a Segment of another format; it opens one of its own in the
+    // same period, named by the format, so each format has at most one Segment per period.
+    let hour = hourly(at(1_790_779_025));
+    let sibling = hour.in_format(ContentFormat::new(2));
+
+    assert_eq!(sibling.as_str(), "2026-09-30T14.2");
+    assert_eq!(SegmentName::parse("2026-09-30T14.2"), Some(sibling.clone()));
+    assert_eq!(sibling.span(), hour.span(), "the same period");
+    assert_eq!(sibling.period(), hour);
+    assert_eq!(hour.period(), hour);
+    let next = hourly(at(1_790_780_400));
+    assert!(
+        hour < sibling && sibling < next,
+        "it sorts inside its period: {hour} {sibling} {next}"
+    );
+    assert_eq!(
+        SegmentName::parse("2026-09-30.3").map(|day| day.span()),
+        SegmentName::parse("2026-09-30").map(|day| day.span()),
+        "a day has siblings as an hour does"
+    );
+
+    for foreign in [
+        "2026-09-30T14.",
+        "2026-09-30T14.0",
+        "2026-09-30T14.01",
+        "2026-09-30T14.x",
+        "2026-09-30T14.1.2",
+        "2026-09-30T14.-1",
     ] {
         assert_eq!(SegmentName::parse(foreign), None, "{foreign}");
     }

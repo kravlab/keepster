@@ -86,6 +86,7 @@ pub async fn pins(args: &PinsArgs, control_path: &Path) -> u8 {
         return exit::OTHER;
     }
     let items = listed["snapshots"].as_array().cloned().unwrap_or_default();
+    crate::history::warn_unreadable(&listed["unreadable"]);
 
     write_log(&items, args.json, &mut io::stdout().lock())
 }

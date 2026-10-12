@@ -382,6 +382,7 @@ pub(crate) async fn list(
             None
         },
         snapshots: page.snapshots.iter().map(describe_summary).collect(),
+        unreadable: page.unreadable,
     }))
 }
 

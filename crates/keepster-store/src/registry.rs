@@ -19,11 +19,12 @@ const RECORD_FILE: &str = "root.toml";
 /// it sees what it always saw there: a directory without a record, an orphaned store it leaves alone.
 const UNWATCHED_FILE: &str = "unwatched.toml";
 
-/// The container format this build writes and understands.
+/// The container format this build writes and understands: the shape of a Root's directory and the
+/// `refs/keepster/…` namespace.
 ///
-/// Ticket 26 governs the four version numbers of the store; this is the container one, the only one
-/// that is rewritten automatically, because it is small, atomic and not history.
-const CONTAINER_VERSION: u32 = 1;
+/// One of the store's four version numbers (ADR 0010); the container one is the only one rewritten
+/// automatically, because it is small, atomic and not history.
+pub const CONTAINER_VERSION: u32 = 1;
 
 /// One directory under the Registry's base: a Root's identity, and its record or why that record
 /// cannot be read.
@@ -219,6 +220,32 @@ impl Registry {
         rename(&dir.join(UNWATCHED_FILE), &dir.join(RECORD_FILE))
     }
 
+    /// Rewrite every record of an older container version in this build's, watched or not, saying how
+    /// many were rewritten.
+    ///
+    /// The container is the one version rewritten automatically and silently (ADR 0010): a record is
+    /// small, daemon-owned, replaced atomically, and not history. It is done once, before anything else
+    /// can touch the Registry — a rewrite racing an unwatch could bring back the record the unwatch had
+    /// just renamed away. A record this build cannot read is left for [`Registry::list`] to report.
+    pub fn upgrade(&self) -> Result<u64, RegistryError> {
+        let mut rewritten = 0;
+        for id in self.identities()? {
+            let dir = self.root_dir(id);
+            for file in [RECORD_FILE, UNWATCHED_FILE] {
+                let path = dir.join(file);
+                if !version_of(&path).is_some_and(|version| version < CONTAINER_VERSION) {
+                    continue;
+                }
+                if let Ok(record) = read_record(&path) {
+                    write_record(&path, &record)?;
+                    rewritten += 1;
+                }
+            }
+        }
+
+        Ok(rewritten)
+    }
+
     /// Every identity a directory under the base is named by.
     fn identities(&self) -> Result<Vec<RootId>, RegistryError> {
         let listed = |source| RegistryError::Io {
@@ -289,11 +316,19 @@ fn read_record(path: &Path) -> Result<RootRecord, RegistryError> {
         path: path.to_path_buf(),
         reason: format!("`{}` is not a Root identity", file.id),
     })?;
-
     Ok(RootRecord {
         id,
         path: file.path,
     })
+}
+
+/// The container version a record says it was written in, when the file says at all.
+fn version_of(path: &Path) -> Option<u32> {
+    let text = fs::read_to_string(path).ok()?;
+
+    toml::from_str::<RecordFile>(&text)
+        .ok()
+        .map(|file| file.version)
 }
 
 /// Replace a record atomically: write a temporary file beside it, flush it to disk, rename over the
