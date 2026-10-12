@@ -133,7 +133,7 @@ async fn write_answer(
 
 /// Where `-o` writes before the answer is whole: beside the destination, so the rename stays on one
 /// filesystem.
-fn partial_path(destination: &Path) -> PathBuf {
+pub(crate) fn partial_path(destination: &Path) -> PathBuf {
     let mut name = destination.file_name().unwrap_or_default().to_os_string();
     name.push(".partial");
 

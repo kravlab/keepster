@@ -76,6 +76,9 @@ error_codes! {
     PreviewBusy = "preview_busy": "A Capture Preview is already walking; one runs at a time, so this one was not started.",
     PreviewInvalid = "preview_invalid": "`only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.",
     PreviewFailed = "preview_failed": "The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.",
+    DestInStore = "dest_in_store": "The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.",
+    DestUnwritable = "dest_unwritable": "The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.",
+    DirectoryUnreadable = "directory_unreadable": "The directory cannot be listed; `details.path` names it.",
 }
 
 impl ErrorCode {

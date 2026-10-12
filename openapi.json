@@ -37,6 +37,68 @@
         }
       }
     },
+    "/v1/fs": {
+      "get": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "List the directories in one directory.",
+        "operationId": "list_directories",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "The directory, absolute; the home directory when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every directory in it, by name, hidden ones marked so a picker can leave them out until asked, and each said to be listable or not. Files, links and sizes are left out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryListing"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`path` is not absolute.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing is at `path`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`path` is not a directory (`not_a_directory`), or cannot be listed (`directory_unreadable`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/jobs/{id}": {
       "get": {
         "tags": [
@@ -652,7 +714,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.",
+            "description": "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters, and carries `Content-Disposition: attachment` so a browser saves it as it is.",
             "content": {
               "application/json": {
                 "schema": {
@@ -770,6 +832,106 @@
           },
           "409": {
             "description": "The Root is unavailable, or its configuration cannot be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roots/{id}/export": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Write a Snapshot's versions into a directory the request names, leaving the Working Tree untouched.",
+        "operationId": "export_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A dry run: what would happen to every file, and the selection's size; nothing written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportPlan"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Planned, and queued as a job that plans again under the stores' locks and then writes each file to a temporary name beside it, renamed into place, with the Snapshot's permission bits — on Windows, none. Missing directories are made. A Withheld path is absent from the destination and its outcome says `skipped`, with its reason. Inside a Root, anything overwritten is first held by that Root's Safety Snapshot, named in the job's result.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The job, at `/v1/jobs/{id}`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`confirmation_required`: some file needs a confirmation (`overwrite`, `replace_type`, `dest_in_root`, `overwrite_unrecoverable`, or `\"all\"`) or a resolution (`write`, `rename_to`, `name_case`, `modes`), or cannot be written (`type_conflict`, `link_check_failed`); `paths` says what each needs and nothing was written. `dest_in_store`: the destination is inside a History Store. Otherwise a malformed path, destination or resolution.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path in the Snapshot.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`dest_unwritable`: the destination, or the nearest directory above it that is there, is not a directory. Otherwise the Root the destination lies inside is unavailable, or its configuration has never been valid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1498,6 +1660,98 @@
         }
       }
     },
+    "/v1/roots/{id}/snapshots/{snapshot}/archive": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "A selection of a Snapshot as one zip archive, for a client that cannot be given a destination — the\nbrowser's download.",
+        "operationId": "download_archive",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "A file or a directory, Root-relative; the whole Snapshot when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A zip64 archive, streamed, every file stored uncompressed with its permission bits, so its size is known first: `Content-Length` is what `stat` said. A Withheld path is absent, as from any export; `stat` names them. Generated as it is sent, so it cannot be resumed — an interrupted download starts again.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`attachment`, with a file name."
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "The archive's exact size."
+              }
+            },
+            "content": {
+              "application/zip": {}
+            }
+          },
+          "400": {
+            "description": "The path is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/snapshots/{snapshot}/content": {
       "get": {
         "tags": [
@@ -1528,6 +1782,15 @@
             "name": "path",
             "in": "query",
             "description": "The file, Root-relative.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "`1` (or `true`) to have a browser save it rather than show it: `Content-Disposition: attachment`,\nnamed as the file is — the whole of downloading one file (ticket 58).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1567,6 +1830,12 @@
                   "type": "string"
                 },
                 "description": "Always `bytes`."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "With `download=1`: `attachment`, named as the file is."
               },
               "Content-Length": {
                 "schema": {
@@ -1786,6 +2055,86 @@
         }
       }
     },
+    "/v1/roots/{id}/snapshots/{snapshot}/stat": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "How much a selection of a Snapshot holds, so its size is shown before an Export or a download.",
+        "operationId": "stat_selection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "path",
+            "description": "The Snapshot's identity, as the timeline returned it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "A file or a directory, Root-relative; the whole Snapshot when absent.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its files and bytes, the exact size of its archive, and what it withholds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectionSize"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The path is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root, Snapshot or path.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/status": {
       "get": {
         "tags": [
@@ -1968,7 +2317,9 @@
           "create_parents",
           "replace_type",
           "break_hardlinks",
-          "overwrite_unrecoverable"
+          "overwrite_unrecoverable",
+          "overwrite",
+          "dest_in_root"
         ]
       },
       "DaemonStatus": {
@@ -2201,6 +2552,34 @@
           "text": {
             "type": "string",
             "description": "The line without its ending. Text that is not UTF-8 is shown with replacement characters; the\nunified format carries the exact bytes."
+          }
+        }
+      },
+      "DirectoryListing": {
+        "type": "object",
+        "description": "The directories in one directory on the daemon's machine, for choosing where an Export writes.",
+        "required": [
+          "path",
+          "directories"
+        ],
+        "properties": {
+          "directories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Subdirectory"
+            },
+            "description": "Every directory in it, by name; no file, no link, no size."
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The directory above it, absent at the top."
+          },
+          "path": {
+            "type": "string",
+            "description": "The directory listed, absolute."
           }
         }
       },
@@ -2809,6 +3188,99 @@
           }
         }
       },
+      "ExportPlan": {
+        "type": "object",
+        "description": "What an Export would do, as a dry run answers it.",
+        "required": [
+          "dest",
+          "files",
+          "bytes",
+          "paths"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Their sizes, summed.",
+            "minimum": 0
+          },
+          "dest": {
+            "type": "string",
+            "description": "The directory it would write into."
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many files the selection holds, Withheld paths aside.",
+            "minimum": 0
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredPath"
+            },
+            "description": "Every file of the request, in path order, with what would happen to it."
+          }
+        }
+      },
+      "ExportRequest": {
+        "type": "object",
+        "description": "An Export, as `POST /v1/roots/{id}/export` takes it (ticket 58): a Snapshot's versions written into a\ndirectory the request names, the Working Tree untouched.\n\nRestore's request, less what only a Restore needs, and with a destination: the whole request is\nchecked before anything is written, and a path that needs a confirmation or a resolution stops it.",
+        "required": [
+          "from",
+          "dest"
+        ],
+        "properties": {
+          "confirm": {
+            "$ref": "#/components/schemas/Confirm",
+            "description": "The changes agreed to: `overwrite`, `replace_type`, `dest_in_root`, `overwrite_unrecoverable`, or\n`\"all\"` for every one — which settles no resolution."
+          },
+          "dest": {
+            "type": "string",
+            "description": "The directory written into, absolute, on the daemon's machine — which is the client's, since the\ndaemon listens only there. Each file goes at its Snapshot path beneath it; it is made if missing."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Plan only: answer with what would happen to every path and the selection's size, and write\nnothing."
+          },
+          "from": {
+            "type": "string",
+            "description": "The Snapshot whose versions are written, by identity."
+          },
+          "modes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModesChoice",
+                "description": "Where a file already at the destination has other permission bits than the Snapshot's\n(`modes_differ`) and no answer of its own: take the Snapshot's, or keep those there."
+              }
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot."
+          },
+          "resolutions": {
+            "type": "object",
+            "description": "Answers to what only the user can settle, keyed by the Snapshot path they are for.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PathResolution"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "skip_unresolvable": {
+            "type": "boolean",
+            "description": "Skip each path still in the way, with its reasons, rather than stop the request."
+          }
+        }
+      },
       "FileChange": {
         "type": "string",
         "description": "How a file changed between the two sides of a diff.",
@@ -3063,6 +3535,13 @@
             "description": "Forget: how many contents no Snapshot holds any more.",
             "minimum": 0
           },
+          "dest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Export: the directory written into."
+          },
           "excluded": {
             "type": [
               "boolean",
@@ -3076,6 +3555,13 @@
               "type": "string"
             },
             "description": "Forget: refs among the Segments' and Pins' names this build could not read, and so left as they\nare — naming no commit, or written by a newer Keepster in a content format this build does not\nknow — named because what they hold was not forgotten, and nothing is passed over in silence."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredPath"
+            },
+            "description": "Export: every file of the request, in path order, with what happened to it — `restored` meaning\nwritten over what was there."
           },
           "reclaimed_bytes": {
             "type": [
@@ -3092,6 +3578,13 @@
               "type": "string"
             },
             "description": "Forget: every Root-relative path it removed."
+          },
+          "safety_snapshot": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Export into a Root, overwriting something there: the Snapshot of that Root taken just before,\nwhich what was overwritten can be restored from."
           },
           "snapshots_touched": {
             "type": [
@@ -3653,7 +4146,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it."
           },
           "detail": {
             "type": "string",
@@ -4124,6 +4617,42 @@
         ],
         "description": "One rule, named the way a person wrote it."
       },
+      "SelectionSize": {
+        "type": "object",
+        "description": "How much a selection of a Snapshot holds, so its size can be shown before anything is done with it.",
+        "required": [
+          "files",
+          "bytes",
+          "archive_bytes"
+        ],
+        "properties": {
+          "archive_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The exact size of its `archive`, which stores rather than compresses.",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Their sizes, summed: what an Export writes.",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many files, links included.",
+            "minimum": 0
+          },
+          "withheld": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Withheld"
+            },
+            "description": "The paths it holds no version of, which no export or archive contains."
+          }
+        }
+      },
       "Snapshot": {
         "type": "object",
         "description": "A Snapshot, as the API serves it — from a capture and from the timeline alike.\n\nOne shape for both, so a client renders the Snapshot it just took with the same code as the ones it\npages through. Adding a field is an additive change inside `/v1`.",
@@ -4258,6 +4787,34 @@
             "format": "int32",
             "description": "The grammar of a Snapshot's metadata sidecar. Its record types only ever grow: one this build\ndoes not know is skipped and reported.",
             "minimum": 0
+          }
+        }
+      },
+      "Subdirectory": {
+        "type": "object",
+        "description": "One directory of a listing.",
+        "required": [
+          "name",
+          "path",
+          "hidden",
+          "readable"
+        ],
+        "properties": {
+          "hidden": {
+            "type": "boolean",
+            "description": "Hidden: a dot name, or the platform's hidden attribute. A picker shows these only when asked."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name."
+          },
+          "path": {
+            "type": "string",
+            "description": "Its path, absolute: what to list next, or to export into."
+          },
+          "readable": {
+            "type": "boolean",
+            "description": "Whether it can be listed in turn."
           }
         }
       },

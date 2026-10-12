@@ -256,7 +256,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::ComparisonInvalid
         | ErrorCode::ResolutionInvalid
         | ErrorCode::GlobInvalid
-        | ErrorCode::PreviewInvalid => exit::USAGE,
+        | ErrorCode::PreviewInvalid
+        | ErrorCode::DestInStore => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
@@ -267,7 +268,9 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::HistoryUnreadable
         | ErrorCode::MaintenanceFailed
         | ErrorCode::JobInterrupted
-        | ErrorCode::PreviewFailed => exit::OTHER,
+        | ErrorCode::PreviewFailed
+        | ErrorCode::DestUnwritable
+        | ErrorCode::DirectoryUnreadable => exit::OTHER,
     }
 }
 

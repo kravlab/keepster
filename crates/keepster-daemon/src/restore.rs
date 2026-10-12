@@ -146,7 +146,21 @@ fn parsed(request: RestoreRequest) -> Result<restore::RestoreRequest, ProblemRes
         .iter()
         .map(|path| parse_path(path))
         .collect::<Result<Vec<_>, _>>()?;
-    let confirmed = match request.confirm {
+
+    Ok(restore::RestoreRequest {
+        from,
+        paths,
+        confirmed: confirmed_by(request.confirm),
+        resolutions: resolutions_of(request.resolutions)?,
+        skip_unresolvable: request.skip_unresolvable,
+        dry_run: request.dry_run,
+        link_names: link_names(),
+    })
+}
+
+/// The confirmations a request gives, in the domain's terms.
+pub(crate) fn confirmed_by(confirm: Confirm) -> Confirmed {
+    match confirm {
         Confirm::All(_) => Confirmed::all(),
         Confirm::These(these) => {
             Confirmed::these(these.into_iter().map(|confirmation| match confirmation {
@@ -156,25 +170,25 @@ fn parsed(request: RestoreRequest) -> Result<restore::RestoreRequest, ProblemRes
                 keepster_api::Confirmation::OverwriteUnrecoverable => {
                     Confirmation::OverwriteUnrecoverable
                 }
+                keepster_api::Confirmation::Overwrite => Confirmation::Overwrite,
+                keepster_api::Confirmation::DestInRoot => Confirmation::DestInRoot,
             }))
         }
-    };
+    }
+}
+
+/// A request's answers, by the Snapshot path each is for, or the problem with one.
+pub(crate) fn resolutions_of(
+    answers: BTreeMap<String, PathResolution>,
+) -> Result<BTreeMap<RootPath, Resolution>, ProblemResponse> {
     let mut resolutions = BTreeMap::new();
-    for (path, answer) in request.resolutions {
+    for (path, answer) in answers {
         let path = parse_path(&path)?;
         let resolution = resolution(&path, answer)?;
         resolutions.insert(path, resolution);
     }
 
-    Ok(restore::RestoreRequest {
-        from,
-        paths,
-        confirmed,
-        resolutions,
-        skip_unresolvable: request.skip_unresolvable,
-        dry_run: request.dry_run,
-        link_names: link_names(),
-    })
+    Ok(resolutions)
 }
 
 /// How this platform lists every name of a file: on Windows through `keepster-service`, which holds the
@@ -228,14 +242,16 @@ fn resolution(path: &RootPath, answer: PathResolution) -> Result<Resolution, Pro
     }
 }
 
-fn mode_choice(choice: ModesChoice) -> ModeChoice {
+/// A modes answer in the domain's terms.
+pub(crate) fn mode_choice(choice: ModesChoice) -> ModeChoice {
     match choice {
         ModesChoice::Snapshot => ModeChoice::Snapshot,
         ModesChoice::Keep => ModeChoice::Keep,
     }
 }
 
-fn resolution_invalid(path: &RootPath, message: &str) -> ProblemResponse {
+/// The problem with one path's answer.
+pub(crate) fn resolution_invalid(path: &RootPath, message: &str) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::BAD_REQUEST,
         ErrorCode::ResolutionInvalid,
@@ -261,7 +277,7 @@ fn restore_problem(error: RestoreError) -> ProblemResponse {
 }
 
 /// Every path as the wire says it: what happened, from `written`, or what is planned.
-fn wire(plan: &Plan, written: Option<&[Written]>) -> Vec<RestoredPath> {
+pub(crate) fn wire(plan: &Plan, written: Option<&[Written]>) -> Vec<RestoredPath> {
     plan.paths
         .iter()
         .enumerate()
@@ -330,7 +346,12 @@ fn issue(issue: &Issue) -> RestoreIssue {
             wire.snapshot_mode = Some(*snapshot);
             wire.current_mode = Some(*current);
         }
-        Issue::ParentMissing | Issue::NameInvalid | Issue::TypeConflict => {}
+        Issue::ParentMissing
+        | Issue::NameInvalid
+        | Issue::TypeConflict
+        | Issue::Overwrite
+        | Issue::DestInRoot
+        | Issue::OtherRoot => {}
     }
 
     wire

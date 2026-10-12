@@ -168,6 +168,12 @@ Writing a Snapshot's version of a file back over the Working Tree.
 _Avoid_: revert, rollback, checkout
 
 **Safety Snapshot**:
-The Snapshot taken of the current state immediately before a Restore, which is what makes a Restore itself
-undoable.
+The Snapshot taken of the current state immediately before a Restore — or before an Export overwrites something
+inside a Root — which is what makes either undoable.
 _Avoid_: backup, pre-restore copy
+
+**Export**:
+Writing a Snapshot's versions into a directory the user names, leaving the Working Tree untouched; or, for a client
+that cannot name one, handing the same selection over as one archive. A Withheld path is absent from it and said
+so, never an empty file.
+_Avoid_: restore to, copy out, dry-run

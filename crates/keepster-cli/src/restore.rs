@@ -5,18 +5,18 @@
 //! one — or with `--no-input` — each answer is named by the flag that gives it, and the exit code says a
 //! state is waiting on someone (ticket 07).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use keepster_api::{
     Confirm, ConfirmAll, Confirmation, ErrorCode, ModesChoice, NameCaseChoice, PathResolution,
-    Problem, RestoreIssue, RestoreOutcome, RestoreRequest, Restored, RestoredPath,
+    Problem, RestoreIssue, RestoreOutcome, RestoreRequest, Restored, RestoredPath, Root,
 };
 
 use crate::client::DaemonClient;
-use crate::command::RestoreArgs;
+use crate::command::{ResolutionArgs, RestoreArgs};
 use crate::exit;
 use crate::history::{inside, located, selected};
 use crate::roots::{answered, body_of};
@@ -35,39 +35,11 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
         Ok(found) => found,
         Err(code) => return code,
     };
-    let root_path = PathBuf::from(&root.path);
-    let within = |path: &Path| -> Result<String, u8> {
-        match inside(&root_path, path) {
-            Ok(Some(relative)) => Ok(relative),
-            Ok(None) => {
-                eprintln!(
-                    "keepster: {} is not inside the Root at {}",
-                    path.display(),
-                    root.path
-                );
-                Err(exit::USAGE)
-            }
-            Err(error) => {
-                eprintln!(
-                    "keepster: {} could not be resolved: {error}",
-                    path.display()
-                );
-                Err(exit::OTHER)
-            }
-        }
+    let within = |path: &Path| within_root(&root, path);
+    let paths = match paths_within(&root, &args.paths) {
+        Ok(paths) => paths,
+        Err(code) => return code,
     };
-
-    let mut paths = Vec::new();
-    for path in &args.paths {
-        match within(path) {
-            Ok(relative) => paths.push(relative),
-            Err(code) => return code,
-        }
-    }
-    // The Root itself is every file, which is what no path means to the daemon.
-    if paths.iter().any(String::is_empty) {
-        paths.clear();
-    }
 
     let from = match selected(
         &client,
@@ -81,74 +53,23 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
         Err(code) => return code,
     };
 
-    let mut request = RestoreRequest {
-        from: from.clone(),
-        paths,
-        dry_run: args.dry_run,
-        confirm: confirmations(args),
-        resolutions: Default::default(),
-        skip_unresolvable: args.skip_unresolvable,
-        modes: None,
+    let mut answers = match Answers::from_flags(&args.resolving, confirmations(args), &within) {
+        Ok(answers) => answers,
+        Err(code) => return code,
     };
-    for path in &args.pick {
-        match within(path) {
-            Ok(relative) => {
-                request.resolutions.entry(relative).or_default().write = Some(true);
-            }
-            Err(code) => return code,
-        }
-    }
-    for given in &args.rename {
-        let Some((path, name)) = given.rsplit_once('=') else {
-            eprintln!("keepster: --rename takes PATH=NAME, not `{given}`");
-            return exit::USAGE;
-        };
-        match within(Path::new(path)) {
-            Ok(relative) => {
-                request.resolutions.entry(relative).or_default().rename_to = Some(name.to_owned());
-            }
-            Err(code) => return code,
-        }
-    }
-    for given in &args.name_case {
-        let choice = match given.rsplit_once('=') {
-            Some((path, "keep")) => (path, NameCaseChoice::KeepExisting),
-            Some((path, "snapshot")) => (path, NameCaseChoice::UseSnapshot),
-            _ => {
-                eprintln!("keepster: --name-case takes PATH=keep or PATH=snapshot, not `{given}`");
-                return exit::USAGE;
-            }
-        };
-        match within(Path::new(choice.0)) {
-            Ok(relative) => {
-                request.resolutions.entry(relative).or_default().name_case = Some(choice.1);
-            }
-            Err(code) => return code,
-        }
-    }
-    for given in &args.modes {
-        let (path, answer) = match given.rsplit_once('=') {
-            Some((path, answer)) => (Some(path), answer),
-            None => (None, given.as_str()),
-        };
-        let Some(choice) = modes_choice(answer) else {
-            eprintln!(
-                "keepster: --modes takes snapshot, keep, PATH=snapshot or PATH=keep, not `{given}`"
-            );
-            return exit::USAGE;
-        };
-        match path.map(|path| within(Path::new(path))) {
-            None => request.modes = Some(choice),
-            Some(Ok(relative)) => {
-                request.resolutions.entry(relative).or_default().modes = Some(choice);
-            }
-            Some(Err(code)) => return code,
-        }
-    }
 
     let url = format!("/v1/roots/{}/restore", root.id);
-    let interactive = !args.no_input && !args.json && io::stdin().is_terminal();
+    let interactive = !args.resolving.no_input && !args.json && io::stdin().is_terminal();
     loop {
+        let request = RestoreRequest {
+            from: from.clone(),
+            paths: paths.clone(),
+            dry_run: args.dry_run,
+            confirm: answers.confirm.clone(),
+            resolutions: answers.resolutions.clone(),
+            skip_unresolvable: answers.skip_unresolvable,
+            modes: answers.modes,
+        };
         let body = serde_json::to_vec(&request).expect("a restore request serialises");
         let answer = client.post(&url, &body).await;
 
@@ -160,10 +81,10 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
                         let _ = writeln!(io::stdout());
                         return exit::STATE_CONFLICT;
                     }
-                    if interactive && ask(&mut request, &problem.paths) {
+                    if interactive && ask(&mut answers, &problem.paths, RESTORE) {
                         continue;
                     }
-                    report_blocked(&problem.paths);
+                    report_blocked(&problem.paths, RESTORE);
                     return exit::STATE_CONFLICT;
                 }
             }
@@ -192,6 +113,135 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
             Err(code) => return code,
         };
         return report(&restored, &args.paths);
+    }
+}
+
+/// `path` relative to the Root, as every endpoint takes it — or the exit code of a path outside it.
+pub(crate) fn within_root(root: &Root, path: &Path) -> Result<String, u8> {
+    match inside(Path::new(&root.path), path) {
+        Ok(Some(relative)) => Ok(relative),
+        Ok(None) => {
+            eprintln!(
+                "keepster: {} is not inside the Root at {}",
+                path.display(),
+                root.path
+            );
+            Err(exit::USAGE)
+        }
+        Err(error) => {
+            eprintln!(
+                "keepster: {} could not be resolved: {error}",
+                path.display()
+            );
+            Err(exit::OTHER)
+        }
+    }
+}
+
+/// The paths typed, relative to the Root — none when one is the Root itself, which is every file and
+/// what no path means to the daemon.
+pub(crate) fn paths_within(root: &Root, typed: &[PathBuf]) -> Result<Vec<String>, u8> {
+    let mut paths = typed
+        .iter()
+        .map(|path| within_root(root, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    if paths.iter().any(String::is_empty) {
+        paths.clear();
+    }
+
+    Ok(paths)
+}
+
+/// What a Restore is called where the person is told what it did not do.
+const RESTORE: Operation = Operation {
+    past: "restored",
+    verb: "restore",
+};
+
+/// An operation that asks the same questions as a Restore, as messages name it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Operation {
+    /// What a file it wrote was: `restored`.
+    pub(crate) past: &'static str,
+    /// What it does: `restore`.
+    pub(crate) verb: &'static str,
+}
+
+/// The answers a request carries to what a Restore or an Export asks: from the flags, then from the
+/// person at a terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Answers {
+    /// The changes agreed to.
+    pub(crate) confirm: Confirm,
+    /// Each path's answer.
+    pub(crate) resolutions: BTreeMap<String, PathResolution>,
+    /// Whether what is still in the way is passed over.
+    pub(crate) skip_unresolvable: bool,
+    /// The answer about diverging modes for every file without its own.
+    pub(crate) modes: Option<ModesChoice>,
+}
+
+impl Answers {
+    /// What `flags` answer, beside the confirmations `confirm` gives, each path made Root-relative by
+    /// `within` — or the exit code of a flag that cannot be read.
+    pub(crate) fn from_flags(
+        flags: &ResolutionArgs,
+        confirm: Confirm,
+        within: &dyn Fn(&Path) -> Result<String, u8>,
+    ) -> Result<Self, u8> {
+        let mut answers = Self {
+            confirm,
+            resolutions: BTreeMap::new(),
+            skip_unresolvable: flags.skip_unresolvable,
+            modes: None,
+        };
+        for path in &flags.pick {
+            let relative = within(path)?;
+            answers.resolutions.entry(relative).or_default().write = Some(true);
+        }
+        for given in &flags.rename {
+            let Some((path, name)) = given.rsplit_once('=') else {
+                eprintln!("keepster: --rename takes PATH=NAME, not `{given}`");
+                return Err(exit::USAGE);
+            };
+            let relative = within(Path::new(path))?;
+            answers.resolutions.entry(relative).or_default().rename_to = Some(name.to_owned());
+        }
+        for given in &flags.name_case {
+            let (path, choice) = match given.rsplit_once('=') {
+                Some((path, "keep")) => (path, NameCaseChoice::KeepExisting),
+                Some((path, "snapshot")) => (path, NameCaseChoice::UseSnapshot),
+                _ => {
+                    eprintln!(
+                        "keepster: --name-case takes PATH=keep or PATH=snapshot, not `{given}`"
+                    );
+                    return Err(exit::USAGE);
+                }
+            };
+            let relative = within(Path::new(path))?;
+            answers.resolutions.entry(relative).or_default().name_case = Some(choice);
+        }
+        for given in &flags.modes {
+            let (path, answer) = match given.rsplit_once('=') {
+                Some((path, answer)) => (Some(path), answer),
+                None => (None, given.as_str()),
+            };
+            let Some(choice) = modes_choice(answer) else {
+                eprintln!(
+                    "keepster: --modes takes snapshot, keep, PATH=snapshot or PATH=keep, not `{given}`"
+                );
+                return Err(exit::USAGE);
+            };
+            match path {
+                None => answers.modes = Some(choice),
+                Some(path) => {
+                    let relative = within(Path::new(path))?;
+                    answers.resolutions.entry(relative).or_default().modes = Some(choice);
+                }
+            }
+        }
+
+        Ok(answers)
     }
 }
 
@@ -300,8 +350,11 @@ fn report(restored: &Restored, typed: &[PathBuf]) -> u8 {
 }
 
 /// Every file that stopped the request, with what would let it through.
-fn report_blocked(paths: &[RestoredPath]) {
-    eprintln!("keepster: nothing was restored; these need an answer first:");
+pub(crate) fn report_blocked(paths: &[RestoredPath], operation: Operation) {
+    eprintln!(
+        "keepster: nothing was {}; these need an answer first:",
+        operation.past
+    );
     for path in paths
         .iter()
         .filter(|path| path.outcome == RestoreOutcome::Blocked)
@@ -319,17 +372,19 @@ fn report_blocked(paths: &[RestoredPath]) {
                     modes_of(issue).unwrap_or_default(),
                     path.path
                 ),
-                _ => {
-                    "it cannot be restored; pass --skip-unresolvable to restore the rest".to_owned()
-                }
+                _ => format!(
+                    "it cannot be {}; pass --skip-unresolvable to {} the rest",
+                    operation.past, operation.verb
+                ),
             };
             eprintln!("  {}: {} — {hint}", path.path, issue.reason);
         }
     }
 }
 
-/// Ask about everything that stopped the request, and amend it; `false` when the person declined.
-fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
+/// Ask about everything that stopped the request, and amend its answers; `false` when the person
+/// declined.
+pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Operation) -> bool {
     let asked = request.clone();
     let blocked: Vec<&RestoredPath> = paths
         .iter()
@@ -355,6 +410,8 @@ fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
             "create_parents" => "Create the missing directories for",
             "replace_type" => "Replace what is of another kind in the way of",
             "break_hardlinks" => "Break the other names (they keep the old content) of",
+            "overwrite" => "Write over what is already there, which nothing can bring back, at",
+            "dest_in_root" => "Write into a Watched Root, which will capture it,",
             _ => "Overwrite what the Safety Snapshot cannot hold, at",
         };
         if !yes(&format!("{question} {}?", affected.join(", "))) {
@@ -455,8 +512,8 @@ fn ask(request: &mut RestoreRequest, paths: &[RestoredPath]) -> bool {
         .retain(|_, resolution| *resolution != PathResolution::default());
 
     if !refused.is_empty() {
-        eprintln!("These cannot be restored: {}", refused.join("; "));
-        if !yes("Skip them and restore the rest?") {
+        eprintln!("These cannot be {}: {}", operation.past, refused.join("; "));
+        if !yes(&format!("Skip them and {} the rest?", operation.verb)) {
             return false;
         }
         request.skip_unresolvable = true;

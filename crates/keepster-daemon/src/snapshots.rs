@@ -494,6 +494,9 @@ pub(crate) async fn entries(
 pub(crate) struct ContentParameters {
     /// The file, Root-relative.
     path: Option<String>,
+    /// `1` (or `true`) to have a browser save it rather than show it: `Content-Disposition: attachment`,
+    /// named as the file is — the whole of downloading one file (ticket 58).
+    download: Option<String>,
 }
 
 /// One version's raw bytes, with `Content-Length`, `ETag` and `Range` (ticket 07).
@@ -511,6 +514,7 @@ pub(crate) struct ContentParameters {
     responses(
         (status = 200, description = "The version's raw bytes, streamed.", content_type = "application/octet-stream", headers(
             ("Content-Length" = u64, description = "The size of the version in bytes."),
+            ("Content-Disposition" = String, description = "With `download=1`: `attachment`, named as the file is."),
             ("ETag" = String, description = "Names the content: equal tags mean equal bytes."),
             ("Accept-Ranges" = String, description = "Always `bytes`."),
         )),
@@ -541,8 +545,18 @@ pub(crate) async fn content(
     let (_, location) = located(&state, &id)?;
     let snapshot = parse_snapshot(&snapshot)?;
     let path = parse_path(parameters.path.as_deref().unwrap_or_default())?;
+    let name = path.name().to_owned();
 
-    crate::content::serve(location, snapshot, path, &headers).await
+    let mut response = crate::content::serve(location, snapshot, path, &headers).await?;
+    let download = matches!(parameters.download.as_deref(), Some("1" | "true"));
+    if download && response.status().is_success() {
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_DISPOSITION,
+            crate::content::attachment(&name),
+        );
+    }
+
+    Ok(response)
 }
 
 /// The Root a reading request is about, and where its history lives — watched, or no longer watched
@@ -683,7 +697,7 @@ pub(crate) fn snapshot_not_found(segment: &str) -> ProblemResponse {
 }
 
 /// Why a path is Withheld, as the wire spells it.
-fn withheld_reason(reason: keepster_store::WithheldReason) -> WithheldReason {
+pub(crate) fn withheld_reason(reason: keepster_store::WithheldReason) -> WithheldReason {
     WithheldReason {
         reason: reason.as_str().to_owned(),
         kind: reason.kind().map(|kind| kind.as_str().to_owned()),

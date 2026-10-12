@@ -4,6 +4,7 @@
 //! product turns on — when a Snapshot is warranted, which Snapshots survive, which paths are captured
 //! — be tested without a disk and replayed without a daemon.
 
+mod archive;
 mod event;
 mod git;
 mod identity;
@@ -21,6 +22,7 @@ mod snapshot;
 mod trigger;
 mod volume;
 
+pub use archive::{ArchiveEntry, ArchiveWriter, Crc32, archive_size};
 pub use event::EventId;
 pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
 pub use identity::NotAnIdentity;
@@ -36,7 +38,8 @@ pub use preview::{
 };
 pub use restore::{
     Ancestry, Confirmation, Confirmed, Existing, Found, Issue, ModeChoice, Modes, NameCase, Naming,
-    PathPlan, Plan, Resolution, Step, Unrecoverable, plan, target_of,
+    PathPlan, Plan, Resolution, Step, Unrecoverable, export_plan, fence_other_roots, plan,
+    target_of,
 };
 pub use retention::{
     InvalidLadder, Keep, Ladder, Newest, RetentionPlan, SegmentContents, Thinning, Tier,

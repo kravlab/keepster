@@ -538,6 +538,10 @@ pub enum Confirmation {
     BreakHardlinks,
     /// Overwrite a file whose current content the Safety Snapshot cannot hold.
     OverwriteUnrecoverable,
+    /// Export: write over what is already at the destination. Outside a Root nothing brings it back.
+    Overwrite,
+    /// Export: write into a Watched Root, which captures what is written.
+    DestInRoot,
 }
 
 /// The answer to one path's question; exactly one field is set.
@@ -1040,6 +1044,17 @@ pub struct JobResult {
     /// know — named because what they hold was not forgotten, and nothing is passed over in silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_alone: Vec<String>,
+    /// Export: the directory written into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest: Option<String>,
+    /// Export into a Root, overwriting something there: the Snapshot of that Root taken just before,
+    /// which what was overwritten can be restored from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_snapshot: Option<String>,
+    /// Export: every file of the request, in path order, with what happened to it — `restored` meaning
+    /// written over what was there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<RestoredPath>,
 }
 
 /// A Forget, as `POST /v1/roots/{id}/forget` takes it. Every field must be there: the daemon never asks,
@@ -1445,6 +1460,98 @@ pub struct PreviewSize {
     pub path: String,
     /// Its apparent size in bytes.
     pub bytes: u64,
+}
+
+/// An Export, as `POST /v1/roots/{id}/export` takes it (ticket 58): a Snapshot's versions written into a
+/// directory the request names, the Working Tree untouched.
+///
+/// Restore's request, less what only a Restore needs, and with a destination: the whole request is
+/// checked before anything is written, and a path that needs a confirmation or a resolution stops it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ExportRequest {
+    /// The Snapshot whose versions are written, by identity.
+    pub from: String,
+    /// Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// The directory written into, absolute, on the daemon's machine — which is the client's, since the
+    /// daemon listens only there. Each file goes at its Snapshot path beneath it; it is made if missing.
+    pub dest: String,
+    /// Plan only: answer with what would happen to every path and the selection's size, and write
+    /// nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// The changes agreed to: `overwrite`, `replace_type`, `dest_in_root`, `overwrite_unrecoverable`, or
+    /// `"all"` for every one — which settles no resolution.
+    #[serde(default)]
+    pub confirm: Confirm,
+    /// Answers to what only the user can settle, keyed by the Snapshot path they are for.
+    #[serde(default)]
+    pub resolutions: std::collections::BTreeMap<String, PathResolution>,
+    /// Skip each path still in the way, with its reasons, rather than stop the request.
+    #[serde(default)]
+    pub skip_unresolvable: bool,
+    /// Where a file already at the destination has other permission bits than the Snapshot's
+    /// (`modes_differ`) and no answer of its own: take the Snapshot's, or keep those there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<ModesChoice>,
+}
+
+/// What an Export would do, as a dry run answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ExportPlan {
+    /// The directory it would write into.
+    pub dest: String,
+    /// How many files the selection holds, Withheld paths aside.
+    pub files: u64,
+    /// Their sizes, summed.
+    pub bytes: u64,
+    /// Every file of the request, in path order, with what would happen to it.
+    pub paths: Vec<RestoredPath>,
+}
+
+/// How much a selection of a Snapshot holds, so its size can be shown before anything is done with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SelectionSize {
+    /// How many files, links included.
+    pub files: u64,
+    /// Their sizes, summed: what an Export writes.
+    pub bytes: u64,
+    /// The exact size of its `archive`, which stores rather than compresses.
+    pub archive_bytes: u64,
+    /// The paths it holds no version of, which no export or archive contains.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withheld: Vec<Withheld>,
+}
+
+/// The directories in one directory on the daemon's machine, for choosing where an Export writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DirectoryListing {
+    /// The directory listed, absolute.
+    pub path: String,
+    /// The directory above it, absent at the top.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Every directory in it, by name; no file, no link, no size.
+    pub directories: Vec<Subdirectory>,
+}
+
+/// One directory of a listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Subdirectory {
+    /// Its name.
+    pub name: String,
+    /// Its path, absolute: what to list next, or to export into.
+    pub path: String,
+    /// Hidden: a dot name, or the platform's hidden attribute. A picker shows these only when asked.
+    pub hidden: bool,
+    /// Whether it can be listed in turn.
+    pub readable: bool,
 }
 
 #[cfg(test)]

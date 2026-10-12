@@ -247,6 +247,38 @@ pub(crate) async fn serve(
     Ok(response)
 }
 
+/// `Content-Disposition` for a download named `name`: a plain fallback any client reads, and the name
+/// itself, encoded as RFC 6266 says, for those that read that.
+pub(crate) fn attachment(name: &str) -> HeaderValue {
+    let plain: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_graphic() && character != '"' && character != '\\' {
+                character
+            } else if character == ' ' {
+                ' '
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = name
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+
+    HeaderValue::from_str(&format!(
+        "attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}"
+    ))
+    .expect("printable ASCII is a header value")
+}
+
 fn header_text(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
     headers
         .get(name)

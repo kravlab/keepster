@@ -47,7 +47,20 @@ pub struct Preflight {
     /// What is on disk where each file would go, in path order.
     pub found: Vec<Found>,
     /// The version of each, or `None` for a Withheld path, which has none.
-    sources: Vec<Option<Source>>,
+    pub(super) sources: Vec<Option<Source>>,
+}
+
+impl Preflight {
+    /// How many files have a version to write, and their sizes summed: the selection, Withheld paths
+    /// aside.
+    pub fn held(&self) -> (u64, u64) {
+        self.sources
+            .iter()
+            .flatten()
+            .fold((0, 0), |(files, bytes), source| {
+                (files + 1, bytes.saturating_add(source.size))
+            })
+    }
 }
 
 /// What happened to one path.
@@ -68,21 +81,23 @@ pub enum Written {
 
 /// One file of the Snapshot.
 #[derive(Debug, Clone)]
-struct Source {
-    blob: git2::Oid,
-    size: u64,
+pub(super) struct Source {
+    /// Its content.
+    pub(super) blob: git2::Oid,
+    /// How many bytes its content holds.
+    pub(super) size: u64,
     /// Its permission bits, all twelve, as the Snapshot holds them (ticket 50) — `None` where it
     /// observed none.
-    mode: Option<u32>,
+    pub(super) mode: Option<u32>,
     /// Whether its tree mode is executable: all a Snapshot that observed no modes has to give.
-    executable: bool,
+    pub(super) executable: bool,
     /// Whether it is a link, its blob the target text (ticket 49).
-    link: bool,
+    pub(super) link: bool,
 }
 
-/// What the Snapshot has for one path of a Restore.
+/// What the Snapshot has for one path of a Restore or an Export.
 #[derive(Debug, Clone)]
-enum Version {
+pub(super) enum Version {
     /// A file's content.
     Held(Source),
     /// Nothing, on purpose, and why.
@@ -90,12 +105,12 @@ enum Version {
 }
 
 /// Every temporary name this process hands out is different, without a clock (ADR 0012).
-static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+pub(super) static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 impl HistoryStore {
     /// The files `scope` covers in its Snapshot, and what is on disk where each would go.
     pub fn restore_preflight(&self, scope: &RestoreScope<'_>) -> Result<Preflight, StoreError> {
-        let sources = self.restore_sources(scope)?;
+        let sources = self.versions(scope.from, scope.paths, false)?;
         let mut found = Vec::with_capacity(sources.len());
         let mut kept = Vec::with_capacity(sources.len());
         for (path, version) in sources {
@@ -176,23 +191,24 @@ impl HistoryStore {
             .collect()
     }
 
-    /// Every file of the Snapshot under the paths asked for, in path order, each once — with every
-    /// Withheld path beneath a directory asked for, which the answer names as passed over.
+    /// Every file of the Snapshot `from` under `paths`, in path order, each once — with every Withheld
+    /// path beneath a directory asked for, which the answer names as passed over. No paths is the whole
+    /// Snapshot.
     ///
-    /// A Withheld path asked for by name is refused, as ticket 10 decided: there is nothing to restore.
-    fn restore_sources(
+    /// A Withheld path asked for by name is refused, as ticket 10 decided for Restore: there is nothing to
+    /// restore. With `named_withheld` it is passed over like any other, as an Export passes it over
+    /// (ticket 19).
+    pub(super) fn versions(
         &self,
-        scope: &RestoreScope<'_>,
+        from: SnapshotId,
+        paths: &[RootPath],
+        named_withheld: bool,
     ) -> Result<Vec<(RootPath, Version)>, StoreError> {
-        let root = self.snapshot_tree(scope.from)?;
+        let root = self.snapshot_tree(from)?;
         let sidecar = self.sidecar(&root)?.sidecar;
         let modes = sidecar.modes();
         let whole = [RootPath::root()];
-        let asked = if scope.paths.is_empty() {
-            &whole[..]
-        } else {
-            scope.paths
-        };
+        let asked = if paths.is_empty() { &whole[..] } else { paths };
 
         let mut sources = BTreeMap::new();
         for path in asked {
@@ -221,8 +237,13 @@ impl HistoryStore {
             let entry = match self.entry_at(&root, path) {
                 Ok(entry) => entry,
                 Err(StoreError::PathNotFound(path)) => {
+                    let withheld = withheld_at(&sidecar, &path);
                     // A directory holding only Withheld paths, which git holds no tree for.
-                    if withheld_at(&sidecar, &path).is_none() && withheld_beneath(&mut sources) {
+                    if withheld.is_none() && withheld_beneath(&mut sources) {
+                        continue;
+                    }
+                    if let (Some(reason), true) = (withheld, named_withheld) {
+                        sources.insert(path, Version::Withheld(reason));
                         continue;
                     }
                     return Err(nothing_at(&sidecar, path));
@@ -398,7 +419,7 @@ impl HistoryStore {
     }
 
     /// The version's link at `temporary`, pointing where it pointed.
-    fn link_temporary(&self, temporary: &Path, source: &Source) -> io::Result<()> {
+    pub(super) fn link_temporary(&self, temporary: &Path, source: &Source) -> io::Result<()> {
         let blob = self
             .repository
             .find_blob(source.blob)
@@ -420,7 +441,12 @@ impl HistoryStore {
     }
 
     /// The version's bytes in a new file at `temporary`, synced, with its permission bits set.
-    fn write_temporary(&self, temporary: &Path, source: &Source, bits: Bits) -> io::Result<()> {
+    pub(super) fn write_temporary(
+        &self,
+        temporary: &Path,
+        source: &Source,
+        bits: Bits,
+    ) -> io::Result<()> {
         // A file whose bits are known starts private, so content kept from others is never readable by
         // them for the moment before its bits are set; one whose bits the umask decides starts from it.
         let mut options = OpenOptions::new();
@@ -449,7 +475,7 @@ impl HistoryStore {
 
 /// Whether what is on disk now is what the plan was made for — or what an earlier file of the same
 /// request made of it: a directory it created, or put where a file was, and links it broke.
-fn still_as_planned(before: &Found, now: &Found) -> bool {
+pub(super) fn still_as_planned(before: &Found, now: &Found) -> bool {
     let ancestry = now.ancestry == before.ancestry
         || (matches!(before.ancestry, Ancestry::Missing | Ancestry::File { .. })
             && now.ancestry == Ancestry::Present);
@@ -632,7 +658,7 @@ fn file_existing(
 /// The permission bits a written file ends up with — none on Windows, which keeps none to set.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(unix), allow(dead_code))]
-enum Bits {
+pub(super) enum Bits {
     /// These.
     Exactly(u32),
     /// `base` — the umask's, when `None` — with the executable bit set for every class that may read,
@@ -711,8 +737,18 @@ fn recoverability(
     path: &RootPath,
     metadata: &fs::Metadata,
 ) -> Option<Unrecoverable> {
-    let root = scope.root_path;
-    let mut policy = scope.policy.clone();
+    recoverability_in(scope.root_path, scope.policy, path, metadata)
+}
+
+/// Why the file at `path` in the Root at `root`, under `policy`, would not enter a Snapshot taken now, if
+/// it would not.
+pub(super) fn recoverability_in(
+    root: &Path,
+    policy: &CapturePolicy,
+    path: &RootPath,
+    metadata: &fs::Metadata,
+) -> Option<Unrecoverable> {
+    let mut policy = policy.clone();
     let mut here = RootPath::root();
     let mut directories: Vec<RootPath> = path.ancestors().collect();
     directories.push(path.clone());
@@ -741,7 +777,7 @@ fn recoverability(
 }
 
 /// An entry beside `target` that the destination takes for the same name in another case or spelling.
-fn variant_of(root: &Path, target: &RootPath, naming: Naming) -> Option<String> {
+pub(super) fn variant_of(root: &Path, target: &RootPath, naming: Naming) -> Option<String> {
     let directory = absolute(root, &target.parent());
     let wanted = target.name();
 
@@ -872,14 +908,14 @@ fn nlink(_: &fs::Metadata) -> u64 {
 
 /// Whether the file is executable, where the platform says.
 #[cfg(unix)]
-fn executable(metadata: &fs::Metadata) -> Option<bool> {
+pub(super) fn executable(metadata: &fs::Metadata) -> Option<bool> {
     use std::os::unix::fs::PermissionsExt;
 
     Some(metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
-fn executable(_: &fs::Metadata) -> Option<bool> {
+pub(super) fn executable(_: &fs::Metadata) -> Option<bool> {
     None
 }
 
@@ -889,7 +925,7 @@ fn executable(_: &fs::Metadata) -> Option<bool> {
 /// The bits are read back, since the system may drop some without an error — setgid for a group the
 /// user is not in — and a file that did not get the bits asked for has failed (ticket 17).
 #[cfg(unix)]
-fn set_mode(file: &File, bits: Bits) -> io::Result<()> {
+pub(super) fn set_mode(file: &File, bits: Bits) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = match bits {
@@ -920,13 +956,13 @@ fn set_mode(file: &File, bits: Bits) -> io::Result<()> {
 
 /// Windows keeps no permission bits a Snapshot could carry (ticket 50).
 #[cfg(not(unix))]
-fn set_mode(_: &File, _: Bits) -> io::Result<()> {
+pub(super) fn set_mode(_: &File, _: Bits) -> io::Result<()> {
     Ok(())
 }
 
 /// Make a rename in `directory` durable, where the platform lets a directory be synced. Best effort:
 /// the file is in place either way, and a failure here is no reason to report it otherwise.
-fn sync_directory(directory: &Path) {
+pub(super) fn sync_directory(directory: &Path) {
     #[cfg(unix)]
     if let Ok(handle) = File::open(directory) {
         let _ = handle.sync_all();
@@ -935,7 +971,8 @@ fn sync_directory(directory: &Path) {
     let _ = directory;
 }
 
-fn absolute(root: &Path, path: &RootPath) -> PathBuf {
+/// Where `path` is on disk beneath `root`.
+pub(super) fn absolute(root: &Path, path: &RootPath) -> PathBuf {
     if path.is_root() {
         root.to_path_buf()
     } else {

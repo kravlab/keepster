@@ -12,13 +12,16 @@
 mod configuration;
 mod content;
 mod diff;
+mod directories;
 mod events;
 mod explain;
+mod export;
 mod git;
 mod housekeeping;
 mod jobs;
 mod openapi;
 mod pins;
+mod places;
 mod preview;
 mod problem;
 mod restore;
@@ -443,6 +446,10 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(jobs::show))
         .routes(routes!(diff::diff))
         .routes(routes!(restore::restore))
+        .routes(routes!(export::export))
+        .routes(routes!(export::stat))
+        .routes(routes!(export::archive))
+        .routes(routes!(directories::list))
         .routes(routes!(explain::explain))
         .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))

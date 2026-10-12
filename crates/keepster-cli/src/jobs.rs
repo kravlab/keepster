@@ -165,7 +165,7 @@ pub(crate) async fn start(client: &DaemonClient, url: &str, body: &[u8], detach:
 }
 
 /// Follow the job `id` until it ends, then report how.
-async fn follow(client: &DaemonClient, id: &str, mut stream: Option<EventStream>) -> u8 {
+pub(crate) async fn follow(client: &DaemonClient, id: &str, mut stream: Option<EventStream>) -> u8 {
     loop {
         let Some(events) = stream.as_mut() else {
             // No stream, or it went away: asking is slower and never misses the end.
@@ -209,6 +209,35 @@ async fn follow(client: &DaemonClient, id: &str, mut stream: Option<EventStream>
     }
 }
 
+/// The job `id` once it has ended, asked about until it has.
+pub(crate) async fn finished_job(client: &DaemonClient, id: &str) -> Result<Job, u8> {
+    loop {
+        if let Some(job) = finished(client, id).await? {
+            return Ok(job);
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// The exit code an ended job earns, said nowhere: a failed job earns its problem's, and an Export some
+/// of whose files failed earns a partial success's.
+pub(crate) fn exit_code(job: &Job) -> u8 {
+    match (job.state, &job.error) {
+        (JobState::Succeeded, _) => {
+            let failed = job.result.as_ref().is_some_and(|result| {
+                result
+                    .paths
+                    .iter()
+                    .any(|path| path.outcome == keepster_api::RestoreOutcome::Failed)
+            });
+            if failed { exit::PARTIAL } else { exit::SUCCESS }
+        }
+        (JobState::Failed, Some(problem)) => exit_code_for(Some(problem), problem.status),
+        (JobState::Failed, None) => exit::OTHER,
+        (JobState::Queued | JobState::Running, _) => exit::SUCCESS,
+    }
+}
+
 /// The job `id`, if it has ended.
 async fn finished(client: &DaemonClient, id: &str) -> Result<Option<Job>, u8> {
     let job: Job = answered(client.get(&format!("/v1/jobs/{id}")).await)?;
@@ -221,6 +250,10 @@ fn ended(job: &Job) -> u8 {
     match (job.state, &job.error) {
         (JobState::Succeeded, _) => {
             let result = job.result.clone().unwrap_or_default();
+            if job.kind == "export" {
+                crate::export::report_ended(&result);
+                return exit_code(job);
+            }
             if let Some(touched) = result.snapshots_touched {
                 if touched == 0 {
                     println!("nothing in the history matched");

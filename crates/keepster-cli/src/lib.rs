@@ -10,6 +10,7 @@ pub mod config;
 pub mod diff;
 pub mod events;
 pub mod explain;
+pub mod export;
 pub mod history;
 pub mod jobs;
 pub mod lines;
@@ -26,14 +27,15 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ForgetArgs, JobArgs, LogArgs,
-    MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, RestoreArgs,
-    SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, ForgetArgs, JobArgs,
+    LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs,
+    RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
 pub use events::{EventStream, SseEvent};
 pub use explain::explain;
+pub use export::export;
 pub use history::{cat, log};
 pub use jobs::{forget, job, maintain};
 pub use lines::LineStream;

@@ -1,10 +1,17 @@
-//! A Restore's preflight, as a value (ticket 47).
+//! A Restore's preflight, as a value (ticket 47) — and an Export's, which is the same read written
+//! somewhere else (ticket 58).
 //!
 //! Restore only overwrites and creates; it never deletes. Before the first byte is written, every path of
 //! the request is checked against what is on disk where it would go, and if any path needs a
 //! confirmation, a resolution, or cannot be restored at all, nothing is written and every path says why.
 //! What is on disk is gathered by the caller; deciding what it means is here, so it is the same on every
 //! platform and can be shown before anything happens (ticket 10).
+//!
+//! An Export keeps every rule but the three that exist because Restore overwrites the Working Tree under a
+//! Safety Snapshot — missing directories are simply made, a file's other names are none of its business,
+//! and what the Safety Snapshot could not hold matters only inside a Root — and adds two of its own:
+//! overwriting anything is confirmed, since outside a Root nothing can bring it back, and so is writing
+//! into a Root at all (ticket 19).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,7 +20,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::path::{InvalidPath, RootPath};
 use crate::sidecar::WithheldReason;
 
-/// A structural change a request must agree to before it is made. The blanket force agrees to all four.
+/// A structural change a request must agree to before it is made. The blanket force agrees to all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Confirmation {
     /// Directories that are not there are created.
@@ -25,15 +32,21 @@ pub enum Confirmation {
     BreakHardlinks,
     /// A file is overwritten whose current content the Safety Snapshot cannot hold.
     OverwriteUnrecoverable,
+    /// An Export writes over something already at its destination.
+    Overwrite,
+    /// An Export writes into a Watched Root.
+    DestInRoot,
 }
 
 impl Confirmation {
     /// Every confirmation, in the order they are reported.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::CreateParents,
         Self::ReplaceType,
         Self::BreakHardlinks,
         Self::OverwriteUnrecoverable,
+        Self::Overwrite,
+        Self::DestInRoot,
     ];
 
     /// The confirmation's wire name.
@@ -43,6 +56,8 @@ impl Confirmation {
             Self::ReplaceType => "replace_type",
             Self::BreakHardlinks => "break_hardlinks",
             Self::OverwriteUnrecoverable => "overwrite_unrecoverable",
+            Self::Overwrite => "overwrite",
+            Self::DestInRoot => "dest_in_root",
         }
     }
 
@@ -304,6 +319,13 @@ pub enum Issue {
         /// Why.
         reason: WithheldReason,
     },
+    /// An Export would write over what is at its destination, which nothing can bring back outside a Root.
+    Overwrite,
+    /// An Export would write into a Watched Root, which captures what it writes.
+    DestInRoot,
+    /// An Export would put the file inside another Watched Root beneath its destination, which it does
+    /// not write into: that Root's Safety Snapshot is not its to take. Refused.
+    OtherRoot,
 }
 
 impl Issue {
@@ -321,16 +343,21 @@ impl Issue {
             Self::LinkCheckFailed { .. } => "link_check_failed",
             Self::Withheld { .. } => "withheld",
             Self::ModesDiffer { .. } => "modes_differ",
+            Self::Overwrite => "overwrite",
+            Self::DestInRoot => "dest_in_root",
+            Self::OtherRoot => "other_root",
         }
     }
 
-    /// The confirmation that settles it, for the four that one does.
+    /// The confirmation that settles it, for those one does.
     pub fn confirmation(&self) -> Option<Confirmation> {
         match self {
             Self::ParentMissing => Some(Confirmation::CreateParents),
             Self::TypeChange { .. } => Some(Confirmation::ReplaceType),
             Self::Hardlinked { .. } => Some(Confirmation::BreakHardlinks),
             Self::OverwriteUnrecoverable { .. } => Some(Confirmation::OverwriteUnrecoverable),
+            Self::Overwrite => Some(Confirmation::Overwrite),
+            Self::DestInRoot => Some(Confirmation::DestInRoot),
             _ => None,
         }
     }
@@ -417,12 +444,85 @@ pub fn target_of(
     }
 }
 
-/// Decide what happens to every path, given what is on disk where each would go.
+/// Which operation a plan is for: the rules differ where the destination does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// Back over the Root's own Working Tree, under a Safety Snapshot.
+    Restore,
+    /// Into a directory the request names; `into_root` when that directory is inside a Watched Root.
+    Export { into_root: bool },
+}
+
+/// Decide what happens to every path of a Restore, given what is on disk where each would go.
 ///
-/// A confirmation settles only the issue it names, and the blanket force all four; a name question is
+/// A confirmation settles only the issue it names, and the blanket force all of them; a name question is
 /// settled only by its resolution. With `skip_unresolvable`, a path still in the way is skipped with its
 /// reasons rather than stopping the request.
 pub fn plan(
+    found: Vec<Found>,
+    naming: Naming,
+    confirmed: &Confirmed,
+    resolutions: &BTreeMap<RootPath, Resolution>,
+    skip_unresolvable: bool,
+) -> Plan {
+    planned(
+        Purpose::Restore,
+        found,
+        naming,
+        confirmed,
+        resolutions,
+        skip_unresolvable,
+    )
+}
+
+/// Decide what happens to every path of an Export into a destination — inside a Watched Root when
+/// `into_root` — given what is on disk where each would go there (ticket 19).
+///
+/// As [`plan`], less the rules that exist because Restore overwrites the Working Tree: a missing directory
+/// is made without asking, a file's other names are not asked about, and what is overwritten is asked
+/// about whatever it is (`overwrite`). Writing into a Root asks too (`dest_in_root`), for every path that
+/// writes anything, since what is written there is captured.
+pub fn export_plan(
+    found: Vec<Found>,
+    naming: Naming,
+    confirmed: &Confirmed,
+    resolutions: &BTreeMap<RootPath, Resolution>,
+    skip_unresolvable: bool,
+    into_root: bool,
+) -> Plan {
+    planned(
+        Purpose::Export { into_root },
+        found,
+        naming,
+        confirmed,
+        resolutions,
+        skip_unresolvable,
+    )
+}
+
+/// `plan` with every path that would write at one of `fenced` — targets inside another Watched Root
+/// beneath an Export's destination — refused, or skipped with `skip_unresolvable`.
+pub fn fence_other_roots(
+    plan: &mut Plan,
+    fenced: impl Fn(&RootPath) -> bool,
+    skip_unresolvable: bool,
+) {
+    for path in &mut plan.paths {
+        if matches!(path.step, Step::Create | Step::Restore | Step::Blocked) && fenced(&path.target)
+        {
+            path.issues.push(Issue::OtherRoot);
+            path.step = if skip_unresolvable {
+                Step::Skipped
+            } else {
+                Step::Blocked
+            };
+        }
+    }
+}
+
+/// The plan for `purpose`.
+fn planned(
+    purpose: Purpose,
     found: Vec<Found>,
     naming: Naming,
     confirmed: &Confirmed,
@@ -433,7 +533,7 @@ pub fn plan(
         .into_iter()
         .map(|found| {
             let resolution = resolutions.get(&found.path);
-            on_its_own(found, naming, resolution, confirmed.modes)
+            on_its_own(purpose, found, naming, resolution, confirmed.modes)
         })
         .collect();
 
@@ -462,6 +562,7 @@ pub fn plan(
 
 /// One path's step and issues from its own facts alone.
 fn on_its_own(
+    purpose: Purpose,
     found: Found,
     naming: Naming,
     resolution: Option<&Resolution>,
@@ -496,11 +597,17 @@ fn on_its_own(
     {
         issues.push(Issue::NameInvalid);
     }
+    let exporting = matches!(purpose, Purpose::Export { .. });
     match ancestry {
         Ancestry::Present => {}
+        // Making a directory destroys nothing, and an Export into a new directory makes every one.
+        Ancestry::Missing if exporting => {}
         Ancestry::Missing => issues.push(Issue::ParentMissing),
         Ancestry::File { at, unrecoverable } => {
             issues.push(Issue::TypeChange { at });
+            if exporting {
+                issues.push(Issue::Overwrite);
+            }
             if let Some(why) = unrecoverable {
                 issues.push(Issue::OverwriteUnrecoverable { why });
             }
@@ -516,7 +623,9 @@ fn on_its_own(
             links_inside,
             unrecoverable,
         } => {
-            if links > 1 {
+            if exporting {
+                issues.push(Issue::Overwrite);
+            } else if links > 1 {
                 let outside = (links - 1).saturating_sub(links_inside.len() as u64);
                 issues.push(Issue::Hardlinked {
                     inside: links_inside,
@@ -534,6 +643,9 @@ fn on_its_own(
         }
         Existing::Other { unrecoverable } => {
             issues.push(Issue::TypeChange { at: target.clone() });
+            if exporting {
+                issues.push(Issue::Overwrite);
+            }
             if let Some(why) = unrecoverable {
                 issues.push(Issue::OverwriteUnrecoverable { why });
             }
@@ -574,6 +686,11 @@ fn on_its_own(
             }
             None => issues.push(Issue::ModesDiffer { snapshot, current }),
         }
+    }
+    if purpose == (Purpose::Export { into_root: true })
+        && matches!(step, Step::Create | Step::Restore)
+    {
+        issues.push(Issue::DestInRoot);
     }
 
     PathPlan {

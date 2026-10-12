@@ -115,6 +115,8 @@ pub enum Trigger {
     Reconcile,
     /// A Restore is about to write: this is its Safety Snapshot, the state the Restore can be undone to.
     Restore,
+    /// An Export is about to overwrite inside this Root: this is its Safety Snapshot (ticket 58).
+    Export,
     /// The pass before could not read everything it meant to, and the Root is passed over again: a file
     /// kept at its previous version looks unchanged, and no second event is coming (ADR 0004).
     Retry,
@@ -163,6 +165,7 @@ impl Trigger {
             Self::Periodic => "periodic",
             Self::Reconcile => "reconcile",
             Self::Restore => "restore",
+            Self::Export => "export",
             Self::Retry => "retry",
         }
     }
@@ -175,6 +178,7 @@ impl Trigger {
             "periodic" => Some(Self::Periodic),
             "reconcile" => Some(Self::Reconcile),
             "restore" => Some(Self::Restore),
+            "export" => Some(Self::Export),
             "retry" => Some(Self::Retry),
             _ => None,
         }

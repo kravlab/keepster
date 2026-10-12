@@ -93,7 +93,7 @@ impl Format {
     tag = "snapshots",
     params(RootAddress, DiffParameters),
     responses(
-        (status = 200, description = "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters.", content(
+        (status = 200, description = "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters, and carries `Content-Disposition: attachment` so a browser saves it as it is.", content(
             (Diff = "application/json"),
             (String = "text/x-diff"),
         )),
@@ -141,7 +141,21 @@ pub(crate) async fn diff(
     };
 
     Ok(match answer {
-        Answer::Unified(patch) => ([(header::CONTENT_TYPE, "text/x-diff")], patch).into_response(),
+        // Saved, not shown: a patch is applied byte for byte, and a browser's text view is no copy of it.
+        Answer::Unified(patch) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/x-diff"),
+                ),
+                (
+                    header::CONTENT_DISPOSITION,
+                    crate::content::attachment(&format!("{from}..{}.diff", to.name())),
+                ),
+            ],
+            patch,
+        )
+            .into_response(),
         Answer::Files(comparison) => Json(Diff {
             from: from.to_string(),
             to: to.name(),

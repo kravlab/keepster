@@ -4,6 +4,7 @@
 //! transport belong to the daemon above it (ticket 08). Nothing here decides how anything is rendered.
 
 pub mod config;
+pub mod export;
 pub mod restore;
 pub mod roots;
 pub mod snapshots;

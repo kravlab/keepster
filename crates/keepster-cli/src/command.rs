@@ -57,6 +57,10 @@ pub enum Command {
     /// Put a Snapshot's versions of files back over the Working Tree.
     Restore(RestoreArgs),
 
+    /// Write a Snapshot's versions of files into another directory, or into one zip archive, leaving the
+    /// Working Tree untouched.
+    Export(ExportArgs),
+
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
 
@@ -367,6 +371,18 @@ pub struct RestoreArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// What only the person can settle.
+    #[command(flatten)]
+    pub resolving: ResolutionArgs,
+
+    /// Print the daemon's answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The answers a Restore and an Export take to what only the person can settle.
+#[derive(Debug, Args)]
+pub struct ResolutionArgs {
     /// Of the files that are one file here, write this one and skip the others.
     #[arg(long, value_name = "PATH")]
     pub pick: Vec<PathBuf>,
@@ -380,18 +396,82 @@ pub struct RestoreArgs {
     pub name_case: Vec<String>,
 
     /// Where a file's permission bits on disk are not the Snapshot's: take the `snapshot`'s, or `keep`
-    /// those on disk — for every such file, or, as PATH=snapshot|keep, for one. Defaults to the
-    /// Root's `restore.modes` setting, which asks.
+    /// those on disk — for every such file, or, as PATH=snapshot|keep, for one. For a Restore, defaults
+    /// to the Root's `restore.modes` setting, which asks.
     #[arg(long, value_name = "snapshot|keep|PATH=snapshot|keep")]
     pub modes: Vec<String>,
 
-    /// Skip each file still in the way, with its reason, and restore the rest.
+    /// Skip each file still in the way, with its reason, and do the rest.
     #[arg(long)]
     pub skip_unresolvable: bool,
 
     /// Never ask: a confirmation or a resolution still missing is reported, and the exit code is 5.
     #[arg(long)]
     pub no_input: bool,
+}
+
+/// Options of `keepster export`.
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// The files or directories to export, as paths on this machine — they need not exist any more.
+    /// None, or the Root itself, is the whole Snapshot.
+    pub paths: Vec<PathBuf>,
+
+    /// Which Snapshot, as `cat -s` takes it: `latest` (the default), `~N`, an identity, a moment or a
+    /// duration ago.
+    #[arg(long, value_name = "SELECTOR")]
+    pub from: Option<String>,
+
+    /// The directory to write into, made if missing; each file goes at its path in the Root beneath it.
+    #[arg(
+        long,
+        value_name = "DIR",
+        required_unless_present = "archive",
+        conflicts_with = "archive"
+    )]
+    pub to: Option<PathBuf>,
+
+    /// Write one zip archive of the selection to FILE instead, as a browser downloads it.
+    #[arg(long, value_name = "FILE")]
+    pub archive: Option<PathBuf>,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the first path, or the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Print what would happen to every file and how much it is, and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Write over what is already in the destination. Off by default: outside a Root nothing can bring
+    /// it back.
+    #[arg(long)]
+    pub overwrite: bool,
+
+    /// Replace something of another kind: a file where a directory is needed, a link or a special file.
+    #[arg(long)]
+    pub replace_type: bool,
+
+    /// Write into a Watched Root, which captures what is written there.
+    #[arg(long)]
+    pub dest_in_root: bool,
+
+    /// Inside a Root, overwrite what its Safety Snapshot cannot hold.
+    #[arg(long)]
+    pub overwrite_unrecoverable: bool,
+
+    /// All four of the above. It answers no question about names.
+    #[arg(long)]
+    pub force: bool,
+
+    /// What only the person can settle.
+    #[command(flatten)]
+    pub resolving: ResolutionArgs,
+
+    /// Print the job's identity and end at once, rather than following it to its end.
+    #[arg(long)]
+    pub detach: bool,
 
     /// Print the daemon's answer.
     #[arg(long)]

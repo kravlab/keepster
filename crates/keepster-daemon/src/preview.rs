@@ -276,7 +276,7 @@ fn prepared(state: &DaemonState, path: &Path) -> Result<Prepared, ProblemRespons
     let records = registry.readable().map_err(unlisted)?;
     let holding = records
         .iter()
-        .find_map(|record| Some((record, inside(&absolute, &record.path)?)));
+        .find_map(|record| Some((record, crate::places::inside(&absolute, &record.path)?)));
 
     let (effective, root, start, overlaps) = match holding {
         Some((record, start)) => {
@@ -355,29 +355,6 @@ fn prepared(state: &DaemonState, path: &Path) -> Result<Prepared, ProblemRespons
         root: walked,
         start,
     })
-}
-
-/// Where `path` lies inside the Root at `root`, the Root itself included — compared as registering
-/// compares, and then by where both really are, so that a path spelt through a link still finds its Root.
-fn inside(path: &Path, root: &Path) -> Option<RootPath> {
-    relative(path, root).or_else(|| {
-        let real = |path: &Path| std::fs::canonicalize(path).ok();
-        relative(&real(path)?, &real(root)?)
-    })
-}
-
-/// `path` beneath `root`, `/`-separated, if it lies there.
-fn relative(path: &Path, root: &Path) -> Option<RootPath> {
-    let mut parts = Vec::new();
-    for component in path.strip_prefix(root).ok()?.components() {
-        match component {
-            std::path::Component::Normal(name) => parts.push(name.to_str()?.to_owned()),
-            std::path::Component::CurDir => {}
-            _ => return None,
-        }
-    }
-
-    RootPath::parse(&parts.join("/")).ok()
 }
 
 /// Send `record` down `lines`, waiting at most [`STALL`] for room: whether anyone is still reading.

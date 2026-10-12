@@ -33,6 +33,7 @@ mod maintenance;
 
 pub use forget::Forgotten;
 pub use maintenance::Maintained;
+mod export;
 mod pins;
 mod preview;
 mod restore;
@@ -41,6 +42,7 @@ mod retention;
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
 };
+pub use export::{ExportScope, Selected, Selection, Within};
 pub use preview::{PreviewOptions, preview};
 pub use restore::{LinkNames, Preflight, RestoreScope, Written, destination_naming};
 pub use retention::Retained;

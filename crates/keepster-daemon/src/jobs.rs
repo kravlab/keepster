@@ -178,7 +178,7 @@ pub(crate) async fn maintain(
     if new {
         let running = state.clone();
         tokio::task::spawn_blocking(move || {
-            run(&running, job, MAINTENANCE, id, |state| {
+            run_holding(&running, job, MAINTENANCE, id, None, |state| {
                 maintenance(state, id, &location)
             });
         });
@@ -187,8 +187,45 @@ pub(crate) async fn maintain(
     Ok(accepted(job))
 }
 
+/// Queue a job of `kind` asking `request` of `root` — or join the same one still waiting — and run it
+/// when its turn comes: holding `root`'s store, and `also`'s when that is another Root's. Says which job.
+pub(crate) fn start<F>(
+    state: &DaemonState,
+    kind: &'static str,
+    request: String,
+    root: RootId,
+    also: Option<RootId>,
+    work: F,
+) -> JobId
+where
+    F: FnOnce(&DaemonState, JobId) -> Result<JobResult, ProblemResponse> + Send + 'static,
+{
+    let (job, new) =
+        state
+            .jobs
+            .queue_or_join(JobId::generate(crate::roots::now()), kind, request, root);
+    if new {
+        let running = state.clone();
+        tokio::task::spawn_blocking(move || {
+            run_holding(&running, job, kind, root, also, |state| work(state, job));
+        });
+    }
+
+    job
+}
+
+/// Say that the job `job` got further: `done` of `total` steps.
+pub(crate) fn announce_progress(state: &DaemonState, job: JobId, done: u64, total: u64) {
+    state.jobs.progress(job, done, total);
+    state.publish(Event::JobProgress {
+        job: job.to_string(),
+        done,
+        total,
+    });
+}
+
 /// The answer to a job just accepted: `202`, and where it is.
-fn accepted(job: JobId) -> impl IntoResponse {
+pub(crate) fn accepted(job: JobId) -> impl IntoResponse {
     (
         StatusCode::ACCEPTED,
         [(header::LOCATION, format!("/v1/jobs/{job}"))],
@@ -366,7 +403,7 @@ pub(crate) async fn forget(
     if new {
         let running = state.clone();
         tokio::task::spawn_blocking(move || {
-            run(&running, job, FORGET, id, |state| {
+            run_holding(&running, job, FORGET, id, None, |state| {
                 forgetting(
                     state,
                     job,
@@ -458,14 +495,7 @@ fn forgetting(
             .forget_from_now_on(id, &rule.text)
             .map_err(|error| crate::problem::invalid_file(&error))?;
     }
-    let announce = |done: u64, total: u64| {
-        state.jobs.progress(job, done, total);
-        state.publish(Event::JobProgress {
-            job: job.to_string(),
-            done,
-            total,
-        });
-    };
+    let announce = |done: u64, total: u64| announce_progress(state, job, done, total);
     let mut steps = 1;
     let forgotten = snapshots::forget(location, rule, working_tree, &mut |done, total| {
         steps = total + 1;
@@ -494,6 +524,7 @@ fn forgetting(
             .collect(),
         excluded: Some(exclude),
         left_alone: forgotten.left_alone,
+        ..JobResult::default()
     })
 }
 
@@ -526,16 +557,33 @@ pub(crate) async fn show(
     state.jobs.report(job).map(Json).ok_or_else(not_found)
 }
 
-/// Run the job `id` of `kind` on `root`: wait for the store as a capture does, then do `work` and say
-/// how it ended. Called off the async runtime.
-fn run<F>(state: &DaemonState, id: JobId, kind: &'static str, root: RootId, work: F)
-where
+/// Run the job `id` of `kind` on `root`: wait for its store as a capture does — and for `also`'s too, when
+/// that is another Root's — then do `work` and say how it ended. Called off the async runtime.
+///
+/// Two stores are taken in the order of their identities, by every job that takes two, so two such jobs
+/// crossing each other cannot deadlock; nothing else ever holds two.
+fn run_holding<F>(
+    state: &DaemonState,
+    id: JobId,
+    kind: &'static str,
+    root: RootId,
+    also: Option<RootId>,
+    work: F,
+) where
     F: FnOnce(&DaemonState) -> Result<JobResult, ProblemResponse>,
 {
-    let store = state.store_lock(root);
-    let held = store
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut roots = vec![root];
+    roots.extend(also.filter(|also| *also != root));
+    roots.sort();
+    let stores: Vec<_> = roots.iter().map(|root| state.store_lock(*root)).collect();
+    let held: Vec<_> = stores
+        .iter()
+        .map(|store| {
+            store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        })
+        .collect();
     let refused = if state.housekeeping.is_stopping() {
         Some(ProblemResponse::new(
             StatusCode::SERVICE_UNAVAILABLE,
