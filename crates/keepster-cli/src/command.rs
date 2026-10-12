@@ -106,6 +106,26 @@ pub enum Command {
     /// Scheduled Task at logon. Needs no administrator rights, and never touches history.
     #[command(subcommand)]
     Service(ServiceCommand),
+
+    /// Show the daemon's log level, raise it for a while, or end a raise. A raise always ends by
+    /// itself: `keepster log-level debug --for 30m`.
+    LogLevel(LogLevelArgs),
+}
+
+/// Options of `keepster log-level`.
+#[derive(Debug, Args)]
+pub struct LogLevelArgs {
+    /// The level to raise to: `error`, `warn`, `info`, `debug` or `trace`.
+    #[arg(requires = "duration", conflicts_with = "reset")]
+    pub level: Option<String>,
+
+    /// How long the raise lasts, such as `30m` or `2h`; then the configured level is back.
+    #[arg(long = "for", value_name = "DURATION", requires = "level")]
+    pub duration: Option<String>,
+
+    /// End a raise now.
+    #[arg(long)]
+    pub reset: bool,
 }
 
 /// The subcommands of `keepster service`.

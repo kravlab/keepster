@@ -152,6 +152,11 @@ pub const SCHEMA: &[KeySpec] = &[
     daemon_key("ui.listener"),
     daemon_key("ui.port"),
     daemon_key("ui.allowed_origins"),
+    // The log describes the daemon too: one file, one format, one budget, whichever Roots there are
+    // (ticket 62). The level here is the one the daemon returns to after a raise expires.
+    daemon_key("log.level"),
+    daemon_key("log.format"),
+    daemon_key("log.ceiling"),
 ];
 
 /// A key describing the daemon: set in the global file's own table alone, and in force from the start
@@ -168,6 +173,18 @@ const fn daemon_key(name: &'static str) -> KeySpec {
 
 /// The port the loopback listener binds unless `ui.port` says otherwise.
 pub const DEFAULT_PORT: u16 = 7419;
+
+/// How much the log's files may hold together unless `log.ceiling` says otherwise (ticket 33).
+pub const DEFAULT_LOG_CEILING: u64 = 50 * 1024 * 1024;
+
+/// The smallest ceiling accepted: below it each of the log's files would hold too few lines to read.
+const MINIMUM_LOG_CEILING: u64 = 64 * 1024;
+
+/// The levels a log can be at, from the quietest.
+pub const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
+
+/// The formats a log line can be written in: `key=value` text for a person, or one JSON object.
+pub const LOG_FORMATS: &[&str] = &["text", "json"];
 
 /// A key deciding when and how a Root is captured rather than what a capture holds: settable per Root,
 /// as ticket 04 lists the Trigger set, its intervals and Reconciliation, and changing it reclassifies
@@ -400,6 +417,9 @@ struct Layer {
     listener: Option<Entry>,
     port: Option<Entry>,
     allowed_origins: Option<Entry>,
+    log_level: Option<Entry>,
+    log_format: Option<Entry>,
+    log_ceiling: Option<Entry>,
 }
 
 impl Layer {
@@ -429,6 +449,9 @@ impl Layer {
             "ui.listener" => self.listener.take().is_some(),
             "ui.port" => self.port.take().is_some(),
             "ui.allowed_origins" => self.allowed_origins.take().is_some(),
+            "log.level" => self.log_level.take().is_some(),
+            "log.format" => self.log_format.take().is_some(),
+            "log.ceiling" => self.log_ceiling.take().is_some(),
             other => unreachable!("`{other}` is not a key of the schema"),
         }
     }
@@ -786,6 +809,18 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         |layer| layer.allowed_origins.as_ref(),
         Value::Words(Vec::new()),
     );
+    let log_level = scalar(
+        |layer| layer.log_level.as_ref(),
+        Value::Name("info".to_owned()),
+    );
+    let log_format = scalar(
+        |layer| layer.log_format.as_ref(),
+        Value::Name("text".to_owned()),
+    );
+    let log_ceiling = scalar(
+        |layer| layer.log_ceiling.as_ref(),
+        Value::Bytes(DEFAULT_LOG_CEILING),
+    );
     let modes_default = match &restore_modes.value {
         Value::Name(name) => mode_choice(name).flatten(),
         _ => unreachable!("the Restore modes answer is only ever set as a name"),
@@ -823,6 +858,9 @@ fn merge(layers: &[&Layer], mut warnings: Vec<ConfigWarning>) -> Effective {
         ("ui.listener", Setting::Scalar(listener)),
         ("ui.port", Setting::Scalar(port)),
         ("ui.allowed_origins", Setting::Scalar(allowed_origins)),
+        ("log.level", Setting::Scalar(log_level)),
+        ("log.format", Setting::Scalar(log_format)),
+        ("log.ceiling", Setting::Scalar(log_ceiling)),
     ];
     let keys = settings
         .into_iter()
@@ -976,6 +1014,8 @@ struct GlobalDocument {
     retention: RetentionTable,
     #[serde(default)]
     ui: UiTable,
+    #[serde(default)]
+    log: LogTable,
     // The daemon's own, so the top level alone holds it: one daemon runs one `git` for every Root.
     #[serde(default)]
     git: GitTable,
@@ -1001,6 +1041,8 @@ struct Settings {
     retention: RetentionTable,
     #[serde(default)]
     ui: UiTable,
+    #[serde(default)]
+    log: LogTable,
 }
 
 /// A `[[roots]]` block: the Roots its `path` glob matches, and the whole schema for them.
@@ -1020,6 +1062,8 @@ struct PatternBlock {
     retention: RetentionTable,
     #[serde(default)]
     ui: UiTable,
+    #[serde(default)]
+    log: LogTable,
 }
 
 /// The tables of the schema, wherever a block holds them.
@@ -1030,6 +1074,7 @@ struct Tables<'a> {
     restore: &'a RestoreTable,
     retention: &'a RetentionTable,
     ui: &'a UiTable,
+    log: &'a LogTable,
 }
 
 /// Each block holding the whole schema hands its tables over as one.
@@ -1044,6 +1089,7 @@ macro_rules! holds_tables {
                     restore: &self.restore,
                     retention: &self.retention,
                     ui: &self.ui,
+                    log: &self.log,
                 }
             }
         }
@@ -1069,6 +1115,16 @@ struct UiTable {
     listener: Option<Spanned<bool>>,
     port: Option<Spanned<i64>>,
     allowed_origins: Option<Spanned<Vec<String>>>,
+}
+
+/// The `[log]` table: the daemon's log (ticket 62). Daemon keys, read everywhere so that a block or a
+/// Root's file setting one is told so, and then ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogTable {
+    level: Option<Spanned<String>>,
+    format: Option<Spanned<String>>,
+    ceiling: Option<Spanned<String>>,
 }
 
 /// The `[retention]` table: the ladder, one `[[retention.tier]]` per Tier from the youngest (ticket 51).
@@ -1147,6 +1203,7 @@ fn settings_layer(
         restore,
         retention,
         ui,
+        log,
     }: Tables<'_>,
     level: Level,
     path: &Path,
@@ -1294,6 +1351,52 @@ fn settings_layer(
             Ok(Entry {
                 value: Value::Words(allowed),
                 origin: origin(origins.span()),
+            })
+        })
+        .transpose()?;
+    let invalid_log = |key: &str, message: String| ConfigError {
+        path: path.to_path_buf(),
+        message: format!("{block}log.{key}: {message}"),
+    };
+    let one_of = |key: &str, written: &Option<Spanned<String>>, known: &[&str]| {
+        written
+            .as_ref()
+            .map(|written| {
+                let name = written.get_ref();
+                if known.contains(&name.as_str()) {
+                    Ok(Entry {
+                        value: Value::Name(name.clone()),
+                        origin: origin(written.span()),
+                    })
+                } else {
+                    Err(invalid_log(
+                        key,
+                        format!("`{name}` is not one; write {}", known.join(", ")),
+                    ))
+                }
+            })
+            .transpose()
+    };
+    layer.log_level = one_of("level", &log.level, LOG_LEVELS)?;
+    layer.log_format = one_of("format", &log.format, LOG_FORMATS)?;
+    layer.log_ceiling = log
+        .ceiling
+        .as_ref()
+        .map(|ceiling| {
+            let bytes = parse_size(ceiling.get_ref())
+                .map_err(|error| invalid_log("ceiling", error.to_string()))?;
+            if bytes < MINIMUM_LOG_CEILING {
+                return Err(invalid_log(
+                    "ceiling",
+                    format!(
+                        "`{}` is below the smallest ceiling, {MINIMUM_LOG_CEILING} bytes",
+                        ceiling.get_ref()
+                    ),
+                ));
+            }
+            Ok(Entry {
+                value: Value::Bytes(bytes),
+                origin: origin(ceiling.span()),
             })
         })
         .transpose()?;
@@ -1508,6 +1611,12 @@ pub struct DaemonSettings {
     /// The browser origins it answers besides its own, each as `scheme://host[:port]`:
     /// `ui.allowed_origins`.
     pub allowed_origins: Vec<String>,
+    /// The level its log returns to after a raise expires: `log.level`, one of [`LOG_LEVELS`].
+    pub log_level: String,
+    /// How a log line is written: `log.format`, one of [`LOG_FORMATS`].
+    pub log_format: String,
+    /// How much the log's files hold together, in bytes: `log.ceiling`.
+    pub log_ceiling: u64,
 }
 
 /// One Root's configuration as it stands.
@@ -1698,6 +1807,18 @@ impl Configuration {
             allowed_origins: match value("ui.allowed_origins") {
                 Some(Value::Words(origins)) => origins,
                 _ => Vec::new(),
+            },
+            log_level: match value("log.level") {
+                Some(Value::Name(level)) => level,
+                _ => "info".to_owned(),
+            },
+            log_format: match value("log.format") {
+                Some(Value::Name(format)) => format,
+                _ => "text".to_owned(),
+            },
+            log_ceiling: match value("log.ceiling") {
+                Some(Value::Bytes(bytes)) => bytes,
+                _ => DEFAULT_LOG_CEILING,
             },
         }
     }

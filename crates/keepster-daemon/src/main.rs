@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use keepster_cli::{Cli, Command, exit};
@@ -62,6 +63,7 @@ async fn main() -> ExitCode {
                 runtime_dir,
                 store_base,
                 keepster_service::default_config_path(),
+                keepster_service::default_log_dir(),
             )
             .await
         }
@@ -90,6 +92,7 @@ async fn main() -> ExitCode {
         Command::Forget(args) => keepster_cli::forget(args, &control_path).await,
         Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
         Command::Service(command) => supervised::service(command, &control_path).await,
+        Command::LogLevel(args) => keepster_cli::log_level(args, &control_path).await,
     };
 
     ExitCode::from(code)
@@ -104,6 +107,7 @@ async fn run_daemon(
     runtime_dir: PathBuf,
     store_base: PathBuf,
     config_path: Option<PathBuf>,
+    log_dir: Option<PathBuf>,
 ) -> u8 {
     // Taken over before the daemon starts, so a stop asked for while it recovers its indexes is not a
     // kill: the stop sequence runs as soon as there is a daemon to stop.
@@ -114,6 +118,14 @@ async fn run_daemon(
             return exit::OTHER;
         }
     };
+    let log = log_dir.map(|directory| Arc::new(keepster_daemon::FileLog::new(directory)));
+    // A panic is fatal, so it reaches the journal through the default hook's standard error, and the
+    // log file through the subscriber.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        tracing::error!(%panic, "the daemon panicked");
+        report(panic);
+    }));
     let daemon = match keepster_daemon::start(DaemonConfig {
         control_path,
         runtime_dir,
@@ -124,6 +136,7 @@ async fn run_daemon(
         retry_after: None,
         housekeeping: None,
         volumes: None,
+        log: log.clone(),
     })
     .await
     {
@@ -139,6 +152,22 @@ async fn run_daemon(
             return exit::OTHER;
         }
     };
+
+    // Standard error reaches the journal under systemd, so it carries this line and fatal ones alone; the
+    // volume goes to the file (ticket 62).
+    match log.as_deref().and_then(keepster_daemon::FileLog::file) {
+        Some(file) => eprintln!(
+            "keepster: the daemon {} is running as pid {}; its log is {}",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id(),
+            file.display()
+        ),
+        None => eprintln!(
+            "keepster: the daemon {} is running as pid {}, without a log file",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        ),
+    }
 
     if let Err(error) = stop.requested().await {
         eprintln!("keepster: could not wait for a stop signal: {error}");

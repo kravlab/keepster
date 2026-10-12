@@ -26,7 +26,7 @@ pub(crate) struct Sandbox {
 impl Sandbox {
     pub(crate) fn new() -> Self {
         let directory = TempDir::new().expect("a temporary directory");
-        for name in ["r", "data", "config", "home"] {
+        for name in ["r", "data", "config", "home", "state"] {
             std::fs::create_dir_all(directory.path().join(name)).expect("a directory");
         }
 
@@ -52,6 +52,15 @@ impl Sandbox {
                 .join("home/Library/Application Support/Keepster/config.toml")
         } else {
             self.base().join("config/keepster/config.toml")
+        }
+    }
+
+    /// Where a daemon run in this sandbox writes its log.
+    pub(crate) fn log_file(&self) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            self.base().join("home/Library/Logs/Keepster/daemon.log")
+        } else {
+            self.base().join("state/keepster/daemon.log")
         }
     }
 
@@ -84,6 +93,7 @@ impl Sandbox {
             .env("TMPDIR", base.join("r"))
             .env("XDG_DATA_HOME", base.join("data"))
             .env("XDG_CONFIG_HOME", base.join("config"))
+            .env("XDG_STATE_HOME", base.join("state"))
             .env("HOME", base.join("home"))
             .env("USER", "keepster-sandbox-user")
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
@@ -161,7 +171,7 @@ async fn post(client: &DaemonClient, path: &str, body: Value) -> Value {
 }
 
 /// Send `signal` (`TERM`, `KILL`) to the process `pid`, as a service manager does.
-fn signal(pid: u32, signal: &str) {
+pub(crate) fn signal(pid: u32, signal: &str) {
     let sent = std::process::Command::new("kill")
         .args([format!("-{signal}"), pid.to_string()])
         .status()

@@ -84,6 +84,7 @@ error_codes! {
     Unauthorized = "unauthorized": "The loopback listener was asked without its token: no cookie a bootstrap code was exchanged for, no `Authorization: Bearer` with the token, or a bootstrap code already used.",
     HostRefused = "host_refused": "The request's `Host` is not the loopback listener's own address with its port, which is how a page rebinding its own name to the loopback is told apart.",
     OriginRefused = "origin_refused": "The request's `Origin` is not the listener's own, nor one `ui.allowed_origins` names.",
+    LogLevelInvalid = "log_level_invalid": "A raise of the log level names a level this build does not know, or no duration, or one shorter than a second or longer than seven days.",
     TokenFailed = "token_failed": "A token or a bootstrap code could not be minted or written; the token in force is unchanged.",
     ListenerUnavailable = "listener_unavailable": "The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`.",
 }

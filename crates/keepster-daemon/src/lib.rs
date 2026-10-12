@@ -20,6 +20,7 @@ mod export;
 mod git;
 mod housekeeping;
 mod jobs;
+mod logging;
 mod loopback;
 mod ndjson;
 mod openapi;
@@ -53,6 +54,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 pub use housekeeping::HousekeepingTiming;
+pub use logging::{FileLog, LOG_FILE};
 pub use loopback::TOKEN_FILE;
 pub use openapi::openapi_json;
 pub use volumes::{PlatformVolumes, Volume, Volumes};
@@ -84,6 +86,9 @@ pub struct DaemonConfig {
     /// How Retention and maintenance are paced, or `None` for [`HousekeepingTiming::default`]. Only a
     /// test has reason to set it.
     pub housekeeping: Option<HousekeepingTiming>,
+    /// The log file the binary writes, installed once the configuration says how (ticket 62), or `None`
+    /// to write none — a daemon a test starts in-process, which shares its process with others.
+    pub log: Option<Arc<FileLog>>,
     /// Who answers which volume a path is on, or `None` for [`PlatformVolumes`]. Only a test has reason
     /// to set it: unplugging a disk is not something a test can do to the machine it runs on.
     pub volumes: Option<Arc<dyn Volumes>>,
@@ -165,6 +170,22 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
         config.store_base.clone(),
     );
     let settings = configuration.daemon();
+    if let Some(log) = &config.log {
+        // A daemon that cannot write its log still captures: the insurance is the point, the log only
+        // explains it. The journal hears why.
+        if let Err(error) = log.install(&settings) {
+            eprintln!("keepster: the log could not be opened, so nothing is logged: {error}");
+        }
+    }
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        "the daemon is starting"
+    );
+    let log_levels = Arc::new(logging::LogLevels::new(
+        settings.log_level.clone(),
+        config.log.clone(),
+    ));
     let token_path = config.runtime_dir.join(TOKEN_FILE);
     // Whatever a previous start left: a token is this start's or none, and a start that ends up with
     // no listener — switched off, or failing to bind — leaves no secret guarding nothing.
@@ -185,6 +206,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
         registry,
         configuration,
         listener,
+        log_levels,
         config.store_base,
         ceiling,
         config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
@@ -455,6 +477,8 @@ struct DaemonState {
     listener: Arc<loopback::Listener>,
     /// What the platform last said about autostart and linger (ticket 61).
     service: Arc<autostart::Readings>,
+    /// The level the log is written at, and a raise while it lasts (ticket 62).
+    log: Arc<logging::LogLevels>,
 }
 
 impl DaemonState {
@@ -466,6 +490,7 @@ impl DaemonState {
         registry: Registry,
         config: keepster_app::config::Configuration,
         listener: loopback::Listener,
+        log: Arc<logging::LogLevels>,
         store_base: PathBuf,
         watch_ceiling: Option<usize>,
         retry_after: std::time::Duration,
@@ -489,6 +514,7 @@ impl DaemonState {
             store_base,
             listener: Arc::new(listener),
             service: Arc::new(autostart::Readings::default()),
+            log,
         }
     }
 
@@ -587,7 +613,22 @@ impl DaemonState {
 fn router(state: DaemonState) -> Router {
     let (router, _) = api().split_for_parts();
 
-    router.with_state(state)
+    router
+        .with_state(state)
+        .layer(axum::middleware::from_fn(answered))
+}
+
+/// One debug line per request answered, on either listener: what a raised level is for.
+async fn answered(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    tracing::debug!(%method, %path, status = response.status().as_u16(), "answered");
+
+    response
 }
 
 /// What the loopback listener serves: the same `/v1` — the SPA gets no privileged endpoint — behind the
@@ -598,6 +639,7 @@ fn loopback_router(state: DaemonState, gate: Arc<loopback::Gate>) -> Router {
     router
         .route("/", axum::routing::get(landing))
         .with_state(state)
+        .layer(axum::middleware::from_fn(answered))
         .layer(axum::middleware::from_fn_with_state(gate, loopback::guard))
 }
 
@@ -653,6 +695,7 @@ fn on_both_listeners() -> OpenApiRouter<DaemonState> {
         .routes(routes!(explain::explain))
         .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))
+        .routes(routes!(logging::raise, logging::end))
 }
 
 /// Which build and which API this daemon is.
@@ -697,6 +740,7 @@ async fn status(
             maintenance,
             git,
             listener: Some(state.listener.status()),
+            log: Some(state.log.status()),
         },
         roots: registered,
     }))

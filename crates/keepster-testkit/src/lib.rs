@@ -331,6 +331,14 @@ impl Harness {
             .unwrap_or_else(|error| panic!("PUT {path} failed: {error}"))
     }
 
+    /// `PUT` JSON at the given path, failing the test if the daemon could not be reached.
+    pub async fn put_json(&self, path: &str, body: &serde_json::Value) -> Response {
+        self.client
+            .put_json(path, &serde_json::to_vec(body).expect("a JSON body"))
+            .await
+            .unwrap_or_else(|error| panic!("PUT {path} failed: {error}"))
+    }
+
     /// `DELETE` the given path, failing the test if the daemon could not be reached.
     pub async fn delete(&self, path: &str) -> Response {
         self.client
@@ -429,6 +437,8 @@ fn daemon_config(base: &Path, options: &Options) -> DaemonConfig {
         retry_after: options.retry_after,
         housekeeping: options.housekeeping,
         volumes: Some(Arc::clone(&options.volumes) as Arc<dyn keepster_daemon::Volumes>),
+        // The log is the process's, and a test process runs many daemons: none writes a file.
+        log: None,
     }
 }
 

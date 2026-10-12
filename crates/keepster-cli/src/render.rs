@@ -4,7 +4,9 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{GitStatus, ListenerState, ListenerStatus, Reported, Root, RootState, Status};
+use keepster_api::{
+    GitStatus, ListenerState, ListenerStatus, LogStatus, Reported, Root, RootState, Status,
+};
 
 /// Write the daemon's payload exactly as it arrived.
 ///
@@ -61,6 +63,9 @@ pub fn write_human(
     if let Some(listener) = &daemon.listener {
         write_listener(listener, out)?;
     }
+    if let Some(log) = &daemon.log {
+        writeln!(out, "  log          {}", log_level(log))?;
+    }
 
     write_roots(&status.roots, out)
 }
@@ -93,6 +98,19 @@ pub fn linger(row: Reported, reason: Option<&str>) -> String {
             "off — coverage ends at logout; `loginctl enable-linger` keeps it running".to_owned()
         }
         (row, _) => reported(row).to_owned(),
+    }
+}
+
+/// The level the log is written at — a raise said as one, with when it ends — and where it goes.
+pub fn log_level(log: &LogStatus) -> String {
+    let level = match &log.until {
+        Some(until) => format!("{} until {until}, then {}", log.level, log.default),
+        None => log.level.clone(),
+    };
+
+    match &log.file {
+        Some(file) => format!("{level}, in {file}"),
+        None => level,
     }
 }
 

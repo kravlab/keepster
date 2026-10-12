@@ -121,6 +121,39 @@ pub struct DaemonStatus {
     /// than a fault, and changes no exit code. Absent from a daemon older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listener: Option<ListenerStatus>,
+    /// The daemon's log: the level it writes at, and a raise while one lasts (ticket 62). Absent from a
+    /// daemon older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<LogStatus>,
+}
+
+/// The daemon's log, as `status` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LogStatus {
+    /// The level written at now: `error`, `warn`, `info`, `debug` or `trace`.
+    pub level: String,
+    /// The level configured by `log.level`, which a raise returns to by itself.
+    pub default: String,
+    /// When a raised level ends, as an RFC 3339 moment. Present only while a raise lasts: a state that
+    /// changes what the daemon does is never silent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// The file the log is written to, when the daemon writes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+/// A raise of the log level, which always ends: `PUT /v1/log/level`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LogLevelRequest {
+    /// The level to write at: `error`, `warn`, `info`, `debug` or `trace`.
+    pub level: String,
+    /// How long, as a duration such as `30m` or `2h`: at least a second, at most seven days. Required:
+    /// a level left raised by forgetting is not a state this API can reach.
+    #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+    pub duration: Option<String>,
 }
 
 /// The loopback listener: where it is, or why there is none.

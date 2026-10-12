@@ -177,6 +177,11 @@ impl DaemonClient {
         self.send("PUT", path, None, &[]).await
     }
 
+    /// Perform a `PUT` with a JSON body: a resource replaced by what the body says.
+    pub async fn put_json(&self, path: &str, body: &[u8]) -> Result<Response, ClientError> {
+        self.send("PUT", path, Some(body), &[]).await
+    }
+
     /// Perform a `DELETE` against the daemon.
     pub async fn delete(&self, path: &str) -> Result<Response, ClientError> {
         self.send("DELETE", path, None, &[]).await

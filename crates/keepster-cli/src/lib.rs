@@ -14,6 +14,7 @@ pub mod export;
 pub mod history;
 pub mod jobs;
 pub mod lines;
+pub mod log_level;
 pub mod pins;
 pub mod preview;
 pub mod reconcile;
@@ -30,9 +31,9 @@ pub mod ui;
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs, ForgetArgs,
-    GrepArgs, JobArgs, LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs,
-    ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand, ServiceInstallArgs, SnapshotArgs,
-    StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
+    GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs,
+    PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand, ServiceInstallArgs,
+    SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -42,6 +43,7 @@ pub use export::export;
 pub use history::{cat, log};
 pub use jobs::{forget, job, maintain};
 pub use lines::LineStream;
+pub use log_level::log_level;
 pub use pins::{pin, pins, unpin};
 pub use preview::preview;
 pub use reconcile::reconcile;

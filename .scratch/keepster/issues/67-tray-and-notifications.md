@@ -35,3 +35,6 @@ and the event stream, and no notification carries a tray-only action.
   have no platform function yet. Once `keepster service restart` exists, name it in the listener-off
   refusal (`loopback.rs`, ticket 60), which says "restart the daemon" today. The Windows task runs the
   console binary, so a window appears at logon until the daemon gets a windowless entry point.
+- **From ticket 62.** The tray "takes its level from the event stream", but no event says a raise began or
+  ended yet: `LogLevels::raise` and `end` in `keepster-daemon/src/logging.rs` are where one belongs. The
+  writer to reuse for `tray.log` is `keepster_service::rotating::RotatingFile`, with its own smaller ceiling.

@@ -442,3 +442,66 @@ async fn an_edit_to_a_restart_required_key_is_reported_until_the_daemon_restarts
     assert_eq!(listener["origin"]["level"], "global");
     assert_eq!(listener["restart_required"], false);
 }
+
+#[tokio::test]
+async fn the_log_keys_are_reported_at_their_defaults() {
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+
+    let configuration = configuration(&daemon, &root).await;
+
+    assert_eq!(key(&configuration, "log.level")["value"], "info");
+    assert_eq!(key(&configuration, "log.format")["value"], "text");
+    assert_eq!(
+        key(&configuration, "log.ceiling")["value"],
+        50 * 1024 * 1024
+    );
+    assert_eq!(
+        key(&configuration, "log.ceiling")["origin"]["level"],
+        "default"
+    );
+}
+
+#[tokio::test]
+async fn the_log_keys_describe_the_daemon_and_a_root_file_cannot_set_them() {
+    let daemon = Harness::start().await;
+    let (root, project) = registered(&daemon).await;
+    write(
+        &project,
+        ".keepster.toml",
+        b"[log]\nformat = \"json\"\nceiling = \"1 GiB\"\n",
+    );
+
+    let configuration = configuration(&daemon, &root).await;
+
+    assert_eq!(key(&configuration, "log.format")["value"], "text");
+    let ignored = configuration["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter(|warning| warning["code"] == "key_ignored")
+        .count();
+    assert_eq!(ignored, 2, "{configuration}");
+    watching(&daemon, &root).await;
+}
+
+#[tokio::test]
+async fn a_log_format_or_level_this_build_does_not_know_is_refused() {
+    let daemon = Harness::start().await;
+    let (root, _) = registered(&daemon).await;
+
+    for (written, key_name) in [
+        (&b"[log]\nformat = \"xml\"\n"[..], "log.format"),
+        (&b"[log]\nlevel = \"chatty\"\n"[..], "log.level"),
+        (&b"[log]\nceiling = \"1 KiB\"\n"[..], "log.ceiling"),
+    ] {
+        daemon.write_global_config(written);
+        let configuration = configuration(&daemon, &root).await;
+        assert!(
+            configuration["errors"][0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(key_name)),
+            "{key_name}: {configuration}"
+        );
+    }
+}

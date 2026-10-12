@@ -150,3 +150,9 @@ the ceiling **describe the daemon**, so by the class test of ticket 24 they live
 and are never settable per Root.
 
 Refines tickets 04, 05, 08, 21 and 30.
+
+## Comments
+- **From ticket 62: the command is `keepster log-level debug --for 30m`**, with `keepster log-level --reset` to end
+  a raise — not `keepster log level`, which `keepster log <path>` already parses as a path. A raise must be more
+  verbose than `log.level` and last from a second to seven days; its end is a wall-clock moment, so a laptop that
+  slept through it does not keep the raise.

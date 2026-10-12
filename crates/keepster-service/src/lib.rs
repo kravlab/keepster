@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub mod autostart;
 mod pid;
+pub mod rotating;
 mod volume;
 #[cfg(windows)]
 mod windows;
@@ -74,6 +75,37 @@ pub fn default_runtime_dir() -> Option<PathBuf> {
         // A named pipe has no directory, so the token sits beside the store, under a per-user profile
         // directory whose inherited ACL admits its owner, SYSTEM and the administrators alone.
         std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Keepster\\run"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
+/// Where the daemon's log goes (ticket 33): `$XDG_STATE_HOME/keepster`, which the XDG specification
+/// names for "actions history (logs, …)", on Linux; `~/Library/Logs/Keepster` on macOS; and
+/// `%LOCALAPPDATA%\Keepster\logs` on Windows.
+///
+/// Returns `None` when the platform's per-user directory cannot be determined.
+pub fn default_log_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+            return Some(PathBuf::from(state_home).join("keepster"));
+        }
+
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state/keepster"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Logs/Keepster"))
+    }
+
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Keepster\\logs"))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

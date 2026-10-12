@@ -106,6 +106,7 @@ fn every_route_the_api_serves_is_described() {
     assert_eq!(
         described,
         [
+            "DELETE /v1/log/level",
             "DELETE /v1/roots/{id}",
             "DELETE /v1/roots/{id}/pins/{snapshot}",
             "GET /v1/events",
@@ -138,6 +139,7 @@ fn every_route_the_api_serves_is_described() {
             "POST /v1/roots/{id}/snapshots",
             "POST /v1/ui/bootstrap",
             "POST /v1/ui/token/rotate",
+            "PUT /v1/log/level",
             "PUT /v1/roots/{id}/pins/{snapshot}",
         ]
     );
@@ -206,6 +208,8 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "ListenerStatus",
         "ListenerState",
         "UiBootstrap",
+        "LogStatus",
+        "LogLevelRequest",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -228,6 +232,10 @@ fn every_operation_documents_its_failures_as_problems() {
     for (name, operation) in operations(&document()) {
         if name == "GET /v1/openapi.json" || name == "GET /v1/version" {
             // Neither can fail with a problem: both answer from the build alone.
+            continue;
+        }
+        if name == "DELETE /v1/log/level" {
+            // Ending a raise is answered from memory alone, and ending none is no error.
             continue;
         }
         if name == "GET /v1/events" {
@@ -342,6 +350,7 @@ fn every_operation_has_its_own_stable_name() {
             "create_ui_bootstrap",
             "diff_root",
             "download_archive",
+            "end_log_level_raise",
             "explain_path",
             "export_snapshot",
             "forget_path",
@@ -360,6 +369,7 @@ fn every_operation_has_its_own_stable_name() {
             "move_root",
             "pin_snapshot",
             "preview_directory",
+            "raise_log_level",
             "read_content",
             "reconcile_root",
             "register_root",

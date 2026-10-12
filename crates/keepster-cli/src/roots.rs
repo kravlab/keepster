@@ -260,7 +260,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::PreviewInvalid
         | ErrorCode::DestInStore
         | ErrorCode::QueryInvalid
-        | ErrorCode::SearchInvalid => exit::USAGE,
+        | ErrorCode::SearchInvalid
+        | ErrorCode::LogLevelInvalid => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
