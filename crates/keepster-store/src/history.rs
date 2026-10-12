@@ -38,6 +38,7 @@ mod pins;
 mod preview;
 mod restore;
 mod retention;
+mod search;
 
 pub use diff::{
     Comparison, DIFF_MAX_SIZE, DiffLine, DiffTarget, FileChange, FileDiff, Hunk, LineKind,
@@ -46,6 +47,7 @@ pub use export::{ExportScope, Selected, Selection, Within};
 pub use preview::{PreviewOptions, preview};
 pub use restore::{LinkNames, Preflight, RestoreScope, Written, destination_naming};
 pub use retention::Retained;
+pub use search::{ContentFound, ContentPlan, ContentVersion, PathFound, SearchCounts, WithheldMet};
 
 /// What the trailer carrying a Snapshot's identity is called.
 ///

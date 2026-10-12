@@ -29,7 +29,7 @@ use crate::history::{StoreError, mode_changes};
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-pub const INDEX_SCHEMA_VERSION: u32 = 5;
+pub const INDEX_SCHEMA_VERSION: u32 = 6;
 
 /// The same, as SQLite reads it.
 const SCHEMA_VERSION: i64 = INDEX_SCHEMA_VERSION as i64;
@@ -66,6 +66,7 @@ const SCHEMA: &str = "
         path     TEXT NOT NULL,
         snapshot TEXT NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
         kind     TEXT NOT NULL,
+        blob     TEXT,
         PRIMARY KEY (path, snapshot)
     ) STRICT, WITHOUT ROWID;
 
@@ -129,6 +130,38 @@ pub(crate) struct IndexedSnapshot {
     pub(crate) changed: u64,
     /// How the path a timeline was filtered by changed in this Snapshot, when it was filtered.
     pub(crate) change: Option<ChangeKind>,
+}
+
+/// How one path changed in one Snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PathChange {
+    /// The path, Root-relative.
+    pub(crate) path: String,
+    /// How.
+    pub(crate) kind: ChangeKind,
+    /// The content it holds from this Snapshot on: none for a path deleted, and none for one the
+    /// Snapshot names without holding — Withheld, which has no tree entry (ADR 0009).
+    pub(crate) blob: Option<git2::Oid>,
+}
+
+/// Everything the history says of one path: how many Snapshots changed it, the first and the last, and
+/// whether its last change left it there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PathHistory {
+    pub(crate) path: String,
+    pub(crate) changes: u64,
+    pub(crate) first: SnapshotId,
+    pub(crate) last: SnapshotId,
+    pub(crate) exists: bool,
+}
+
+/// One change as the index holds it, with the Snapshot it was in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexedChange {
+    pub(crate) path: String,
+    pub(crate) snapshot: SnapshotId,
+    pub(crate) kind: ChangeKind,
+    pub(crate) blob: Option<git2::Oid>,
 }
 
 /// One copy of a Snapshot found in git and not yet in the index.
@@ -548,6 +581,99 @@ impl Index {
             .map_err(self.failed("read"))
     }
 
+    /// The history of every path `keep` keeps, in path order, at most `limit` of them — and whether there
+    /// were more.
+    ///
+    /// The paths are read once and filtered here, where case folds as Unicode folds it; each one kept
+    /// costs one lookup on the path's own rows.
+    pub(crate) fn path_histories(
+        &self,
+        keep: &dyn Fn(&str) -> bool,
+        limit: usize,
+    ) -> Result<(Vec<PathHistory>, bool), StoreError> {
+        let read = || -> rusqlite::Result<(Vec<PathHistory>, bool)> {
+            let mut paths = self
+                .connection
+                .prepare("SELECT DISTINCT path FROM changes ORDER BY path")?;
+            let kept: Vec<String> = paths
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter(|path| path.as_ref().map_or(true, |path| keep(path)))
+                .take(limit.saturating_add(1))
+                .collect::<rusqlite::Result<_>>()?;
+            let more = kept.len() > limit;
+
+            let mut history = self.connection.prepare(
+                "SELECT COUNT(*), MIN(snapshot), MAX(snapshot),
+                        (SELECT kind FROM changes AS latest WHERE latest.path = ?1
+                         ORDER BY latest.snapshot DESC LIMIT 1)
+                 FROM changes WHERE path = ?1",
+            )?;
+            let mut found = Vec::with_capacity(kept.len().min(limit));
+            for path in kept.into_iter().take(limit) {
+                let entry = history.query_row([&path], |row| {
+                    let kind: String = row.get(3)?;
+                    Ok(PathHistory {
+                        changes: u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                        first: parse_id(row, 1)?,
+                        last: parse_id(row, 2)?,
+                        exists: ChangeKind::parse(&kind) != Some(ChangeKind::Deleted),
+                        path: path.clone(),
+                    })
+                })?;
+                found.push(entry);
+            }
+
+            Ok((found, more))
+        };
+
+        read().map_err(self.failed("read"))
+    }
+
+    /// Every change to a path at or beneath `under` — every path when it is the Root — in path order and,
+    /// for each path, in the order of its Snapshots.
+    pub(crate) fn changes_under(&self, under: &RootPath) -> Result<Vec<IndexedChange>, StoreError> {
+        let read = || -> rusqlite::Result<Vec<IndexedChange>> {
+            let row = |row: &rusqlite::Row<'_>| {
+                let kind: String = row.get(2)?;
+                let blob: Option<String> = row.get(3)?;
+                Ok(IndexedChange {
+                    path: row.get(0)?,
+                    snapshot: parse_id(row, 1)?,
+                    kind: ChangeKind::parse(&kind).unwrap_or(ChangeKind::Modified),
+                    blob: blob.and_then(|blob| git2::Oid::from_str(&blob).ok()),
+                })
+            };
+            if under.is_root() {
+                let mut statement = self.connection.prepare(
+                    "SELECT path, snapshot, kind, blob FROM changes ORDER BY path, snapshot",
+                )?;
+                return statement.query_map([], row)?.collect();
+            }
+            // The path itself, and every path beneath it: those sort between `path/` and `path0`, `0`
+            // being the character after `/`.
+            let mut statement = self.connection.prepare(
+                "SELECT path, snapshot, kind, blob FROM changes
+                 WHERE path = ?1 OR (path >= ?1 || '/' AND path < ?1 || '0')
+                 ORDER BY path, snapshot",
+            )?;
+            statement.query_map([under.as_str()], row)?.collect()
+        };
+
+        read().map_err(self.failed("read"))
+    }
+
+    /// Every Snapshot's identity, oldest first.
+    pub(crate) fn snapshot_ids(&self) -> Result<Vec<SnapshotId>, StoreError> {
+        let read = || -> rusqlite::Result<Vec<SnapshotId>> {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id FROM snapshots ORDER BY id")?;
+            statement.query_map([], |row| parse_id(row, 0))?.collect()
+        };
+
+        read().map_err(self.failed("read"))
+    }
+
     fn watermarks(&self) -> Result<BTreeMap<String, git2::Oid>, StoreError> {
         read_watermarks(&self.connection).map_err(self.failed("read"))
     }
@@ -602,7 +728,7 @@ pub(crate) fn changes_between(
     repository: &git2::Repository,
     before: Option<git2::Oid>,
     after: git2::Oid,
-) -> Result<Vec<(String, ChangeKind)>, git2::Error> {
+) -> Result<Vec<PathChange>, git2::Error> {
     if before == Some(after) {
         return Ok(Vec::new());
     }
@@ -614,7 +740,7 @@ pub(crate) fn changes_between(
     let diff = repository.diff_tree_to_tree(before.as_ref(), Some(&after), Some(&mut options))?;
 
     let mut sidecar_changed = false;
-    let mut changes: Vec<(String, ChangeKind)> = diff
+    let mut changes: Vec<PathChange> = diff
         .deltas()
         .filter_map(|delta| {
             let kind = match delta.status() {
@@ -632,16 +758,27 @@ pub(crate) fn changes_between(
                 sidecar_changed = true;
                 return None;
             }
+            let blob = (kind != ChangeKind::Deleted).then(|| file.id());
 
-            Some((path, kind))
+            Some(PathChange { path, kind, blob })
         })
         .collect();
     if sidecar_changed {
-        let changed: BTreeSet<String> = changes.iter().map(|(path, _)| path.clone()).collect();
+        let changed: BTreeSet<String> = changes.iter().map(|change| change.path.clone()).collect();
         changes.extend(
             record_changes(repository, before.as_ref(), &after)
                 .into_iter()
-                .filter(|(path, _)| !changed.contains(path)),
+                .filter(|(path, _)| !changed.contains(path))
+                .map(|(path, kind)| {
+                    // What the path holds, if its record changed with its content in place — a mode, an
+                    // incomplete read keeping the version before; a Withheld path holds nothing.
+                    let blob = (kind != ChangeKind::Deleted)
+                        .then(|| after.get_path(Path::new(&path)).ok())
+                        .flatten()
+                        .filter(|entry| entry.kind() == Some(git2::ObjectType::Blob))
+                        .map(|entry| entry.id());
+                    PathChange { path, kind, blob }
+                }),
         );
     }
     changes.sort();
@@ -947,9 +1084,14 @@ fn recount_changes(
             ],
         )?;
         let mut statement = transaction
-            .prepare("INSERT INTO changes (path, snapshot, kind) VALUES (?1, ?2, ?3)")?;
-        for (path, kind) in &changes {
-            statement.execute(params![path, id.to_string(), kind.as_str()])?;
+            .prepare("INSERT INTO changes (path, snapshot, kind, blob) VALUES (?1, ?2, ?3, ?4)")?;
+        for change in &changes {
+            statement.execute(params![
+                change.path,
+                id.to_string(),
+                change.kind.as_str(),
+                change.blob.map(|blob| blob.to_string())
+            ])?;
         }
         Ok(())
     };

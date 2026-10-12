@@ -79,6 +79,8 @@ error_codes! {
     DestInStore = "dest_in_store": "The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.",
     DestUnwritable = "dest_unwritable": "The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.",
     DirectoryUnreadable = "directory_unreadable": "The directory cannot be listed; `details.path` names it.",
+    QueryInvalid = "query_invalid": "The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.",
+    SearchInvalid = "search_invalid": "A content search names no Root: give `roots`, or ask for `all`.",
 }
 
 impl ErrorCode {

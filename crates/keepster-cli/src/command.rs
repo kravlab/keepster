@@ -61,6 +61,12 @@ pub enum Command {
     /// Working Tree untouched.
     Export(ExportArgs),
 
+    /// Find a path by a fragment of its name in every Root's history — a file long deleted included.
+    Find(FindArgs),
+
+    /// Find text in every version a Root's history holds, when you remember the code but not the file.
+    Grep(GrepArgs),
+
     /// Say whether a path is captured, and which rule at which level decided it.
     Explain(ExplainArgs),
 
@@ -474,6 +480,58 @@ pub struct ExportArgs {
     pub detach: bool,
 
     /// Print the daemon's answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `keepster find`.
+#[derive(Debug, Args)]
+pub struct FindArgs {
+    /// A fragment of the path, matched anywhere in it — case-insensitively unless it has a capital.
+    pub query: String,
+
+    /// Read the query as an Include Rules pattern, as the configuration writes them: `**/*.env`.
+    #[arg(long)]
+    pub glob: bool,
+
+    /// Search only this Root — a full identity, an unambiguous prefix of one, or a path. Repeatable;
+    /// every Root when absent.
+    #[arg(short = 'r', long)]
+    pub root: Vec<String>,
+
+    /// How many paths to list: 100 unless given, at most 1000.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Print the daemon's answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `keepster grep`.
+#[derive(Debug, Args)]
+pub struct GrepArgs {
+    /// What to find: a literal, matched case-insensitively unless it has a capital.
+    pub pattern: String,
+
+    /// Read the pattern as a regular expression.
+    #[arg(long)]
+    pub regex: bool,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long, conflicts_with = "all_roots")]
+    pub root: Option<String>,
+
+    /// Search every Root: every version each one holds is read, which the first line says the size of.
+    #[arg(long)]
+    pub all_roots: bool,
+
+    /// Search only what is at or beneath this path, a file or directory of the Root.
+    #[arg(long, value_name = "PATH", conflicts_with = "all_roots")]
+    pub path: Option<PathBuf>,
+
+    /// Print the daemon's stream as it arrives, one JSON object per line, verbatim.
     #[arg(long)]
     pub json: bool,
 }

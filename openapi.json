@@ -2135,6 +2135,193 @@
         }
       }
     },
+    "/v1/search/content": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Find text in every version a Root's history holds, streamed as it is found.",
+        "operationId": "search_content",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "What to find in the content: a literal, matched case-insensitively unless it has a capital.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "regex",
+            "in": "query",
+            "description": "`true` to read `q` as a regular expression, matched in linear time.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "roots",
+            "in": "query",
+            "description": "The Roots to search, by identity, comma-separated. One is the usual: a content search reads every\nversion stored, so asking for every Root is said with `all`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "`true` to search every Root — those no longer watched whose history is kept included.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "A file or directory, Root-relative: only what is at or beneath it is read.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An `application/x-ndjson` stream: a `plan` record first, saying how many distinct versions and bytes each Root will have read; then `match` records — one per content version, a path and the range of Snapshots its content was current for, never one per Snapshot — and `withheld` records for paths with no content to search, with `progress` now and then; and a `summary` last, counting versions scanned, binaries skipped and Withheld paths met. A version is read once however many Snapshots held it; a binary one is skipped and counted; the metadata sidecar is never searched. Outside the read budget: no time is promised, and closing the connection stops the walk.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`q` is missing or empty, or not a regular expression that compiles, or the query string cannot be read (`query_invalid`); no Root named and `all` not asked (`search_invalid`); or `path` is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A Root asked for is not known.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read, so which Roots there are is unknown (`registry_failed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/paths": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Find a path by its name in the history of every Root, a file long deleted included.",
+        "operationId": "search_paths",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A fragment of the path, matched anywhere in it — case-insensitively unless it has a capital.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "glob",
+            "in": "query",
+            "description": "`true` to read `q` as an Include Rules pattern, as the configuration writes them: `**/*.env`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "roots",
+            "in": "query",
+            "description": "The Roots to search, by identity, comma-separated; every Root when absent — those no longer\nwatched whose history is kept included.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many paths to answer with: 100 unless given, and at most 1000.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every path any Snapshot changed that the query finds, by Root and then by path: how many Snapshots changed it, the first and the last, and whether the newest Snapshot still holds it. Answered from the index, inside the chronology budget.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathSearch"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`q` is missing or empty, or not a pattern, or the query string cannot be read (`query_invalid`); `limit` is not a positive whole number (`limit_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A Root asked for is not known.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read, so which Roots there are is unknown (`registry_failed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/status": {
       "get": {
         "tags": [
@@ -2321,6 +2508,229 @@
           "overwrite",
           "dest_in_root"
         ]
+      },
+      "ContentRecord": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "What the search will read, before it reads any of it: per Root, its distinct versions and their\nsize. No time is promised: the cost is stored content, not a number of Snapshots.",
+            "required": [
+              "roots",
+              "type"
+            ],
+            "properties": {
+              "roots": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SearchCost"
+                },
+                "description": "Each Root searched."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "plan"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A line of a version that matched.",
+            "required": [
+              "root",
+              "path",
+              "content",
+              "first",
+              "last",
+              "line",
+              "snippet",
+              "type"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "The version's content identity, opaque: equal for equal content, wherever it is."
+              },
+              "first": {
+                "type": "string",
+                "description": "The first Snapshot that held this content at this path."
+              },
+              "last": {
+                "type": "string",
+                "description": "The last."
+              },
+              "line": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The line, counted from 1.",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string",
+                "description": "The path, Root-relative."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root, by identity."
+              },
+              "snippet": {
+                "type": "string",
+                "description": "The text around what matched."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "match"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A path the walk met with no content to search: it was Withheld.",
+            "required": [
+              "root",
+              "path",
+              "reason",
+              "snapshot",
+              "type"
+            ],
+            "properties": {
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "For a special file, what kind."
+              },
+              "path": {
+                "type": "string",
+                "description": "The path, Root-relative."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why: `too_large`, `special_file`, and the rest of the Withheld reasons."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root, by identity."
+              },
+              "snapshot": {
+                "type": "string",
+                "description": "The first Snapshot it was Withheld in."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "withheld"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "How far the walk has got in one Root.",
+            "required": [
+              "root",
+              "done",
+              "total",
+              "type"
+            ],
+            "properties": {
+              "done": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Versions looked at so far.",
+                "minimum": 0
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root, by identity."
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Versions there are.",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "progress"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Root the walk could not search, and why; the others go on.",
+            "required": [
+              "root",
+              "detail",
+              "type"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string",
+                "description": "What failed, for a person."
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root, by identity."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "What the whole walk looked at: sent last, so that finding nothing is told apart from not looking.",
+            "required": [
+              "versions_scanned",
+              "binaries_skipped",
+              "withheld",
+              "type"
+            ],
+            "properties": {
+              "binaries_skipped": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Versions skipped as binary: a NUL among their first bytes.",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "summary"
+                ]
+              },
+              "unreadable": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Versions the store could not read.",
+                "minimum": 0
+              },
+              "versions_scanned": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Versions searched as text.",
+                "minimum": 0
+              },
+              "withheld": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Withheld paths met, each named in a `withheld` record.",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "One line of a content search, as `GET /v1/search/content` streams them (ticket 59): the cost first,\nthen every match and every Withheld path as the walk meets them, progress now and then, and a summary\nlast. A record of a type a client does not know is to be passed over.\n\nThe walk reads each distinct version once, however many Snapshots held it, so a match is a **content\nversion** — a path, and the range of Snapshots its content was current for — never one row per\nSnapshot."
       },
       "DaemonStatus": {
         "allOf": [
@@ -3676,6 +4086,46 @@
           }
         }
       },
+      "PathHit": {
+        "type": "object",
+        "description": "One path a path search found.",
+        "required": [
+          "root",
+          "path",
+          "snapshots",
+          "first",
+          "last",
+          "exists"
+        ],
+        "properties": {
+          "exists": {
+            "type": "boolean",
+            "description": "Whether the newest Snapshot still holds it: `false` is a file already gone, which only its\nhistory still has."
+          },
+          "first": {
+            "type": "string",
+            "description": "The first of them."
+          },
+          "last": {
+            "type": "string",
+            "description": "The last of them."
+          },
+          "path": {
+            "type": "string",
+            "description": "The path, Root-relative."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root it is in, by identity."
+          },
+          "snapshots": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many Snapshots changed it.",
+            "minimum": 0
+          }
+        }
+      },
       "PathResolution": {
         "type": "object",
         "description": "The answer to one path's question; exactly one field is set.",
@@ -3715,6 +4165,34 @@
               "null"
             ],
             "description": "For `name_collision`: write this path, and skip the others that are one file with it."
+          }
+        }
+      },
+      "PathSearch": {
+        "type": "object",
+        "description": "What a path search found, as `GET /v1/search/paths` answers it (ticket 59): every path any Snapshot\nchanged whose name the query finds, in every Root asked — a file long gone from the Working Tree\nincluded, which nothing else in the product can reach.",
+        "required": [
+          "hits",
+          "truncated"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PathHit"
+            },
+            "description": "Every path found, by Root and then by path."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether there were more than `limit`; ask for fewer paths with a narrower query."
+          },
+          "unsearched": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Unsearched"
+            },
+            "description": "Roots whose history could not be read, and so were not searched."
           }
         }
       },
@@ -4146,7 +4624,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it.\n- `query_invalid`: The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.\n- `search_invalid`: A content search names no Root: give `roots`, or ask for `all`."
           },
           "detail": {
             "type": "string",
@@ -4617,6 +5095,33 @@
         ],
         "description": "One rule, named the way a person wrote it."
       },
+      "SearchCost": {
+        "type": "object",
+        "description": "What a content search reads in one Root.",
+        "required": [
+          "root",
+          "versions",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Their sizes, summed.",
+            "minimum": 0
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root, by identity."
+          },
+          "versions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its distinct versions under the path asked.",
+            "minimum": 0
+          }
+        }
+      },
       "SelectionSize": {
         "type": "object",
         "description": "How much a selection of a Snapshot holds, so its size can be shown before anything is done with it.",
@@ -4845,6 +5350,24 @@
               "type": "string"
             },
             "description": "The Segments, and the Pins as `pins/` and the Snapshot's identity, written by a newer Keepster in\na format this build cannot read. Their Snapshots are on no page; they are not lost, and a build\nthat reads their format lists them again. Absent while there are none."
+          }
+        }
+      },
+      "Unsearched": {
+        "type": "object",
+        "description": "A Root a search could not read.",
+        "required": [
+          "root",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Why, for a person."
+          },
+          "root": {
+            "type": "string",
+            "description": "The Root, by identity."
           }
         }
       },

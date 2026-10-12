@@ -124,6 +124,8 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/roots/{id}/snapshots/{snapshot}/content",
             "GET /v1/roots/{id}/snapshots/{snapshot}/entries",
             "GET /v1/roots/{id}/snapshots/{snapshot}/stat",
+            "GET /v1/search/content",
+            "GET /v1/search/paths",
             "GET /v1/status",
             "GET /v1/version",
             "PATCH /v1/roots/{id}",
@@ -194,6 +196,11 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "SelectionSize",
         "DirectoryListing",
         "Subdirectory",
+        "PathSearch",
+        "PathHit",
+        "Unsearched",
+        "ContentRecord",
+        "SearchCost",
         "Problem",
     ] {
         assert!(schemas.contains_key(name), "`{name}` is described");
@@ -282,6 +289,8 @@ fn the_problem_code_is_an_open_string_whose_known_values_are_listed() {
         "dest_in_store",
         "dest_unwritable",
         "directory_unreadable",
+        "query_invalid",
+        "search_invalid",
     ] {
         assert!(
             description.contains(&format!("`{known}`")),
@@ -349,6 +358,8 @@ fn every_operation_has_its_own_stable_name() {
             "reconcile_root",
             "register_root",
             "restore_root",
+            "search_content",
+            "search_paths",
             "stat_selection",
             "stream_events",
             "take_snapshot",

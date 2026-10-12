@@ -21,15 +21,17 @@ pub mod render;
 pub mod resolve;
 pub mod restore;
 pub mod roots;
+pub mod search;
 pub mod selector;
 pub mod snapshots;
 pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, ForgetArgs, JobArgs,
-    LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs,
-    RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs, ForgetArgs,
+    GrepArgs, JobArgs, LogArgs, MaintainArgs, MoveArgs, PinArgs, PinsArgs, PreviewArgs,
+    ReconcileArgs, ResolutionArgs, RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs, UnwatchArgs,
+    WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -46,6 +48,7 @@ pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
 pub use restore::restore;
 pub use roots::{move_root, roots, unwatch, watch};
+pub use search::{find, grep};
 pub use snapshots::snapshot;
 pub use status::{Outcome, exit_code_for, outcome, status};
 

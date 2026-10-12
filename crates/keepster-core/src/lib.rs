@@ -16,6 +16,7 @@ mod restore;
 mod retention;
 mod root;
 mod rules;
+mod search;
 mod segment;
 mod sidecar;
 mod snapshot;
@@ -50,6 +51,7 @@ pub use rules::{
     Classification, IGNORE_FILE, InvalidPattern, Kind, Level, PathGlob, Rule, RuleOrigin, RuleSet,
     UnreachableNegation, ignore_file_rules,
 };
+pub use search::{ContentQuery, InvalidQuery, LineMatch, PathQuery, is_binary};
 pub use segment::{ContentFormat, SegmentName, UnnameableMoment};
 pub use sidecar::{
     Header, Incomplete, ModeKind, ModeTable, Parsed, Record, SIDECAR, SIDECAR_VERSION, Sidecar,

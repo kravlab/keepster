@@ -19,6 +19,7 @@ mod export;
 mod git;
 mod housekeeping;
 mod jobs;
+mod ndjson;
 mod openapi;
 mod pins;
 mod places;
@@ -26,6 +27,7 @@ mod preview;
 mod problem;
 mod restore;
 mod roots;
+mod search;
 mod snapshots;
 mod triggers;
 mod volumes;
@@ -450,6 +452,8 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(export::stat))
         .routes(routes!(export::archive))
         .routes(routes!(directories::list))
+        .routes(routes!(search::paths))
+        .routes(routes!(search::content))
         .routes(routes!(explain::explain))
         .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))

@@ -5,17 +5,16 @@
 //! moment its reader goes away. It opens no History Store, takes no store lock, is no Trigger and captures
 //! nothing, and one runs at a time, a cheap guard on an I/O-heavy read.
 
-use std::convert::Infallible;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::Response;
 use keepster_api::{
     ErrorCode, PreviewConfig, PreviewGroup, PreviewRecord, PreviewSetting, PreviewSize,
@@ -26,7 +25,6 @@ use keepster_core::{
     RootPath, Tally, Totals, WithheldReason,
 };
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
 
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
@@ -38,15 +36,8 @@ const TOP: usize = 10;
 /// held in memory until the walk ends.
 const MOST: usize = 1000;
 
-/// How many lines may wait for a reader that is slower than the walk.
-const QUEUED_LINES: usize = 64;
-
 /// How many paths are classified between two `progress` records.
 const PROGRESS_EVERY: u64 = 1000;
-
-/// How long a line waits for a reader that has stopped reading before the walk gives up on it: ample for
-/// one that is merely slow, and short enough that one which stopped cannot hold the one slot for ever.
-const STALL: Duration = Duration::from_secs(60);
 
 /// What to preview, and how much of it to list.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -122,24 +113,14 @@ pub(crate) async fn preview(
         )
     })??;
 
-    let (lines, received) = mpsc::channel::<Bytes>(QUEUED_LINES);
+    let (lines, response) = crate::ndjson::stream();
     tokio::task::spawn_blocking(move || {
         // Released when the walk ends, however it ends.
         let _walking = walking;
-        walk(&prepared, &listing, &lines, STALL);
-    });
-    let body = futures_util::stream::unfold(received, |mut received| async move {
-        received
-            .recv()
-            .await
-            .map(|line| (Ok::<_, Infallible>(line), received))
+        walk(&prepared, &listing, &lines, crate::ndjson::STALL);
     });
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/x-ndjson")
-        .body(Body::from_stream(body))
-        .expect("a response with a valid header"))
+    Ok(response)
 }
 
 /// The one preview walking, held for as long as it walks.
@@ -357,31 +338,12 @@ fn prepared(state: &DaemonState, path: &Path) -> Result<Prepared, ProblemRespons
     })
 }
 
-/// Send `record` down `lines`, waiting at most `stall` for room: whether anyone is still reading.
-fn send(lines: &mpsc::Sender<Bytes>, record: &PreviewRecord, stall: Duration) -> bool {
-    let mut line = serde_json::to_vec(record).expect("a record serialises");
-    line.push(b'\n');
-    let mut line = Bytes::from(line);
-    let deadline = Instant::now() + stall;
-    loop {
-        match lines.try_send(line) {
-            Ok(()) => return true,
-            Err(TrySendError::Closed(_)) => return false,
-            Err(TrySendError::Full(_)) if Instant::now() >= deadline => return false,
-            Err(TrySendError::Full(back)) => {
-                line = back;
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
 /// Walk what `prepared` names, sending its header, the entries `listing` asks for, progress now and then
 /// and the summary down `lines` — and stopping the moment no one is reading them.
 ///
-/// A reader that stops reading is given up on after `stall`, [`STALL`] but in a test.
+/// A reader that stops reading is given up on after `stall`, [`crate::ndjson::STALL`] but in a test.
 fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>, stall: Duration) {
-    let send = |record: &PreviewRecord| send(lines, record, stall);
+    let send = |record: &PreviewRecord| crate::ndjson::send(lines, record, stall);
     if !send(&prepared.header) {
         return;
     }

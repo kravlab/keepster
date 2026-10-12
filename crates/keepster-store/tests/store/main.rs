@@ -17,4 +17,5 @@ mod reading;
 mod reconciliation;
 mod registry;
 mod retention;
+mod search;
 mod withheld;

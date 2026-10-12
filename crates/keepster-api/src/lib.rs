@@ -1554,6 +1554,145 @@ pub struct Subdirectory {
     pub readable: bool,
 }
 
+/// What a path search found, as `GET /v1/search/paths` answers it (ticket 59): every path any Snapshot
+/// changed whose name the query finds, in every Root asked — a file long gone from the Working Tree
+/// included, which nothing else in the product can reach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PathSearch {
+    /// Every path found, by Root and then by path.
+    pub hits: Vec<PathHit>,
+    /// Whether there were more than `limit`; ask for fewer paths with a narrower query.
+    pub truncated: bool,
+    /// Roots whose history could not be read, and so were not searched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsearched: Vec<Unsearched>,
+}
+
+/// One path a path search found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PathHit {
+    /// The Root it is in, by identity.
+    pub root: String,
+    /// The path, Root-relative.
+    pub path: String,
+    /// How many Snapshots changed it.
+    pub snapshots: u64,
+    /// The first of them.
+    pub first: String,
+    /// The last of them.
+    pub last: String,
+    /// Whether the newest Snapshot still holds it: `false` is a file already gone, which only its
+    /// history still has.
+    pub exists: bool,
+}
+
+/// A Root a search could not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Unsearched {
+    /// The Root, by identity.
+    pub root: String,
+    /// Why, for a person.
+    pub detail: String,
+}
+
+/// One line of a content search, as `GET /v1/search/content` streams them (ticket 59): the cost first,
+/// then every match and every Withheld path as the walk meets them, progress now and then, and a summary
+/// last. A record of a type a client does not know is to be passed over.
+///
+/// The walk reads each distinct version once, however many Snapshots held it, so a match is a **content
+/// version** — a path, and the range of Snapshots its content was current for — never one row per
+/// Snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentRecord {
+    /// What the search will read, before it reads any of it: per Root, its distinct versions and their
+    /// size. No time is promised: the cost is stored content, not a number of Snapshots.
+    Plan {
+        /// Each Root searched.
+        roots: Vec<SearchCost>,
+    },
+    /// A line of a version that matched.
+    Match {
+        /// The Root, by identity.
+        root: String,
+        /// The path, Root-relative.
+        path: String,
+        /// The version's content identity, opaque: equal for equal content, wherever it is.
+        content: String,
+        /// The first Snapshot that held this content at this path.
+        first: String,
+        /// The last.
+        last: String,
+        /// The line, counted from 1.
+        line: u64,
+        /// The text around what matched.
+        snippet: String,
+    },
+    /// A path the walk met with no content to search: it was Withheld.
+    Withheld {
+        /// The Root, by identity.
+        root: String,
+        /// The path, Root-relative.
+        path: String,
+        /// Why: `too_large`, `special_file`, and the rest of the Withheld reasons.
+        reason: String,
+        /// For a special file, what kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// The first Snapshot it was Withheld in.
+        snapshot: String,
+    },
+    /// How far the walk has got in one Root.
+    Progress {
+        /// The Root, by identity.
+        root: String,
+        /// Versions looked at so far.
+        done: u64,
+        /// Versions there are.
+        total: u64,
+    },
+    /// A Root the walk could not search, and why; the others go on.
+    Error {
+        /// The Root, by identity.
+        root: String,
+        /// What failed, for a person.
+        detail: String,
+    },
+    /// What the whole walk looked at: sent last, so that finding nothing is told apart from not looking.
+    Summary {
+        /// Versions searched as text.
+        versions_scanned: u64,
+        /// Versions skipped as binary: a NUL among their first bytes.
+        binaries_skipped: u64,
+        /// Withheld paths met, each named in a `withheld` record.
+        withheld: u64,
+        /// Versions the store could not read.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        unreadable: u64,
+    },
+}
+
+/// What a content search reads in one Root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SearchCost {
+    /// The Root, by identity.
+    pub root: String,
+    /// Its distinct versions under the path asked.
+    pub versions: u64,
+    /// Their sizes, summed.
+    pub bytes: u64,
+}
+
+/// Whether a count is nothing, which the wire leaves out.
+fn is_zero(count: &u64) -> bool {
+    *count == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Event, RootState};

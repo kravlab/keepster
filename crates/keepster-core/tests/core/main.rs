@@ -14,6 +14,7 @@ mod restore;
 mod retention;
 mod roots;
 mod rules;
+mod search;
 mod segments;
 mod sidecar;
 mod snapshots;

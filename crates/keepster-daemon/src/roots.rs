@@ -509,7 +509,7 @@ fn root_problem(error: RootError) -> ProblemResponse {
 
 /// A Registry that cannot be read at all — as opposed to one record that cannot — is a failure of the
 /// request, since there is nothing to report and nothing to act on.
-fn registry_problem(error: RegistryError) -> ProblemResponse {
+pub(crate) fn registry_problem(error: RegistryError) -> ProblemResponse {
     ProblemResponse::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         ErrorCode::RegistryFailed,

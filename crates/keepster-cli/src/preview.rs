@@ -353,7 +353,7 @@ fn rule_text(rule: &RuleReference) -> String {
 }
 
 /// A size as a person reads it, in binary units.
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {
         return format!("{bytes} B");

@@ -26,6 +26,7 @@ mod restore;
 mod root_states;
 mod roots;
 mod rules;
+mod search;
 mod snapshots;
 mod status;
 mod triggers;
