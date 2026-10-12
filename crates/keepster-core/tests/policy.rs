@@ -331,3 +331,43 @@ fn a_fenced_directory_is_withheld_with_its_reason_and_so_is_everything_beneath_i
         "explain names the fence above a path, as it names a pruning ancestor"
     );
 }
+
+#[test]
+fn a_forgotten_path_stays_excluded_whatever_the_users_files_say() {
+    // Ticket 81: once a secret is forgotten with `--exclude`, no negation a person writes brings it back.
+    let user = RuleSet::new(vec![
+        rule("*.txt", Level::Global),
+        rule("!leak.txt", Level::Root),
+    ]);
+    let policy = CapturePolicy::new(user, RuleSet::default(), DEFAULT_MAX_SIZE, Vec::new());
+    assert_eq!(
+        policy.file(&path("leak.txt"), 10),
+        Verdict::Captured,
+        "the user re-included it"
+    );
+
+    let forgotten = policy.with_forgotten(vec![rule("leak.txt", Level::Forget)]);
+
+    match forgotten.file(&path("leak.txt"), 10) {
+        Verdict::Excluded(rule) => assert_eq!(rule.origin.level, Level::Forget),
+        other => panic!("forgotten, so excluded: {other:?}"),
+    }
+    assert_eq!(Level::Forget.as_str(), "forget");
+    assert!(
+        Level::Forget > Level::Root,
+        "above every level a person writes"
+    );
+}
+
+#[test]
+fn whether_a_path_is_opted_in_past_the_denylist_can_be_asked() {
+    let policy = CapturePolicy::new(
+        RuleSet::default(),
+        RuleSet::new(vec![rule("config/.env", Level::Global)]),
+        DEFAULT_MAX_SIZE,
+        Vec::new(),
+    );
+
+    assert!(policy.opted_in(&path("config/.env")).is_some());
+    assert!(policy.opted_in(&path(".env")).is_none());
+}

@@ -27,9 +27,9 @@ pub struct Retained {
 }
 
 /// One Segment as a pass read it: what it holds, and the tip it held it at.
-struct Read {
-    contents: SegmentContents,
-    tip: git2::Oid,
+pub(super) struct Read {
+    pub(super) contents: SegmentContents,
+    pub(super) tip: git2::Oid,
 }
 
 impl HistoryStore {
@@ -100,7 +100,7 @@ impl HistoryStore {
     }
 
     /// Every Segment Retention may act on, as read now.
-    fn read_segments(&self) -> Result<Vec<Read>, StoreError> {
+    pub(super) fn read_segments(&self) -> Result<Vec<Read>, StoreError> {
         let references = self
             .repository
             .references_glob(&format!("{SEGMENT_REFS}/*"))
@@ -231,7 +231,7 @@ impl HistoryStore {
     }
 
     /// The commits of the chain ending at `tip`, oldest first.
-    fn chain(&self, tip: git2::Oid) -> Result<Vec<git2::Oid>, StoreError> {
+    pub(super) fn chain(&self, tip: git2::Oid) -> Result<Vec<git2::Oid>, StoreError> {
         let mut walk = self.repository.revwalk().map_err(self.failed("read"))?;
         walk.push(tip).map_err(self.failed("read"))?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE)
@@ -243,7 +243,7 @@ impl HistoryStore {
 }
 
 /// The ref of the Segment `segment`.
-fn segment_ref(segment: &SegmentName) -> String {
+pub(super) fn segment_ref(segment: &SegmentName) -> String {
     format!("{SEGMENT_REFS}/{segment}")
 }
 

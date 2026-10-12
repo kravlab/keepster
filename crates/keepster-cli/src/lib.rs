@@ -24,16 +24,16 @@ pub mod status;
 
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
-    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, JobArgs, LogArgs, MaintainArgs,
-    MoveArgs, PinArgs, PinsArgs, ReconcileArgs, RestoreArgs, SnapshotArgs, StatusArgs, UnpinArgs,
-    UnwatchArgs, WatchArgs,
+    CatArgs, Cli, Command, ConfigArgs, DiffArgs, ExplainArgs, ForgetArgs, JobArgs, LogArgs,
+    MaintainArgs, MoveArgs, PinArgs, PinsArgs, ReconcileArgs, RestoreArgs, SnapshotArgs,
+    StatusArgs, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
 pub use events::{EventStream, SseEvent};
 pub use explain::explain;
 pub use history::{cat, log};
-pub use jobs::{job, maintain};
+pub use jobs::{forget, job, maintain};
 pub use pins::{pin, pins, unpin};
 pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};

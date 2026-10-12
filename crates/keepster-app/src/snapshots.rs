@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, Ladder, Newest, RootId, RootPath, SnapshotId};
+use keepster_core::{CapturePolicy, Ladder, Newest, RootId, RootPath, Rule, SnapshotId};
 use keepster_store::{
-    CaptureRequest, Comparison, Depth, DiffTarget, HistoryStore, Listing, Pass, RegistryError,
-    Retained, RootRecord, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
+    CaptureRequest, Comparison, Depth, DiffTarget, Forgotten, HistoryStore, Listing, Pass,
+    RegistryError, Retained, RootRecord, SnapshotSummary, StoreError, TimelinePage, TimelineQuery,
 };
 
 /// The directory inside a Root's own directory that holds its History Store.
@@ -188,6 +188,31 @@ pub fn pin_newest(location: &StoreLocation) -> Result<Option<SnapshotId>, StoreE
     pin(location, newest)?;
 
     Ok(Some(newest))
+}
+
+/// Every path `rule` would remove from a Root's history (ticket 81).
+pub fn forgettable(
+    location: &StoreLocation,
+    rule: &Rule,
+) -> Result<std::collections::BTreeSet<RootPath>, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.forgettable(rule),
+        None => Ok(std::collections::BTreeSet::new()),
+    }
+}
+
+/// Remove every version of what `rule` matches from a Root's history (ticket 81), reading — never
+/// writing — `working_tree` for what still holds it. The caller holds the store's lock.
+pub fn forget(
+    location: &StoreLocation,
+    rule: &Rule,
+    working_tree: Option<&Path>,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<Forgotten, StoreError> {
+    match open_for_reading(location)? {
+        Some(store) => store.forget(rule, working_tree, progress),
+        None => Ok(Forgotten::default()),
+    }
 }
 
 /// When the last Maintenance Pass over a Root's history finished, if it is recorded (ticket 52).

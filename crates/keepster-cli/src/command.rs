@@ -80,6 +80,42 @@ pub enum Command {
 
     /// Report a job: where it is, and how it ended.
     Job(JobArgs),
+
+    /// Remove every version of a path from the Root's whole history, when a secret was captured.
+    /// Irreversible; the files on disk are not touched.
+    Forget(ForgetArgs),
+}
+
+/// Options of `keepster forget`.
+#[derive(Debug, Args)]
+pub struct ForgetArgs {
+    /// What to remove, as an exclude pattern relative to the Root: `.env`, `secrets/`, `*.pem`.
+    pub glob: String,
+
+    /// Keep it out of history from now on — right for a file that still holds the secret.
+    #[arg(long, conflicts_with = "keep_watching")]
+    pub exclude: bool,
+
+    /// Go on capturing it — right only once the file no longer holds the secret.
+    #[arg(long)]
+    pub keep_watching: bool,
+
+    /// Confirm without being asked: this cannot be undone.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Never ask; refuse instead when the command line does not say everything.
+    #[arg(long)]
+    pub no_input: bool,
+
+    /// Print the job's identity and end at once, rather than following it to its end.
+    #[arg(long)]
+    pub detach: bool,
+
+    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
+    /// holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
 }
 
 /// Options of `keepster maintain`.

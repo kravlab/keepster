@@ -124,6 +124,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/version",
             "PATCH /v1/roots/{id}",
             "POST /v1/roots",
+            "POST /v1/roots/{id}/forget",
             "POST /v1/roots/{id}/maintenance",
             "POST /v1/roots/{id}/reconcile",
             "POST /v1/roots/{id}/restore",
@@ -308,6 +309,7 @@ fn every_operation_has_its_own_stable_name() {
         [
             "diff_root",
             "explain_path",
+            "forget_path",
             "get_job",
             "get_openapi_document",
             "get_root",

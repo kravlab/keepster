@@ -1,5 +1,6 @@
-//! `keepster maintain` and `keepster job` (ticket 54): a job is started, then followed off the event
-//! stream until it ends — or, with `--detach`, its identity is printed and the command ends at once.
+//! `keepster maintain`, `keepster forget` and `keepster job` (tickets 54 and 81): a job is started, then
+//! followed off the event stream until it ends — or, with `--detach`, its identity is printed and the
+//! command ends at once.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -8,7 +9,7 @@ use std::time::Duration;
 use keepster_api::{Event, Job, JobAccepted, JobState};
 
 use crate::client::DaemonClient;
-use crate::command::{JobArgs, MaintainArgs};
+use crate::command::{ForgetArgs, JobArgs, MaintainArgs};
 use crate::events::EventStream;
 use crate::exit;
 use crate::roots::{answered, exit_code_for};
@@ -31,6 +32,83 @@ pub async fn maintain(args: &MaintainArgs, control_path: &Path) -> u8 {
         args.detach,
     )
     .await
+}
+
+/// What a person must be told after any Forget, whatever it found: it never touches their files.
+const STILL_ON_DISK: &str = "Forget never touches your files: the secret is still on disk where it was, \
+     and it still needs rotating.";
+
+/// Remove every version of a path from a Root's history.
+///
+/// The daemon never asks (ticket 07): what the request must carry — the confirmation, and whether the
+/// path is excluded from now on — is asked here, at a terminal, or refused when nothing can be asked.
+pub async fn forget(args: &ForgetArgs, control_path: &Path) -> u8 {
+    use std::io::IsTerminal;
+
+    let client = DaemonClient::new(control_path);
+    let root = match crate::resolve::resolve(&client, args.root.as_deref()).await {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let can_ask = !args.no_input && io::stdin().is_terminal();
+
+    let exclude = match (args.exclude, args.keep_watching) {
+        (true, _) => true,
+        (_, true) => false,
+        _ if can_ask => {
+            match crate::restore::line(
+                "Keep it out of history from now on (e), or keep watching it (w)? ",
+            )
+            .as_str()
+            {
+                "e" | "exclude" => true,
+                "w" | "keep-watching" => false,
+                _ => {
+                    eprintln!("keepster: nothing forgotten");
+                    return exit::USAGE;
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "keepster: say whether `{}` stays out of history from now on: --exclude or --keep-watching",
+                args.glob
+            );
+            return exit::USAGE;
+        }
+    };
+    let confirmed = args.yes
+        || (can_ask
+            && crate::restore::yes(&format!(
+                "Remove every version of `{}` from the history of {}? This cannot be undone.",
+                args.glob, root.path
+            )));
+    if !confirmed {
+        eprintln!(
+            "keepster: forgetting cannot be undone; pass --yes to confirm{}",
+            if can_ask { "" } else { " without being asked" }
+        );
+        return exit::USAGE;
+    }
+
+    let body = serde_json::to_vec(&keepster_api::ForgetRequest {
+        glob: Some(args.glob.clone()),
+        confirm: Some(true),
+        on_exclude: Some(if exclude { "exclude" } else { "keep-watching" }.to_owned()),
+    })
+    .expect("a JSON body");
+    let code = start(
+        &client,
+        &format!("/v1/roots/{}/forget", root.id),
+        &body,
+        args.detach,
+    )
+    .await;
+    if code == exit::SUCCESS {
+        eprintln!("keepster: {STILL_ON_DISK}");
+    }
+
+    code
 }
 
 /// Report a job, as a person reads it or as the daemon answered.
@@ -142,11 +220,38 @@ async fn finished(client: &DaemonClient, id: &str) -> Result<Option<Job>, u8> {
 fn ended(job: &Job) -> u8 {
     match (job.state, &job.error) {
         (JobState::Succeeded, _) => {
-            match job
-                .result
-                .as_ref()
-                .and_then(|result| result.reclaimed_bytes)
-            {
+            let result = job.result.clone().unwrap_or_default();
+            if let Some(touched) = result.snapshots_touched {
+                if touched == 0 {
+                    println!("nothing in the history matched");
+                } else {
+                    let plural = if touched == 1 { "" } else { "s" };
+                    println!(
+                        "forgot {} from {touched} Snapshot{plural}: {} versions removed",
+                        result.removed_paths.join(", "),
+                        result.blobs_removed.unwrap_or(0)
+                    );
+                }
+                for path in &result.still_on_disk {
+                    if result.excluded == Some(true) {
+                        eprintln!(
+                            "keepster: {path} is still on disk holding what was removed; it is kept out of \
+                             history from now on"
+                        );
+                    } else {
+                        eprintln!(
+                            "keepster: warning: {path} is still on disk holding what was removed, and still \
+                             watched: the next Snapshot captures it again"
+                        );
+                    }
+                }
+                for reference in &result.left_alone {
+                    eprintln!(
+                        "keepster: warning: {reference} names no commit and was left as it is"
+                    );
+                }
+            }
+            match result.reclaimed_bytes {
                 Some(bytes) => println!("succeeded: {bytes} bytes reclaimed"),
                 None => println!("succeeded"),
             }

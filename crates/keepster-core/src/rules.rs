@@ -32,6 +32,9 @@ pub enum Level {
     GlobalRoot,
     /// The Root's own `.keepster.toml`.
     Root,
+    /// What Forget excluded from now on (ticket 81): written by the daemon, never by hand, and above
+    /// every level a person writes, so no negation of theirs brings a forgotten secret back.
+    Forget,
 }
 
 impl Level {
@@ -44,6 +47,7 @@ impl Level {
             Self::GlobalPattern => "global-pattern",
             Self::GlobalRoot => "global-root",
             Self::Root => "root",
+            Self::Forget => "forget",
         }
     }
 }

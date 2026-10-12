@@ -240,6 +240,10 @@ pub struct Snapshot {
     /// Whether it is pinned, and so survives Retention unconditionally until it is unpinned (ADR 0002).
     #[serde(default)]
     pub pinned: bool,
+    /// How many paths Forget took from it; absent for a Snapshot Forget never touched. One with nothing
+    /// left in it is kept, and this is what says why it is empty (ticket 81).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forgotten_paths: Option<u64>,
 }
 
 /// A path a Snapshot holds no content for, on purpose.
@@ -393,6 +397,8 @@ pub enum ConfigLevel {
     GlobalRoot,
     /// The Root's own `.keepster.toml`.
     Root,
+    /// What Forget excluded from now on: written by the daemon, above every level a person writes.
+    Forget,
 }
 
 /// What a rule does to the paths it matches.
@@ -978,9 +984,47 @@ pub struct JobProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JobResult {
-    /// A Maintenance Pass: how much smaller the store is on disk.
+    /// A Maintenance Pass — and the one Forget ends with: how much smaller the store is on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaimed_bytes: Option<u64>,
+    /// Forget: how many Snapshots held a matching path, and hold none now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots_touched: Option<u64>,
+    /// Forget: how many contents no Snapshot holds any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blobs_removed: Option<u64>,
+    /// Forget: every Root-relative path it removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_paths: Vec<String>,
+    /// Forget: the removed paths whose file in the Working Tree still holds what was removed. Forget
+    /// never touches the Working Tree, so the secret there still needs rotating — and, unless `excluded`,
+    /// the next Snapshot captures it again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub still_on_disk: Vec<String>,
+    /// Forget: whether what it removed is kept out of history from now on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded: Option<bool>,
+    /// Forget: refs among the Segments' and Pins' names that name no commit, which it could not read and
+    /// left as they are — not written by Keepster, and named so that nothing is passed over in silence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_alone: Vec<String>,
+}
+
+/// A Forget, as `POST /v1/roots/{id}/forget` takes it. Every field must be there: the daemon never asks,
+/// it refuses with `confirmation_required`, and the asking is the CLI's (ticket 07).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ForgetRequest {
+    /// What to remove from every Snapshot, as an Include Rule pattern relative to the Root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob: Option<String>,
+    /// `true`: this is irreversible, and the caller knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<bool>,
+    /// `exclude` keeps the pattern out of history from now on; `keep-watching` goes on capturing it —
+    /// right for a file that only held a secret for a while, wrong for one that still does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exclude: Option<String>,
 }
 
 /// What a Reconciliation asked for on demand did.

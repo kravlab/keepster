@@ -158,6 +158,7 @@ pub(crate) fn where_set(origin: &Origin) -> String {
         ConfigLevel::GlobalPattern => "global-pattern",
         ConfigLevel::GlobalRoot => "global-root",
         ConfigLevel::Root => "root",
+        ConfigLevel::Forget => "forget",
     };
 
     match origin.line {

@@ -27,8 +27,10 @@ use crate::index::{self, Index, Observation};
 
 mod diff;
 mod error_name;
+mod forget;
 mod maintenance;
 
+pub use forget::Forgotten;
 pub use maintenance::Maintained;
 mod pins;
 mod restore;
@@ -62,6 +64,11 @@ pub(crate) const TRIGGER_TRAILER: &str = "Keepster-Trigger";
 /// It is a count and not the paths: the per-path record, with its errno, is the sidecar's to hold
 /// (ADR 0006, ticket 48), and a second home for the same fact would be one that can disagree.
 pub(crate) const OMITTED_TRAILER: &str = "Keepster-Omitted";
+
+/// What the trailer counting the paths Forget took from a Snapshot is called (ticket 81): how a
+/// Snapshot Forget touched — one it may have left empty — is marked, in the Snapshot itself so that an
+/// index rebuild keeps the mark.
+pub(crate) const FORGOTTEN_TRAILER: &str = "Keepster-Forgotten";
 
 /// Where a Segment's ref lives. One ref per period, and every name a leaf, because git's files backend
 /// cannot hold both `refs/x` and `refs/x/y` (ADR 0001).
@@ -249,6 +256,9 @@ pub struct SnapshotSummary {
     pub change: Option<ChangeKind>,
     /// Whether it is pinned, and so survives Retention unconditionally (ADR 0002).
     pub pinned: bool,
+    /// How many paths Forget took from it (ticket 81); a Snapshot left empty by Forget is one with
+    /// none left.
+    pub forgotten_paths: u64,
 }
 
 /// What a capture is for, beyond what it captures.
@@ -2568,6 +2578,7 @@ impl From<index::IndexedSnapshot> for SnapshotSummary {
             changed_paths: snapshot.changed,
             change: snapshot.change,
             pinned: snapshot.pinned,
+            forgotten_paths: snapshot.forgotten,
         }
     }
 }

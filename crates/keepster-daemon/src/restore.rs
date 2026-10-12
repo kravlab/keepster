@@ -76,6 +76,9 @@ pub(crate) async fn restore(
             if !state.registry().contains(id) {
                 return Err(roots::not_found(&id.to_string()));
             }
+            // The Safety Snapshot is a capture: its rules are read holding the store, so a Forget this
+            // waited behind cannot have excluded a path it then takes back (ticket 81).
+            let loaded = state.effective(id, &root.path)?;
             if !root.path.is_dir() {
                 return Err(ProblemResponse::new(
                     StatusCode::CONFLICT,

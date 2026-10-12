@@ -682,6 +682,87 @@
         }
       }
     },
+    "/v1/roots/{id}/forget": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Remove every version of a path from the Root's whole history, as a job (ticket 81, ticket 06).",
+        "description": "Irreversible, so the request must say everything itself — what, that the caller knows, and whether\nthe path is excluded from now on; the daemon never asks (ticket 07). It ends with a Maintenance Pass\nunder the same lock, which is what takes the bytes off the disk, so it is refused while there is no\n`git` to run it with. The Working Tree is never touched, and no Safety Snapshot is taken: one would\ncapture the very thing being removed.",
+        "operationId": "forget_path",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued behind any capture of the Root in flight — or, asked for again while it still waits, that same job; `Location` and the body name it. Excluding from now on is in force from here.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The job, at `/v1/jobs/{id}`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Something the request must carry is missing (`confirmation_required`, `details.missing` naming it), or the glob is not one Forget can remove.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Root is watched, or kept since it was unwatched.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Excluding a path on the secret opt-in list, or no `git` to end with a Maintenance Pass.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/maintenance": {
       "post": {
         "tags": [
@@ -1736,7 +1817,8 @@
           "global",
           "global-pattern",
           "global-root",
-          "root"
+          "root",
+          "forget"
         ]
       },
       "ConfigWarning": {
@@ -2667,6 +2749,33 @@
           }
         }
       },
+      "ForgetRequest": {
+        "type": "object",
+        "description": "A Forget, as `POST /v1/roots/{id}/forget` takes it. Every field must be there: the daemon never asks,\nit refuses with `confirmation_required`, and the asking is the CLI's (ticket 07).",
+        "properties": {
+          "confirm": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true`: this is irreversible, and the caller knows it."
+          },
+          "glob": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What to remove from every Snapshot, as an Include Rule pattern relative to the Root."
+          },
+          "on_exclude": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`exclude` keeps the pattern out of history from now on; `keep-watching` goes on capturing it —\nright for a file that only held a secret for a while, wrong for one that still does."
+          }
+        }
+      },
       "GitStatus": {
         "type": "object",
         "description": "The external `git` store maintenance runs with (ticket 52). Capture never needs it.",
@@ -2846,14 +2955,60 @@
         "type": "object",
         "description": "What a job did. Each kind fills in what it measures, so every field is optional and more arrive\ninside `/v1` as kinds are added.",
         "properties": {
+          "blobs_removed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Forget: how many contents no Snapshot holds any more.",
+            "minimum": 0
+          },
+          "excluded": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Forget: whether what it removed is kept out of history from now on."
+          },
+          "left_alone": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Forget: refs among the Segments' and Pins' names that name no commit, which it could not read and\nleft as they are — not written by Keepster, and named so that nothing is passed over in silence."
+          },
           "reclaimed_bytes": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64",
-            "description": "A Maintenance Pass: how much smaller the store is on disk.",
+            "description": "A Maintenance Pass — and the one Forget ends with: how much smaller the store is on disk.",
             "minimum": 0
+          },
+          "removed_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Forget: every Root-relative path it removed."
+          },
+          "snapshots_touched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Forget: how many Snapshots held a matching path, and hold none now.",
+            "minimum": 0
+          },
+          "still_on_disk": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Forget: the removed paths whose file in the Working Tree still holds what was removed. Forget\nnever touches the Working Tree, so the secret there still needs rotating — and, unless `excluded`,\nthe next Snapshot captures it again."
           }
         }
       },
@@ -2999,7 +3154,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it."
           },
           "detail": {
             "type": "string",
@@ -3490,6 +3645,15 @@
             ],
             "format": "int64",
             "description": "How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.\n\nAbsent only from the answer to a capture whose count failed after the Snapshot was already\nwritten — the Snapshot exists, and the timeline carries its count once the index has it.",
+            "minimum": 0
+          },
+          "forgotten_paths": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many paths Forget took from it; absent for a Snapshot Forget never touched. One with nothing\nleft in it is kept, and this is what says why it is empty (ticket 81).",
             "minimum": 0
           },
           "id": {

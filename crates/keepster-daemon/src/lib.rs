@@ -407,6 +407,7 @@ fn api() -> OpenApiRouter<DaemonState> {
         .routes(routes!(pins::list))
         .routes(routes!(pins::pin, pins::unpin))
         .routes(routes!(jobs::maintain))
+        .routes(routes!(jobs::forget))
         .routes(routes!(jobs::show))
         .routes(routes!(diff::diff))
         .routes(routes!(restore::restore))

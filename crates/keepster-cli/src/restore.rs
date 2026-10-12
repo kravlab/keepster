@@ -471,12 +471,12 @@ fn parse_confirmation(name: &str) -> Option<Confirmation> {
 }
 
 /// A yes-or-no answer from the terminal, no unless said.
-fn yes(question: &str) -> bool {
+pub(crate) fn yes(question: &str) -> bool {
     matches!(line(&format!("{question} [y/N] ")).as_str(), "y" | "yes")
 }
 
 /// One line typed at the terminal, trimmed.
-fn line(prompt: &str) -> String {
+pub(crate) fn line(prompt: &str) -> String {
     eprint!("{prompt}");
     let _ = io::stderr().flush();
     let mut answer = String::new();

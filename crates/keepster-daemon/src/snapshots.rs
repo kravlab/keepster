@@ -156,8 +156,6 @@ fn run_pass(
         )
     })?;
 
-    let (root, location, loaded) = prepare(state, id)?;
-
     // One capture at a time per store: git documents a corruption risk under concurrent access, and two
     // captures racing would leave one of them unreferenced whatever git did (ticket 06).
     let store = state.store_lock(id);
@@ -169,6 +167,9 @@ fn run_pass(
     if !state.registry().contains(id) {
         return Err(roots::not_found(&id.to_string()));
     }
+    // Resolved only now, holding the store: a Forget this capture waited behind may have excluded a
+    // path from now on, and rules read before it would capture the secret straight back (ticket 81).
+    let (root, location, loaded) = prepare(state, id)?;
 
     let request = CaptureRequest {
         trigger,
@@ -629,6 +630,7 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
         changed_paths: captured.changed_paths.clone().ok(),
         change: None,
         pinned: false,
+        forgotten_paths: None,
     }
 }
 
@@ -649,6 +651,7 @@ pub(crate) fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
             ChangeKind::Deleted => Change::Deleted,
         }),
         pinned: summary.pinned,
+        forgotten_paths: (summary.forgotten_paths > 0).then_some(summary.forgotten_paths),
     }
 }
 

@@ -69,6 +69,8 @@ error_codes! {
     MaintenanceUnavailable = "maintenance_unavailable": "No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.",
     MaintenanceFailed = "maintenance_failed": "A Maintenance Pass ran and failed; `detail` holds what `git` said.",
     JobInterrupted = "job_interrupted": "The daemon stopped before the job could start; nothing was done.",
+    GlobInvalid = "glob_invalid": "`glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.",
+    SecretOptedIn = "secret_opted_in": "A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.",
 }
 
 impl ErrorCode {

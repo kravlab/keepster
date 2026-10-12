@@ -1191,6 +1191,19 @@ const GLOBAL_KNOWN_GOOD: &str = "config.known-good.toml";
 /// Where a Root's own file's last known-good version is kept, in that Root's store directory.
 const ROOT_KNOWN_GOOD: &str = "keepster.known-good.toml";
 
+/// What Forget excluded from a Root from now on (ticket 81), beside its record: a file the daemon owns
+/// and writes, never one a person keeps in git, so configuration stays read-only to the daemon
+/// (ticket 07).
+const FORGOTTEN: &str = "forgotten.toml";
+
+/// The shape of [`FORGOTTEN`].
+#[derive(Debug, Default, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForgottenFile {
+    /// Every pattern excluded from now on, as Forget was given it.
+    patterns: Vec<String>,
+}
+
 /// The configuration the daemon holds: every file's last known-good version, and what is wrong with
 /// any whose current version is not applied.
 ///
@@ -1289,6 +1302,35 @@ impl Configuration {
             return self.unresolved(id);
         };
         let mut effective = effective(global, id, root_path, own.as_ref());
+        // Without what Forget excluded, a capture would take a forgotten secret straight back: a file
+        // that cannot be read leaves the Root uncaptured rather than capture it on terms it does not
+        // state.
+        let forgotten = match self.forgotten(id) {
+            Ok(forgotten) => forgotten,
+            Err(error) => {
+                let mut errors = self.errors(id);
+                errors.push(error);
+                return Resolved {
+                    effective: None,
+                    errors,
+                };
+            }
+        };
+        if !forgotten.is_empty() {
+            if let Some(exclude) = effective
+                .keys
+                .iter_mut()
+                .find(|key| key.spec.name == "files.exclude")
+            {
+                if let Setting::List(entries) = &mut exclude.setting {
+                    entries.extend(forgotten.iter().map(|rule| Entry {
+                        value: Value::Pattern(rule.text.clone()),
+                        origin: rule.origin.clone(),
+                    }));
+                }
+            }
+            effective.policy = effective.policy.with_forgotten(forgotten);
+        }
         effective.policy = std::mem::take(&mut effective.policy)
             .with_fences(
                 history_fence(&self.state_dir, root_path)
@@ -1373,6 +1415,71 @@ impl Configuration {
             .in_force
             .as_ref()
             .map(|global| effective(global, id, root_path, None).retention)
+    }
+
+    /// What Forget excluded from the Root `id` from now on, as rules of their own level, above every
+    /// level a person writes (ticket 81).
+    pub fn forgotten(&self, id: RootId) -> Result<Vec<Rule>, ConfigError> {
+        let path = self.state_dir.join(id.to_string()).join(FORGOTTEN);
+        let Some(text) = read_text(&path)? else {
+            return Ok(Vec::new());
+        };
+        let file: ForgottenFile = toml::from_str(&text).map_err(|error| ConfigError {
+            path: path.clone(),
+            message: error.message().to_owned(),
+        })?;
+
+        file.patterns
+            .iter()
+            .map(|pattern| {
+                Rule::parse(
+                    pattern,
+                    RootPath::root(),
+                    RuleOrigin {
+                        level: Level::Forget,
+                        source: path.display().to_string(),
+                        line: None,
+                    },
+                )
+                .map_err(|error| ConfigError {
+                    path: path.clone(),
+                    message: error.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// Exclude `pattern` from the Root `id` from now on, as Forget's `--exclude` asks: added once to the
+    /// file the daemon owns, and in force at the next resolution.
+    pub fn forget_from_now_on(&mut self, id: RootId, pattern: &str) -> Result<(), ConfigError> {
+        let directory = self.state_dir.join(id.to_string());
+        let path = directory.join(FORGOTTEN);
+        let failed = |error: io::Error| ConfigError {
+            path: path.clone(),
+            message: format!("it could not be written: {error}"),
+        };
+        let mut file = match read_text(&path)? {
+            Some(text) => toml::from_str::<ForgottenFile>(&text).map_err(|error| ConfigError {
+                path: path.clone(),
+                message: error.message().to_owned(),
+            })?,
+            None => ForgottenFile::default(),
+        };
+        if file.patterns.iter().any(|known| known == pattern) {
+            return Ok(());
+        }
+        file.patterns.push(pattern.to_owned());
+        let text = format!(
+            "# Written by `keepster forget --exclude`: paths kept out of history from now on, above every\n\
+             # rule a configuration file sets. Forgetting is the daemon's to record; edit with care.\n{}",
+            toml::to_string_pretty(&file).map_err(|error| ConfigError {
+                path: path.clone(),
+                message: error.to_string(),
+            })?
+        );
+        fs::create_dir_all(&directory).map_err(failed)?;
+
+        write_atomically(&path, &text).map_err(failed)
     }
 
     /// The `git` the global file in force names, if it names one.

@@ -556,6 +556,10 @@ fn write_snapshot(snapshot: &Snapshot, out: &mut impl Write) -> io::Result<()> {
     if snapshot.pinned {
         write!(out, "  [pinned]")?;
     }
+    // Why a Snapshot may hold less than it did, or nothing at all (ticket 81).
+    if let Some(forgotten) = snapshot.forgotten_paths {
+        write!(out, "  [{forgotten} forgotten]")?;
+    }
 
     writeln!(out)
 }

@@ -143,6 +143,7 @@ pub(crate) fn origin(origin: &RuleOrigin) -> Origin {
             Level::GlobalPattern => ConfigLevel::GlobalPattern,
             Level::GlobalRoot => ConfigLevel::GlobalRoot,
             Level::Root => ConfigLevel::Root,
+            Level::Forget => ConfigLevel::Forget,
         },
         source: origin.source.clone(),
         line: origin.line,

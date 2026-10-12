@@ -29,7 +29,7 @@ use crate::history::{StoreError, mode_changes};
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// The schema. `STRICT` so a value of the wrong type is an error rather than a silent coercion; no
 /// row ids, because every table already has a natural key.
@@ -40,6 +40,7 @@ const SCHEMA: &str = "
         commit_id  TEXT    NOT NULL,
         trigger    TEXT    NOT NULL,
         omitted    INTEGER NOT NULL,
+        forgotten  INTEGER NOT NULL,
         PRIMARY KEY (source, id)
     ) STRICT, WITHOUT ROWID;
 
@@ -54,7 +55,8 @@ const SCHEMA: &str = "
         trigger    TEXT    NOT NULL,
         omitted    INTEGER NOT NULL,
         changed    INTEGER NOT NULL,
-        pinned     INTEGER NOT NULL
+        pinned     INTEGER NOT NULL,
+        forgotten  INTEGER NOT NULL
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE changes (
@@ -113,6 +115,8 @@ pub(crate) struct IndexedSnapshot {
     /// The copy it is read from: its Pin's while it has one.
     pub(crate) commit: git2::Oid,
     pub(crate) pinned: bool,
+    /// How many paths Forget took from it.
+    pub(crate) forgotten: u64,
     pub(crate) trigger: String,
     pub(crate) omitted: u64,
     pub(crate) changed: u64,
@@ -128,6 +132,7 @@ struct Unindexed {
     commit: git2::Oid,
     trigger: String,
     omitted: u64,
+    forgotten: u64,
 }
 
 /// What a commit's trailers say about the Snapshot it holds.
@@ -135,6 +140,7 @@ pub(crate) struct Trailers {
     pub(crate) id: SnapshotId,
     pub(crate) trigger: String,
     pub(crate) omitted: u64,
+    pub(crate) forgotten: u64,
 }
 
 /// The open index of one History Store.
@@ -424,7 +430,7 @@ impl Index {
     pub(crate) fn snapshot(&self, id: SnapshotId) -> Result<Option<IndexedSnapshot>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
+                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten
                  FROM snapshots WHERE id = ?1",
                 [id.to_string()],
                 indexed_snapshot,
@@ -457,7 +463,8 @@ impl Index {
                 let mut statement = self
                     .connection
                     .prepare(
-                        "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
+                        "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned,
+                                forgotten
                          FROM snapshots
                          WHERE id < ?1 AND id >= ?2
                          ORDER BY id DESC LIMIT ?3",
@@ -472,7 +479,7 @@ impl Index {
                     .connection
                     .prepare(
                         "SELECT s.id, s.segment, s.commit_id, s.trigger, s.omitted, s.changed, c.kind,
-                                s.pinned
+                                s.pinned, s.forgotten
                          FROM changes c JOIN snapshots s ON s.id = c.snapshot
                          WHERE c.path = ?1 AND s.id < ?2 AND s.id >= ?3
                          ORDER BY s.id DESC LIMIT ?4",
@@ -495,7 +502,7 @@ impl Index {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned
+                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten
                  FROM snapshots WHERE pinned = 1 ORDER BY id DESC",
             )
             .map_err(self.failed("read"))?;
@@ -526,11 +533,13 @@ pub(crate) fn trailers(message: &str) -> Option<Trailers> {
     let mut id = None;
     let mut trigger = None;
     let mut omitted = 0;
+    let mut forgotten = 0;
     for (key, value) in found.iter() {
         match key {
             crate::history::SNAPSHOT_TRAILER => id = value.parse().ok(),
             crate::history::TRIGGER_TRAILER => trigger = Some(value.to_owned()),
             crate::history::OMITTED_TRAILER => omitted = value.parse().unwrap_or(0),
+            crate::history::FORGOTTEN_TRAILER => forgotten = value.parse().unwrap_or(0),
             _ => {}
         }
     }
@@ -540,6 +549,7 @@ pub(crate) fn trailers(message: &str) -> Option<Trailers> {
         // A Snapshot from before Triggers were recorded was taken on demand: nothing else existed.
         trigger: trigger.unwrap_or_else(|| keepster_core::Trigger::Manual.as_str().to_owned()),
         omitted,
+        forgotten,
     })
 }
 
@@ -751,6 +761,7 @@ fn unindexed(
                 commit: commit.id(),
                 trigger: trailers.trigger,
                 omitted: trailers.omitted,
+                forgotten: trailers.forgotten,
             });
         }
     }
@@ -762,13 +773,15 @@ fn unindexed(
 /// another Segment is two chained commits claiming one Snapshot, and refused; a Pin is a copy of its own.
 fn insert(transaction: &rusqlite::Transaction<'_>, copy: &Unindexed) -> rusqlite::Result<()> {
     transaction.execute(
-        "INSERT INTO copies (source, id, commit_id, trigger, omitted) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO copies (source, id, commit_id, trigger, omitted, forgotten)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             copy.source,
             copy.id.to_string(),
             copy.commit.to_string(),
             copy.trigger,
             i64::try_from(copy.omitted).unwrap_or(i64::MAX),
+            i64::try_from(copy.forgotten).unwrap_or(i64::MAX),
         ],
     )?;
 
@@ -793,7 +806,7 @@ fn remove_source(
 /// otherwise, and gone once neither is left. Says whether it is there to be counted.
 fn resolve(transaction: &rusqlite::Transaction<'_>, id: SnapshotId) -> rusqlite::Result<bool> {
     let mut statement = transaction.prepare(
-        "SELECT source, commit_id, trigger, omitted FROM copies WHERE id = ?1
+        "SELECT source, commit_id, trigger, omitted, forgotten FROM copies WHERE id = ?1
          ORDER BY source LIKE 'pins/%' DESC",
     )?;
     let copies = statement
@@ -803,10 +816,11 @@ fn resolve(transaction: &rusqlite::Transaction<'_>, id: SnapshotId) -> rusqlite:
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let Some((source, commit, trigger, omitted)) = copies.first() else {
+    let Some((source, commit, trigger, omitted, forgotten)) = copies.first() else {
         transaction.execute("DELETE FROM snapshots WHERE id = ?1", [id.to_string()])?;
         return Ok(false);
     };
@@ -824,12 +838,13 @@ fn resolve(transaction: &rusqlite::Transaction<'_>, id: SnapshotId) -> rusqlite:
             .unwrap_or_default(),
     };
     transaction.execute(
-        "INSERT INTO snapshots (id, segment, commit_id, trigger, omitted, changed, pinned)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)
+        "INSERT INTO snapshots (id, segment, commit_id, trigger, omitted, changed, pinned, forgotten)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)
          ON CONFLICT (id) DO UPDATE SET
              segment = excluded.segment, commit_id = excluded.commit_id,
-             trigger = excluded.trigger, omitted = excluded.omitted, pinned = excluded.pinned",
-        params![id.to_string(), segment, commit, trigger, omitted, pinned],
+             trigger = excluded.trigger, omitted = excluded.omitted, pinned = excluded.pinned,
+             forgotten = excluded.forgotten",
+        params![id.to_string(), segment, commit, trigger, omitted, pinned, forgotten],
     )?;
 
     Ok(true)
@@ -912,6 +927,7 @@ fn indexed_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSnapshot
         segment: row.get(1)?,
         commit: parse_oid(row, 2)?,
         pinned: row.get(7)?,
+        forgotten: u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
         trigger: row.get(3)?,
         omitted: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
         changed: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),

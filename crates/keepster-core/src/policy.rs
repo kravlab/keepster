@@ -342,7 +342,7 @@ impl CapturePolicy {
             verdict,
             own_rule: classified.rule,
             secret,
-            opted_in: secret.and_then(|_| self.opt_in(path)),
+            opted_in: secret.and_then(|_| self.opted_in(path)),
             max_size,
             size_rule,
             max_size_origin: &self.max_size_origin,
@@ -367,7 +367,7 @@ impl CapturePolicy {
         }
 
         if let Some(secret) = self.secrets.last_match(path, kind) {
-            if self.opt_in(path).is_none() {
+            if self.opted_in(path).is_none() {
                 return Verdict::Secret(secret);
             }
         }
@@ -387,8 +387,18 @@ impl CapturePolicy {
             .map(|(_, reason)| *reason)
     }
 
-    /// The opt-in admitting `path` past the denylist, if one does.
-    fn opt_in(&self, path: &RootPath) -> Option<&Rule> {
+    /// This policy with what Forget excluded from now on (ticket 81), at its own level above every user
+    /// level, so that it outranks whatever the user's files say about the same paths.
+    pub fn with_forgotten(&self, rules: Vec<Rule>) -> Self {
+        Self {
+            rules: self.rules.extended(rules),
+            ..self.clone()
+        }
+    }
+
+    /// The opt-in admitting `path` past the denylist, if one does — which is also what makes a path one
+    /// Forget may not exclude: the user has said this secret is to be captured (ticket 06).
+    pub fn opted_in(&self, path: &RootPath) -> Option<&Rule> {
         self.secret_opt_in
             .last_match(path, Kind::File)
             .filter(|rule| !rule.negated)
