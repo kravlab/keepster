@@ -75,7 +75,7 @@ impl Listener {
                 "off",
                 format!(
                     "the daemon has no loopback listener: `ui.listener` is off in {}; set it to \
-                     true there and restart the daemon",
+                     true there and run `keepster service restart`",
                     config_path.as_ref().map_or_else(
                         || "the global configuration".to_owned(),
                         |path| path.display().to_string()

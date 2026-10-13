@@ -125,6 +125,103 @@ pub struct DaemonStatus {
     /// daemon older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<LogStatus>,
+    /// The alarms in force: what stopped the insurance, as the last `alarms.changed` announced it
+    /// (ticket 67). A client that connects after an incident learns it here, because a replayed stream
+    /// is not a snapshot of state. Empty while nothing is wrong; absent from a daemon older than the
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alarms: Option<Vec<Alarm>>,
+    /// Until when notifications are muted, as an RFC 3339 moment. Present only while a mute lasts, so a
+    /// mute is never a silent failure; alarms are still raised and listed while it does, and it changes
+    /// no exit code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted_until: Option<String>,
+    /// The trays attached, each with its two capability rows as it last reported them (ticket 67).
+    /// Empty when no tray is attached; absent from a daemon older than the field. Changes no exit code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trays: Option<Vec<Tray>>,
+}
+
+/// The [`Alarm::kind`] of a Root nothing can be captured from.
+pub const ALARM_ROOT_UNAVAILABLE: &str = "root_unavailable";
+/// The [`Alarm::kind`] of a Root still watched, but not as promised.
+pub const ALARM_ROOT_DEGRADED: &str = "root_degraded";
+/// The [`Alarm::kind`] of a job a person started that failed.
+pub const ALARM_JOB_FAILED: &str = "job_failed";
+
+/// Something that stopped the insurance, as the daemon decides it (ticket 67): a client delivers it
+/// and decides nothing (ADR 0008).
+///
+/// One alarm per Root for its state, which a change of state replaces and a return to `watching`
+/// clears, and one per kind of job on a Root, which the next job of that kind that succeeds clears.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Alarm {
+    /// What is wrong: `root_unavailable`, `root_degraded` or `job_failed`. An open set, as error codes
+    /// are: a client shows an alarm of a kind it does not know by its Root.
+    pub kind: String,
+    /// The Root it concerns.
+    pub root: String,
+    /// The Root's `state_code`, for an alarm about its state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The job that failed, for `job_failed`: `GET /v1/jobs/{id}` says what went wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// What that job did, for `job_failed`: `maintenance`, `forget` or `export`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_kind: Option<String>,
+}
+
+/// A mute of the notifications, which always ends: `PUT /v1/alarms/mute`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MuteRequest {
+    /// How long, in minutes: 1 to 1440. Absent, an hour.
+    // Signed, so that a negative number reaches the range check and is refused as `mute_invalid` rather
+    // than as JSON of the wrong shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 1440))]
+    pub minutes: Option<i64>,
+}
+
+/// Whether notifications are muted, as `PUT` and `DELETE /v1/alarms/mute` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MuteStatus {
+    /// Until when, as an RFC 3339 moment; absent while nothing is muted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// What a tray can do here, as it reports it: `PUT /v1/trays/{instance}` (ticket 67).
+///
+/// Two rows that fail independently: a desktop that draws no icon can still show notifications, and the
+/// other way round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TrayReport {
+    /// Whether its icon is drawn.
+    pub icon: Reported,
+    /// Why it is not, such as `no_watcher` where the desktop hosts no status icons. An open set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_reason: Option<String>,
+    /// Whether it can show notifications.
+    pub notifications: Reported,
+    /// Why it cannot, such as `no_server`, `no_bundle` or `no_app_id`. An open set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications_reason: Option<String>,
+}
+
+/// One attached tray, as `status` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Tray {
+    /// The name the tray reported under.
+    pub instance: String,
+    /// What it reported last.
+    #[serde(flatten)]
+    pub report: TrayReport,
 }
 
 /// The daemon's log, as `status` shows it.
@@ -1039,6 +1136,35 @@ pub enum Event {
         /// How it ended: `succeeded` or `failed`.
         state: JobState,
     },
+    /// The alarms in force changed, or the mute did (ticket 67). Changes are gathered for five seconds
+    /// and sent together; an alarm raised and cleared inside those seconds is never sent.
+    #[serde(rename = "alarms.changed")]
+    AlarmsChanged {
+        /// Every alarm in force now, as `status` lists them.
+        alarms: Vec<Alarm>,
+        /// The alarms raised since the last `alarms.changed`. One that replaces another for the same
+        /// Root is here, with the one it replaces in `cleared`.
+        raised: Vec<Alarm>,
+        /// The alarms no longer in force.
+        cleared: Vec<Alarm>,
+        /// Until when notifications are muted, while they are; a mute changed alone sends this event
+        /// with nothing raised or cleared.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        muted_until: Option<String>,
+    },
+    /// The daemon is stopping on purpose, and the stream ends after this. A stream that ends without
+    /// it is a daemon that died.
+    #[serde(rename = "daemon.stopping")]
+    DaemonStopping,
+    /// The level the daemon's log is written at changed: a raise began or ended (ticket 67).
+    #[serde(rename = "log.level_changed")]
+    LogLevelChanged {
+        /// The level written at now.
+        level: String,
+        /// When a raise ends, as an RFC 3339 moment, while one lasts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<String>,
+    },
     /// The events since the client's `Last-Event-ID` cannot be replayed: they were evicted, the daemon
     /// restarted, or the client fell too far behind. Whatever it shows may be stale, so it refetches.
     #[serde(rename = "resync")]
@@ -1062,6 +1188,9 @@ impl Event {
             Self::JobStarted { .. } => "job.started",
             Self::JobProgress { .. } => "job.progress",
             Self::JobCompleted { .. } => "job.completed",
+            Self::AlarmsChanged { .. } => "alarms.changed",
+            Self::DaemonStopping => "daemon.stopping",
+            Self::LogLevelChanged { .. } => "log.level_changed",
             Self::Resync => "resync",
         }
     }
@@ -1829,6 +1958,10 @@ pub struct Diagnostics {
     pub watermarks: Vec<RootWatermarks>,
     /// The tail of the daemon's log, and the format it is written in.
     pub log: LogTail,
+    /// The tail of the tray's log, read beside the daemon's (ticket 67); absent when the daemon writes
+    /// no log file and so knows no directory to read it from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray_log: Option<LogTail>,
 }
 
 /// What the daemon runs on, and with.
@@ -2075,12 +2208,13 @@ pub struct WatermarkReport {
     pub indexed: Option<String>,
 }
 
-/// The tail of the daemon's log.
+/// The tail of a log: the daemon's, or the tray's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LogTail {
-    /// The format the daemon writes lines in, `text` or `json`, as `log.format` set it at the start. A
-    /// rotated file written before a restart may be in the other.
+    /// The format its lines are written in, `text` or `json`: the daemon's as `log.format` set it at the
+    /// start, where a rotated file written before a restart may be in the other; the tray's always
+    /// `text`.
     pub format: String,
     /// The current file and then each rotated one, newest first, until the tail's budget is spent.
     /// Empty when the daemon writes no log file, or when its log could not be read.

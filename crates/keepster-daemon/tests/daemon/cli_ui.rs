@@ -63,6 +63,11 @@ async fn with_the_listener_off_both_commands_fail_alike_and_name_the_key() {
             "{}",
             run.stderr
         );
+        assert!(
+            run.stderr.contains("`keepster service restart`"),
+            "the command that brings it back: {}",
+            run.stderr
+        );
     }
 }
 

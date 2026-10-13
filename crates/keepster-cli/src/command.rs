@@ -111,6 +111,13 @@ pub enum Command {
     /// itself: `keepster log-level debug --for 30m`.
     LogLevel(LogLevelArgs),
 
+    /// Mute the tray's notifications for a while. Alarms are still raised, and `status` shows them and
+    /// the mute; a mute always ends by itself: `keepster mute --for 2h`.
+    Mute(MuteArgs),
+
+    /// Lift a mute now.
+    Unmute,
+
     /// Write a diagnostics bundle for a bug report into one local zip, after printing what is in it
     /// and what each file discloses. Paths are included as they are; nothing is ever sent anywhere.
     Diagnose(DiagnoseArgs),
@@ -146,14 +153,35 @@ pub struct LogLevelArgs {
     pub reset: bool,
 }
 
+/// Options of `keepster mute`.
+#[derive(Debug, Args)]
+pub struct MuteArgs {
+    /// How long, in whole minutes, such as `30m` or `2h`: at most a day. An hour when not given.
+    #[arg(long = "for", value_name = "DURATION")]
+    pub duration: Option<String>,
+}
+
 /// The subcommands of `keepster service`.
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommand {
-    /// Register the daemon with this platform's service manager, start it, and check that it answers.
+    /// Register the daemon with this platform's service manager, start it, and check that it answers;
+    /// and start the tray at every graphical login.
     Install(ServiceInstallArgs),
 
-    /// Stop the daemon and remove its autostart. History, Roots and configuration are left as they are.
+    /// Stop the daemon and remove its autostart and the tray's. History, Roots and configuration are
+    /// left as they are.
     Uninstall,
+
+    /// Ask the service manager to start the daemon.
+    Start,
+
+    /// Ask the service manager to stop the daemon. It stays stopped until it is started, or until the
+    /// next login.
+    Stop,
+
+    /// Ask the service manager to stop the daemon and start it again, as a change only a restart
+    /// applies needs.
+    Restart,
 
     /// Say whether autostart is installed, whether the daemon is running, and whether coverage
     /// survives logout.
@@ -167,6 +195,11 @@ pub struct ServiceInstallArgs {
     /// the loopback listener off. An existing configuration is never rewritten.
     #[arg(long)]
     pub no_web_ui: bool,
+
+    /// Install no tray: nothing shows the daemon's state at a glance, and nothing notifies when
+    /// coverage stops.
+    #[arg(long)]
+    pub no_tray: bool,
 }
 
 /// Options of `keepster ui`.

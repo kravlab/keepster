@@ -26,8 +26,36 @@ use serde_json::json;
 /// The name the inventory is held under in the archive.
 pub const INVENTORY: &str = "inventory.txt";
 
-/// The directory the log's files are held under in the archive.
+/// The directory the logs' files are held under in the archive.
 const LOGS: &str = "logs/";
+
+/// Whose log a tail is: how the bundle describes its files, and names it when it is absent.
+struct LogOwner {
+    /// Who wrote it, as each file's source says: `the daemon's log`.
+    whose: &'static str,
+    /// What its absence is named in the inventory.
+    missing: &'static str,
+    /// What its lines reveal.
+    discloses: &'static str,
+}
+
+/// The daemon's log, whose absence names the whole directory, as it always has.
+const DAEMON_LOG: LogOwner = LogOwner {
+    whose: "the daemon's log",
+    missing: LOGS,
+    discloses: DISCLOSES_LOG,
+};
+
+/// The tray's log, beside the daemon's (ticket 67).
+const TRAY_LOG: LogOwner = LogOwner {
+    whose: "the tray's log",
+    missing: "logs/tray.log",
+    discloses: DISCLOSES_TRAY_LOG,
+};
+
+/// Why the tray's log is absent when its directory was read and held none: no tray has run here, or none
+/// has written yet.
+const NO_TRAY_LOG: &str = "the tray has written no log here";
 
 /// One file of a bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +92,8 @@ pub struct OnDisk {
     pub registry: Result<Vec<RegistryRecord>, String>,
     /// The tail of the log.
     pub log: LogTail,
+    /// The tail of the tray's log, from the same directory.
+    pub tray_log: LogTail,
 }
 
 /// The environment as a process other than the daemon can read it: the daemon's
@@ -145,10 +175,20 @@ impl Bundle {
             &found.watermarks,
         );
         bundle.add_log(
+            &DAEMON_LOG,
             &found.log,
             &found.log.format,
             "the daemon writes no log file",
         );
+        match &found.tray_log {
+            Some(tray_log) => bundle.add_log(&TRAY_LOG, tray_log, &tray_log.format, NO_TRAY_LOG),
+            None => bundle.missing.push(Missing {
+                name: TRAY_LOG.missing.to_owned(),
+                reason: "the daemon writes no log file, so it knows no directory to read the \
+                         tray's log from"
+                    .to_owned(),
+            }),
+        }
 
         bundle
     }
@@ -226,9 +266,16 @@ impl Bundle {
         bundle.missing.push(missing("topology.json"));
         bundle.missing.push(missing("watermarks.json"));
         bundle.add_log(
+            &DAEMON_LOG,
             &found.log,
             written_in.unwrap_or(&found.log.format),
             "no log file was found",
+        );
+        bundle.add_log(
+            &TRAY_LOG,
+            &found.tray_log,
+            &found.tray_log.format,
+            NO_TRAY_LOG,
         );
 
         bundle
@@ -333,12 +380,12 @@ impl Bundle {
         });
     }
 
-    /// Add every file of the log's tail, its lines in `format`, or say there is none: because the log
-    /// could not be read, when that is the reason, and otherwise `why`.
-    fn add_log(&mut self, log: &LogTail, format: &str, why: &str) {
+    /// Add every file of `owner`'s log tail, its lines in `format`, or say there is none: because the
+    /// log could not be read, when that is the reason, and otherwise `why`.
+    fn add_log(&mut self, owner: &LogOwner, log: &LogTail, format: &str, why: &str) {
         if log.files.is_empty() {
             self.missing.push(Missing {
-                name: LOGS.to_owned(),
+                name: owner.missing.to_owned(),
                 reason: match &log.error {
                     Some(error) => format!("the log could not be read: {error}"),
                     None => why.to_owned(),
@@ -348,17 +395,18 @@ impl Bundle {
         for file in &log.files {
             let source = if file.truncated {
                 format!(
-                    "the daemon's log: the last {} of its {} bytes, whole lines only",
+                    "{}: the last {} of its {} bytes, whole lines only",
+                    owner.whose,
                     file.text.len(),
                     file.size
                 )
             } else {
-                "the daemon's log, the whole file".to_owned()
+                format!("{}, the whole file", owner.whose)
             };
             self.files.push(BundleFile {
                 name: format!("{LOGS}{}", file.name),
                 source,
-                discloses: format!("{DISCLOSES_LOG} (lines in the {format} format)"),
+                discloses: format!("{} (lines in the {format} format)", owner.discloses),
                 content: file.text.clone().into_bytes(),
             });
         }
@@ -394,3 +442,7 @@ const DISCLOSES_WATERMARKS: &str = "per Root: the derived index's sources and th
      up to; no file names and no file content";
 const DISCLOSES_LOG: &str = "the daemon's own lines: paths it captured, skipped or could not read, \
      error messages, Root paths";
+/// What the tray's log discloses, which the manifest says beside it.
+const DISCLOSES_TRAY_LOG: &str = "the tray's own lines: when it connected to the daemon and lost it, \
+     the title of each notification it showed, which names a Root, and what failed when a menu item \
+     was chosen";

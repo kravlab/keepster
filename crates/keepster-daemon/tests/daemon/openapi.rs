@@ -106,9 +106,11 @@ fn every_route_the_api_serves_is_described() {
     assert_eq!(
         described,
         [
+            "DELETE /v1/alarms/mute",
             "DELETE /v1/log/level",
             "DELETE /v1/roots/{id}",
             "DELETE /v1/roots/{id}/pins/{snapshot}",
+            "DELETE /v1/trays/{instance}",
             "GET /v1/diagnostics",
             "GET /v1/events",
             "GET /v1/fs",
@@ -141,9 +143,11 @@ fn every_route_the_api_serves_is_described() {
             "POST /v1/roots/{id}/snapshots",
             "POST /v1/ui/bootstrap",
             "POST /v1/ui/token/rotate",
+            "PUT /v1/alarms/mute",
             "PUT /v1/log/level",
             "PUT /v1/preferences",
             "PUT /v1/roots/{id}/pins/{snapshot}",
+            "PUT /v1/trays/{instance}",
         ]
     );
 }
@@ -255,8 +259,8 @@ fn every_operation_documents_its_failures_as_problems() {
             // Neither can fail with a problem: both answer from the build alone.
             continue;
         }
-        if name == "DELETE /v1/log/level" {
-            // Ending a raise is answered from memory alone, and ending none is no error.
+        if name == "DELETE /v1/log/level" || name == "DELETE /v1/alarms/mute" {
+            // Ending a raise or a mute is answered from memory alone, and ending none is no error.
             continue;
         }
         if name == "GET /v1/preferences" {
@@ -394,6 +398,7 @@ fn every_operation_has_its_own_stable_name() {
             "list_snapshots",
             "maintain_root",
             "move_root",
+            "mute_alarms",
             "pin_snapshot",
             "preview_directory",
             "raise_log_level",
@@ -401,6 +406,7 @@ fn every_operation_has_its_own_stable_name() {
             "reconcile_root",
             "register_root",
             "replace_preferences",
+            "report_tray",
             "restore_root",
             "rotate_ui_token",
             "search_content",
@@ -408,8 +414,10 @@ fn every_operation_has_its_own_stable_name() {
             "stat_selection",
             "stream_events",
             "take_snapshot",
+            "unmute_alarms",
             "unpin_snapshot",
             "unwatch_root",
+            "withdraw_tray",
         ]
     );
 }
@@ -455,11 +463,14 @@ fn the_event_stream_is_described_with_its_events_and_its_resume_header() {
     assert_eq!(
         names,
         [
+            "alarms.changed",
             "config.invalid",
             "config.reloaded",
+            "daemon.stopping",
             "job.completed",
             "job.progress",
             "job.started",
+            "log.level_changed",
             "maintenance.completed",
             "restore.completed",
             "resync",

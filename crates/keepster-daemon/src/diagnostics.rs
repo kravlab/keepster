@@ -40,6 +40,9 @@ use crate::volumes::Volumes;
 /// attach to an issue.
 pub const LOG_TAIL_BUDGET: u64 = 1024 * 1024;
 
+/// The format the tray writes its log in: always text, having no `log.format` of its own.
+const TRAY_LOG_FORMAT: &str = "text";
+
 /// Everything the daemon knows that a diagnostics bundle carries.
 #[utoipa::path(
     get,
@@ -142,6 +145,12 @@ fn collect(state: &DaemonState, status: Status) -> Result<Diagnostics, ProblemRe
         topology,
         watermarks,
         log,
+        tray_log: state.log.file().map(|file| {
+            log_tail(
+                &file.with_file_name(keepster_service::TRAY_LOG_FILE),
+                TRAY_LOG_FORMAT.to_owned(),
+            )
+        }),
     })
 }
 
@@ -234,6 +243,17 @@ pub fn on_disk(places: &Places, volumes: &dyn Volumes) -> OnDisk {
             Some(directory) => log_tail(&directory.join(crate::LOG_FILE), log_format),
             None => LogTail {
                 format: log_format,
+                files: Vec::new(),
+                error: None,
+            },
+        },
+        tray_log: match &places.log_dir {
+            Some(directory) => log_tail(
+                &directory.join(keepster_service::TRAY_LOG_FILE),
+                TRAY_LOG_FORMAT.to_owned(),
+            ),
+            None => LogTail {
+                format: TRAY_LOG_FORMAT.to_owned(),
                 files: Vec::new(),
                 error: None,
             },

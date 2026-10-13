@@ -25,6 +25,9 @@ allow = [
     "ISC",
     # `notify` itself (ticket 43): a public-domain dedication, expressible in debian/copyright and rpm.
     "CC0-1.0",
+    # `ksni`, the tray's Linux icon (ticket 67): a public-domain dedication that ADR 0008 accepted when
+    # it chose a StatusNotifierItem without GTK.
+    "Unlicense",
 ]
 confidence-threshold = 0.9
 

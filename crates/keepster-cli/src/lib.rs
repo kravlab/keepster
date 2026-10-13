@@ -15,6 +15,7 @@ pub mod history;
 pub mod jobs;
 pub mod lines;
 pub mod log_level;
+pub mod mute;
 pub mod pins;
 pub mod preview;
 pub mod reconcile;
@@ -31,8 +32,8 @@ pub mod ui;
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiagnoseArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs,
-    ForgetArgs, GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, PinArgs,
-    PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand,
+    ForgetArgs, GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, MuteArgs,
+    PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand,
     ServiceInstallArgs, SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs,
     UnwatchArgs, WatchArgs,
 };
@@ -45,6 +46,7 @@ pub use history::{cat, log};
 pub use jobs::{forget, job, maintain};
 pub use lines::LineStream;
 pub use log_level::log_level;
+pub use mute::{mute, unmute};
 pub use pins::{pin, pins, unpin};
 pub use preview::preview;
 pub use reconcile::reconcile;

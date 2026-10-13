@@ -7,8 +7,8 @@
 
 use hyper::StatusCode;
 use keepster_api::{
-    DaemonStatus, GitStatus, InstallHint, Reported, Root, RootState, Status, StoreFormat,
-    VersionInfo,
+    Alarm, DaemonStatus, GitStatus, InstallHint, Reported, Root, RootState, Status, StoreFormat,
+    Tray, TrayReport, VersionInfo,
 };
 use keepster_cli::{ClientError, Response, outcome};
 
@@ -43,6 +43,9 @@ fn status_with(roots: Vec<Root>) -> Status {
             },
             listener: None,
             log: None,
+            alarms: None,
+            muted_until: None,
+            trays: None,
         },
         roots,
     }
@@ -420,4 +423,127 @@ fn a_failed_pass_shows_what_git_said_and_how_it_is_looked_for_again() {
         !printed.contains("[git]"),
         "the git that failed is the one configured or found: {printed}"
     );
+}
+
+#[test]
+fn a_mute_is_shown_with_when_it_ends_and_changes_no_exit_code() {
+    let mut status = status_with(vec![root("PROJECT01", RootState::Watching)]);
+    status.daemon.muted_until = Some("2026-10-13T12:00:00Z".to_owned());
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(result.code, 0);
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("notifications muted until 2026-10-13T12:00:00Z; `keepster unmute`"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn no_tray_attached_is_said_and_changes_no_exit_code() {
+    let mut status = status_with(vec![root("PROJECT01", RootState::Watching)]);
+    status.daemon.trays = Some(vec![]);
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(result.code, 0);
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("  tray         no tray attached\n"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn each_tray_is_shown_with_its_icon_and_its_notifications_failing_apart() {
+    let mut status = status_with(vec![]);
+    status.daemon.trays = Some(vec![Tray {
+        instance: "tray-1".to_owned(),
+        report: TrayReport {
+            icon: Reported::Unavailable,
+            icon_reason: Some("no_watcher".to_owned()),
+            notifications: Reported::Available,
+            notifications_reason: None,
+        },
+    }]);
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(result.code, 0);
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains(
+            "  tray         tray-1: icon unavailable (no_watcher), notifications available\n"
+        ),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_daemon_older_than_the_tray_rows_shows_none_of_them() {
+    let result = outcome(served(&status_with(vec![])), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(!printed.contains("tray"), "{printed}");
+    assert!(!printed.contains("alarm"), "{printed}");
+}
+
+#[test]
+fn alarms_are_shown_by_their_root_and_change_no_exit_code() {
+    let mut status = status_with(vec![root("PROJECT01", RootState::Watching)]);
+    status.daemon.alarms = Some(vec![Alarm {
+        kind: "job_failed".to_owned(),
+        root: "PROJECT01".to_owned(),
+        reason: None,
+        job: Some("01M4TW3FMA92KER3GXBG2GNT97".to_owned()),
+        job_kind: Some("maintenance".to_owned()),
+    }]);
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(
+        result.code, 0,
+        "a failed job is an alarm, not a coverage gap"
+    );
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains(
+            "  alarm        project01 (PROJECT0)  job_failed: maintenance, job \
+             01M4TW3FMA92KER3GXBG2GNT97\n"
+        ),
+        "{printed}"
+    );
+}
+
+#[test]
+fn an_alarm_about_a_roots_state_carries_its_reason() {
+    let mut status = status_with(vec![root("PROJECT01", RootState::Unavailable)]);
+    status.daemon.alarms = Some(vec![Alarm {
+        kind: "root_unavailable".to_owned(),
+        root: "PROJECT01".to_owned(),
+        reason: Some("root_missing".to_owned()),
+        job: None,
+        job_kind: None,
+    }]);
+
+    let result = outcome(served(&status), false, None);
+
+    assert_eq!(result.code, 10, "the Root's state decides, as before");
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("  alarm        project01 (PROJECT0)  root_unavailable [root_missing]\n"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn no_alarm_in_force_is_said() {
+    let mut status = status_with(vec![]);
+    status.daemon.alarms = Some(vec![]);
+
+    let printed =
+        String::from_utf8_lossy(&outcome(served(&status), false, None).stdout).into_owned();
+
+    assert!(printed.contains("  alarms       none\n"), "{printed}");
 }

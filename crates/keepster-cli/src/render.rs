@@ -5,7 +5,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use keepster_api::{
-    GitStatus, ListenerState, ListenerStatus, LogStatus, Reported, Root, RootState, Status,
+    Alarm, GitStatus, ListenerState, ListenerStatus, LogStatus, Reported, Root, RootState, Status,
+    Tray,
 };
 
 /// Write the daemon's payload exactly as it arrived.
@@ -66,8 +67,83 @@ pub fn write_human(
     if let Some(log) = &daemon.log {
         writeln!(out, "  log          {}", log_level(log))?;
     }
+    // Shown only while it lasts, as a raised log level is: a mute is never a silent failure.
+    if let Some(until) = &daemon.muted_until {
+        writeln!(
+            out,
+            "  notifications muted until {until}; `keepster unmute` lifts the mute"
+        )?;
+    }
+    if let Some(trays) = &daemon.trays {
+        write_trays(trays, out)?;
+    }
+    if let Some(alarms) = &daemon.alarms {
+        write_alarms(alarms, &status.roots, out)?;
+    }
 
     write_roots(&status.roots, out)
+}
+
+/// The trays attached, each with its two rows, which fail apart. None attached is said, not left out.
+fn write_trays(trays: &[Tray], out: &mut impl Write) -> io::Result<()> {
+    if trays.is_empty() {
+        return writeln!(out, "  tray         no tray attached");
+    }
+    let row = |value: Reported, reason: Option<&str>| match reason {
+        Some(reason) => format!("{} ({reason})", reported(value)),
+        None => reported(value).to_owned(),
+    };
+
+    for tray in trays {
+        let report = &tray.report;
+        writeln!(
+            out,
+            "  tray         {}: icon {}, notifications {}",
+            tray.instance,
+            row(report.icon, report.icon_reason.as_deref()),
+            row(report.notifications, report.notifications_reason.as_deref())
+        )?;
+    }
+
+    Ok(())
+}
+
+/// The alarms in force, each by the Root it concerns. A Root `roots` does not list — deregistered as
+/// this was asked — is named by its identity.
+fn write_alarms(alarms: &[Alarm], roots: &[Root], out: &mut impl Write) -> io::Result<()> {
+    if alarms.is_empty() {
+        return writeln!(out, "  alarms       none");
+    }
+
+    for alarm in alarms {
+        let root = roots.iter().find(|root| root.id == alarm.root).map_or_else(
+            || short_id(&alarm.root),
+            |root| root_label(&root.path, &root.id),
+        );
+        let what = match (&alarm.reason, &alarm.job_kind, &alarm.job) {
+            (Some(reason), _, _) => format!("{} [{reason}]", alarm.kind),
+            (None, Some(kind), Some(job)) => format!("{}: {kind}, job {job}", alarm.kind),
+            _ => alarm.kind.clone(),
+        };
+        writeln!(out, "  alarm        {root}  {what}")?;
+    }
+
+    Ok(())
+}
+
+/// A Root as a person recognises it: the directory's own name and a short prefix of its identity.
+fn root_label(path: &str, id: &str) -> String {
+    let name = Path::new(path).file_name().map_or_else(
+        || path.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+
+    format!("{name} ({})", short_id(id))
+}
+
+/// As much of an identity as a person is shown.
+fn short_id(id: &str) -> String {
+    id.chars().take(SHORT_ID_LENGTH).collect()
 }
 
 /// Whether the daemon comes back at login, and what to do when it does not.
@@ -144,13 +220,12 @@ pub fn write_roots(roots: &[Root], out: &mut impl Write) -> io::Result<()> {
     }
 
     for root in roots {
-        let name = Path::new(&root.path).file_name().map_or_else(
-            || root.path.clone(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        let short_id: String = root.id.chars().take(SHORT_ID_LENGTH).collect();
-
-        write!(out, "  {name} ({short_id})  {}", root_state(root.state))?;
+        write!(
+            out,
+            "  {}  {}",
+            root_label(&root.path, &root.id),
+            root_state(root.state)
+        )?;
         match &root.state_code {
             Some(code) => writeln!(out, " [{code}]  {}", root.path)?,
             None => writeln!(out, "  {}", root.path)?,

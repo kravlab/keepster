@@ -21,3 +21,12 @@ Root, because a global cap lets one busy Root evict another's history.
       the last state of a Root no longer watched included — is part of its floor, and a cap that cannot be met
       because of Pins overshoots and reports it (moved here from ticket 53)
 - [ ] `status` reports each Root's store size and whether it is over its cap, and `store.over_cap` is announced
+
+## Comments
+
+- **The paused capture is an alarm (from ticket 67)**: the daemon decides every notification, in its `alarms`
+  module (`crates/keepster-daemon/src/alarms.rs`), and the tray only delivers what `alarms.changed` announces.
+  Ticket 67 raises no alarm for the cap, because the state does not exist yet. When this ticket introduces capture
+  paused at the cap and `store.over_cap`, a paused capture must raise an alarm through that module — a new kind
+  alongside `root_unavailable`, `root_degraded` and `job_failed`, cleared when capture resumes — so that the tray
+  notifies it and `status` lists it, as the insurance having stopped.

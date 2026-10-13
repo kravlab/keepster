@@ -85,7 +85,7 @@ pub fn moment(text: &str, now: SystemTime) -> Result<jiff::Timestamp, String> {
 }
 
 /// A duration such as `2h`, in seconds, or `None` if `text` is not one.
-fn duration_seconds(text: &str) -> Option<i64> {
+pub(crate) fn duration_seconds(text: &str) -> Option<i64> {
     let unit = text.chars().last()?;
     let amount: i64 = text[..text.len() - unit.len_utf8()].parse().ok()?;
     let seconds = match unit {

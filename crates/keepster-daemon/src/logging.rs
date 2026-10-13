@@ -15,7 +15,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
-use keepster_api::{ErrorCode, LogLevelRequest, LogStatus, Problem};
+use keepster_api::{ErrorCode, Event, LogLevelRequest, LogStatus, Problem};
 use keepster_app::config::{DaemonSettings, LOG_LEVELS};
 use keepster_service::rotating::{self, RotatingFile};
 use tracing_subscriber::filter::{LevelFilter, Targets};
@@ -24,6 +24,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry, reload};
 
 use crate::DaemonState;
+use crate::events::EventBus;
 use crate::problem::ProblemResponse;
 
 /// The file's name in the log directory.
@@ -126,6 +127,9 @@ pub(crate) struct LogLevels {
     /// level, so a raise and an end arriving together can never leave a level nothing will end.
     state: Mutex<Raises>,
     output: Option<Arc<FileLog>>,
+    /// Where a raise beginning or ending is announced, so that a tray takes its level from the stream
+    /// (ticket 67).
+    events: Arc<EventBus>,
 }
 
 #[derive(Debug, Default)]
@@ -147,11 +151,18 @@ struct Raised {
 const EXPIRY_CHECK: Duration = Duration::from_secs(5);
 
 impl LogLevels {
-    pub(crate) fn new(configured: String, output: Option<Arc<FileLog>>) -> Self {
+    /// Levels starting at `configured`, written to `output` when there is a file, and announced on
+    /// `events` whenever a raise begins or ends.
+    pub(crate) fn new(
+        configured: String,
+        output: Option<Arc<FileLog>>,
+        events: Arc<EventBus>,
+    ) -> Self {
         Self {
             configured,
             state: Mutex::new(Raises::default()),
             output,
+            events,
         }
     }
 
@@ -163,13 +174,9 @@ impl LogLevels {
         };
 
         LogStatus {
-            level: raised
-                .as_ref()
-                .map_or_else(|| self.configured.clone(), |raised| raised.level.clone()),
+            level: self.level(raised.as_ref()),
             default: self.configured.clone(),
-            until: raised
-                .and_then(|raised| jiff::Timestamp::try_from(raised.until).ok())
-                .map(|moment| moment.to_string()),
+            until: raised.and_then(|raised| crate::roots::rfc3339(raised.until)),
             file: self.file().map(|file| file.display().to_string()),
         }
     }
@@ -190,6 +197,7 @@ impl LogLevels {
             self.apply(&level);
             tracing::info!(%level, seconds = duration.as_secs(), "the log level is raised");
             state.current = Some(Raised { level, until });
+            self.announce(&state);
             state.generation
         };
 
@@ -232,7 +240,24 @@ impl LogLevels {
             // Said while still at the raised level, so a quiet configured level cannot hide it.
             tracing::info!(level = %self.configured, "the log level returns to its default");
             self.apply(&self.configured);
+            self.announce(state);
         }
+    }
+
+    /// The level written at while `raised` is the raise in force.
+    fn level(&self, raised: Option<&Raised>) -> String {
+        raised.map_or_else(|| self.configured.clone(), |raised| raised.level.clone())
+    }
+
+    /// Tell every open event stream the level written at now, and when a raise ends while one lasts.
+    fn announce(&self, state: &Raises) {
+        self.events.publish_now(Event::LogLevelChanged {
+            level: self.level(state.current.as_ref()),
+            until: state
+                .current
+                .as_ref()
+                .and_then(|raised| crate::roots::rfc3339(raised.until)),
+        });
     }
 
     fn apply(&self, level: &str) {

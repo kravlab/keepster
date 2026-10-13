@@ -180,7 +180,8 @@ impl Drop for OwnedToken {
     }
 }
 
-fn to_wide(text: &str) -> Vec<u16> {
+/// `text` as a NUL-terminated UTF-16 string, as the wide Win32 calls take it.
+pub fn to_wide(text: &str) -> Vec<u16> {
     OsStr::new(text)
         .encode_wide()
         .chain(std::iter::once(0))
@@ -307,9 +308,8 @@ pub fn git_for_windows() -> Vec<std::path::PathBuf> {
         RRF_SUBKEY_WOW6464KEY, RegGetValueW,
     };
 
-    let wide = |text: &str| -> Vec<u16> { OsStr::new(text).encode_wide().chain(Some(0)).collect() };
-    let subkey = wide("Software\\GitForWindows");
-    let value = wide("InstallPath");
+    let subkey = to_wide("Software\\GitForWindows");
+    let value = to_wide("InstallPath");
 
     let read = |hive: HKEY, view: u32| -> Option<std::path::PathBuf> {
         let flags = RRF_RT_REG_SZ | view;
@@ -367,4 +367,52 @@ pub fn git_for_windows() -> Vec<std::path::PathBuf> {
     }
 
     found
+}
+
+/// The key under `HKCU` whose values Windows starts at the user's interactive logon (ticket 67).
+pub(crate) const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+/// Write `command` as the `REG_SZ` value `name` under [`RUN_KEY`], replacing one of that name.
+pub(crate) fn set_run_value(name: &str, command: &str) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
+
+    let subkey = to_wide(RUN_KEY);
+    let name = to_wide(name);
+    let data = to_wide(command);
+    let bytes = u32::try_from(data.len() * 2)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the command is too long"))?;
+    // SAFETY: the key and value names are NUL-terminated, and `data` holds `bytes` bytes, its own
+    // terminating NUL included, as `REG_SZ` requires.
+    let written = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            REG_SZ,
+            data.as_ptr().cast(),
+            bytes,
+        )
+    };
+    if written != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(written as i32));
+    }
+
+    Ok(())
+}
+
+/// Remove the value `name` under [`RUN_KEY`]; whether there was one.
+pub(crate) fn delete_run_value(name: &str) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RegDeleteKeyValueW};
+
+    let subkey = to_wide(RUN_KEY);
+    let name = to_wide(name);
+    // SAFETY: both names are NUL-terminated.
+    let deleted = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, subkey.as_ptr(), name.as_ptr()) };
+    match deleted {
+        ERROR_SUCCESS => Ok(true),
+        ERROR_FILE_NOT_FOUND => Ok(false),
+        error => Err(io::Error::from_raw_os_error(error as i32)),
+    }
 }

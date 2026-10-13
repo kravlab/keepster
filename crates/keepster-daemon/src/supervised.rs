@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use keepster_api::Status;
 use keepster_cli::{DaemonClient, ServiceCommand, ServiceInstallArgs, exit};
-use keepster_service::autostart::{self, Autostart};
+use keepster_service::autostart::{self, Autostart, tray};
 
 /// How long a daemon the service manager was asked to start has to answer: its start recovers every
 /// Root's index first, which on a large store is not instant.
@@ -94,6 +94,27 @@ pub(crate) async fn service(command: &ServiceCommand, control_path: &Path) -> u8
         ServiceCommand::Install(args) => install(args, control_path).await,
         ServiceCommand::Uninstall => uninstall().await,
         ServiceCommand::Status => status(control_path).await,
+        ServiceCommand::Start => ask("started", autostart::start).await,
+        ServiceCommand::Stop => ask("stopped", autostart::stop).await,
+        ServiceCommand::Restart => ask("restarted", autostart::restart).await,
+    }
+}
+
+/// Ask the service manager for `step`, and say whether it did it: `done` is what it did, said of the
+/// daemon.
+async fn ask(
+    done: &str,
+    step: impl FnOnce() -> Result<(), autostart::ServiceError> + Send + 'static,
+) -> u8 {
+    match blocking(step).await {
+        Ok(()) => {
+            println!("the service manager {done} the daemon");
+            exit::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("keepster: {error}");
+            exit::OTHER
+        }
     }
 }
 
@@ -125,6 +146,7 @@ async fn install(args: &ServiceInstallArgs, control_path: &Path) -> u8 {
         }
     };
 
+    let tray_exe = tray::beside(&exe);
     let installed = match blocking(move || autostart::install(&exe)).await {
         Ok(installed) => installed,
         Err(error) => {
@@ -133,6 +155,18 @@ async fn install(args: &ServiceInstallArgs, control_path: &Path) -> u8 {
         }
     };
     println!("installed {}", installed.unit);
+    // A tray that cannot be installed leaves the daemon installed: the insurance is the point, and the
+    // tray only shows it. The exit code says that something asked for was not done.
+    let mut code = exit::SUCCESS;
+    if !args.no_tray {
+        match blocking(move || tray::install(&tray_exe)).await {
+            Ok(installed) => println!("{}", tray_installed(&installed)),
+            Err(error) => {
+                eprintln!("keepster: the tray's autostart was not installed: {error}");
+                code = exit::OTHER;
+            }
+        }
+    }
 
     if let Ok(Err(refused)) = tokio::task::spawn_blocking(autostart::enable_linger).await {
         println!(
@@ -164,7 +198,23 @@ async fn install(args: &ServiceInstallArgs, control_path: &Path) -> u8 {
         println!("coverage ends at logout: this platform stops a user's agents when they log out");
     }
 
-    exit::SUCCESS
+    code
+}
+
+/// What installing the tray's autostart did, said honestly of a machine with no graphical session now.
+fn tray_installed(installed: &tray::TrayInstalled) -> String {
+    if installed.started {
+        format!(
+            "installed {}; the tray is running, and starts again at every graphical login",
+            installed.entry
+        )
+    } else {
+        format!(
+            "installed {}; there is no graphical session now, so the tray starts at the next \
+             graphical login",
+            installed.entry
+        )
+    }
 }
 
 /// Write the global configuration of a machine without a web UI, only if there is none (ticket 24).
@@ -185,7 +235,7 @@ fn declare_no_web_ui() {
         }
         Ok(keepster_service::NoWebUi::Existing { add }) => println!(
             "{} exists and was left as it is; for no web UI, add `{add}` under its `[ui]` table, \
-             then restart the daemon — `keepster service uninstall` and `install` do",
+             then run `keepster service restart`",
             path.display()
         ),
         Err(error) => eprintln!(
@@ -196,7 +246,7 @@ fn declare_no_web_ui() {
 }
 
 async fn uninstall() -> u8 {
-    match blocking(autostart::uninstall).await {
+    let daemon = match blocking(autostart::uninstall).await {
         Ok(Some(unit)) => {
             println!(
                 "removed {unit}; the daemon is stopped. History, Roots and configuration are left as \
@@ -212,7 +262,22 @@ async fn uninstall() -> u8 {
             eprintln!("keepster: autostart was not removed: {error}");
             exit::OTHER
         }
-    }
+    };
+    // The tray's goes whatever became of the daemon's: a tray started at login for no daemon shows
+    // nothing but its absence.
+    let tray = match blocking(tray::uninstall).await {
+        Ok(Some(entry)) => {
+            println!("removed {entry}; the tray no longer starts at login");
+            exit::SUCCESS
+        }
+        Ok(None) => exit::SUCCESS,
+        Err(error) => {
+            eprintln!("keepster: the tray's autostart was not removed: {error}");
+            exit::OTHER
+        }
+    };
+
+    daemon.max(tray)
 }
 
 /// Run a platform step off the async runtime: each one starts a process and waits for it.
@@ -302,5 +367,37 @@ async fn answers_within(path: &Path, patience: Duration) -> bool {
             return false;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use keepster_service::autostart::tray::TrayInstalled;
+
+    use super::tray_installed;
+
+    #[test]
+    fn a_tray_started_now_is_said_to_be_running() {
+        let said = tray_installed(&TrayInstalled {
+            entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
+            started: true,
+        });
+
+        assert_eq!(
+            said,
+            "installed /home/u/.config/autostart/keepster-tray.desktop; the tray is running, and \
+             starts again at every graphical login"
+        );
+    }
+
+    #[test]
+    fn without_a_graphical_session_the_install_says_when_the_tray_will_start() {
+        let said = tray_installed(&TrayInstalled {
+            entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
+            started: false,
+        });
+
+        assert!(said.contains("no graphical session now"), "{said}");
+        assert!(said.contains("next graphical login"), "{said}");
     }
 }

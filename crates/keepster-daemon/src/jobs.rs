@@ -638,8 +638,16 @@ fn run_holding<F>(
     announce_end(state, id, kind, root, to);
 }
 
-/// Say on the stream that the job `id` ended, and how.
+/// Say on the stream that the job `id` ended, and how; a failure raises an alarm, which the next success
+/// of its kind on its Root clears (ticket 67).
 fn announce_end(state: &DaemonState, id: JobId, kind: &'static str, root: RootId, to: JobState) {
+    state.alarms.job_ended(
+        kind,
+        &root.to_string(),
+        &id.to_string(),
+        to == JobState::Failed,
+        std::time::Instant::now(),
+    );
     state.publish(Event::JobCompleted {
         job: id.to_string(),
         kind: kind.to_owned(),

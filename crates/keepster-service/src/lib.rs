@@ -21,6 +21,7 @@ pub use volume::{Volume, mount_points, volume_of};
 #[cfg(windows)]
 pub use windows::{
     OwnerOnlyAccess, create_control_pipe, current_user_sid, git_for_windows, hard_link_names,
+    to_wide,
 };
 
 /// Where the daemon listens for the CLI, and where the CLI looks for it.
@@ -82,6 +83,10 @@ pub fn default_runtime_dir() -> Option<PathBuf> {
         None
     }
 }
+
+/// The tray's log file in [`default_log_dir`], beside the daemon's (ticket 67): the tray writes it, and a
+/// diagnostics bundle reads it from there.
+pub const TRAY_LOG_FILE: &str = "tray.log";
 
 /// Where the daemon's log goes (ticket 33): `$XDG_STATE_HOME/keepster`, which the XDG specification
 /// names for "actions history (logs, …)", on Linux; `~/Library/Logs/Keepster` on macOS; and

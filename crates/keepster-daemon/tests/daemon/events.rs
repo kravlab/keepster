@@ -12,7 +12,7 @@ use serde_json::Value;
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// The next event the stream delivers, failing the test if none arrives.
-async fn next(stream: &mut EventStream) -> SseEvent {
+pub(crate) async fn next(stream: &mut EventStream) -> SseEvent {
     tokio::time::timeout(PATIENCE, stream.next())
         .await
         .unwrap_or_else(|_| panic!("no event within {PATIENCE:?}"))
@@ -21,7 +21,7 @@ async fn next(stream: &mut EventStream) -> SseEvent {
 }
 
 /// The next event named `name`, passing over the others, with its payload parsed.
-async fn next_named(stream: &mut EventStream, name: &str) -> (SseEvent, Value) {
+pub(crate) async fn next_named(stream: &mut EventStream, name: &str) -> (SseEvent, Value) {
     loop {
         let event = next(stream).await;
         if event.event == name {
@@ -125,9 +125,16 @@ async fn an_open_stream_ends_when_the_daemon_stops_rather_than_holding_it_up() {
         .await
         .expect("the daemon stops with a stream open");
 
-    let ended = tokio::time::timeout(PATIENCE, stream.next())
+    // The stop is announced (ticket 67), and nothing follows it.
+    let mut ended = tokio::time::timeout(PATIENCE, stream.next())
         .await
         .expect("the stream ends");
+    if let Ok(Some(event)) = &ended {
+        assert_eq!(event.event, "daemon.stopping");
+        ended = tokio::time::timeout(PATIENCE, stream.next())
+            .await
+            .expect("the stream ends");
+    }
     assert!(
         matches!(ended, Ok(None) | Err(_)),
         "no event after the stop: {ended:?}"

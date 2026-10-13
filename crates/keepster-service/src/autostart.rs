@@ -8,6 +8,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub mod tray;
+
 /// The exit code of a daemon refused because another one holds the pid file's lock, which the systemd
 /// unit does not restart on, since starting it again would be refused again.
 ///
@@ -292,19 +294,25 @@ fn remove_file(path: &Path) -> io::Result<()> {
     }
 }
 
-pub use platform::{autostart, enable_linger, install, start, uninstall, unit_location};
+pub use platform::{
+    autostart, enable_linger, install, restart, start, stop, uninstall, unit_location,
+};
 
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
 
+    /// The user's configuration directory, where systemd's user units and the XDG autostart entries
+    /// are both read from.
+    pub(crate) fn config_dir() -> Option<PathBuf> {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    }
+
     /// The directory systemd reads a user's own units from.
     fn unit_dir() -> Option<PathBuf> {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-
-        Some(config.join("systemd/user"))
+        config_dir().map(|config| config.join("systemd/user"))
     }
 
     /// Where the unit is, or would be.
@@ -404,6 +412,24 @@ mod platform {
         )
     }
 
+    /// Stop the daemon. systemd does not start a unit stopped this way again until asked.
+    pub fn stop() -> Result<(), ServiceError> {
+        run(
+            "stop the unit",
+            "systemctl",
+            &["--user", "stop", SYSTEMD_UNIT],
+        )
+    }
+
+    /// Stop the daemon and start it again, or start it when it was not running.
+    pub fn restart() -> Result<(), ServiceError> {
+        run(
+            "restart the unit",
+            "systemctl",
+            &["--user", "restart", SYSTEMD_UNIT],
+        )
+    }
+
     /// Stop and disable the unit, then remove it. Linger is left as it is: other services of the user's
     /// may rely on it.
     pub fn uninstall() -> Result<Option<String>, ServiceError> {
@@ -444,12 +470,49 @@ mod platform {
     }
 
     /// The user's GUI domain, which a LaunchAgent belongs to.
-    fn domain() -> String {
+    pub(crate) fn domain() -> String {
         format!("gui/{}", rustix::process::getuid().as_raw())
     }
 
+    /// The daemon's agent in that domain.
     fn service() -> String {
         format!("{}/{LAUNCH_AGENT}", domain())
+    }
+
+    /// Unload the agent `label`, ending its process. An agent that is not loaded has nothing to unload,
+    /// so a failure is not one: what an uninstall needs is that the file goes, and a reload loads anew.
+    pub(crate) fn unload_agent(label: &str) {
+        let _ = run(
+            "unload the agent",
+            "launchctl",
+            &["bootout", &format!("{}/{label}", domain())],
+        );
+    }
+
+    /// Load the agent `label` from `plist`, replacing whatever an earlier install loaded, so the agent
+    /// just written is the one running.
+    ///
+    /// launchd tears an agent down after `bootout` returns, and a `bootstrap` arriving meanwhile fails
+    /// with an I/O error: it is asked again, a moment later, a few times.
+    pub(crate) fn reload_agent(label: &str, plist: &str) -> Result<(), ServiceError> {
+        unload_agent(label);
+        let load = || {
+            run(
+                "load the agent",
+                "launchctl",
+                &["bootstrap", &domain(), plist],
+            )
+        };
+        let mut loaded = load();
+        for _ in 0..4 {
+            if loaded.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            loaded = load();
+        }
+
+        loaded
     }
 
     /// launchd loads every agent in the user's `LaunchAgents` at login, so the file is the fact.
@@ -472,26 +535,7 @@ mod platform {
         write_file("write the agent", &plist, launch_agent(exe).as_bytes())?;
         let plist_text = plist.to_string_lossy().into_owned();
 
-        // Whatever an earlier install loaded goes first, so the agent just written is the one running.
-        // launchd tears an agent down after `bootout` returns, and a `bootstrap` arriving meanwhile fails
-        // with an I/O error: it is asked again, a moment later, a few times.
-        let _ = run("unload the agent", "launchctl", &["bootout", &service()]);
-        let load = || {
-            run(
-                "load the agent",
-                "launchctl",
-                &["bootstrap", &domain(), &plist_text],
-            )
-        };
-        let mut loaded = load();
-        for _ in 0..4 {
-            if loaded.is_ok() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            loaded = load();
-        }
-        if let Err(error) = loaded {
+        if let Err(error) = reload_agent(LAUNCH_AGENT, &plist_text) {
             let _ = remove_file(&plist);
             return Err(error);
         }
@@ -501,6 +545,24 @@ mod platform {
 
     pub fn start() -> Result<(), ServiceError> {
         run("start the agent", "launchctl", &["kickstart", &service()])
+    }
+
+    /// Stop the daemon. It exits cleanly on `SIGTERM`, which the agent's `KeepAlive` does not restart.
+    pub fn stop() -> Result<(), ServiceError> {
+        run(
+            "stop the agent",
+            "launchctl",
+            &["kill", "SIGTERM", &service()],
+        )
+    }
+
+    /// Stop the daemon and start it again, or start it when it was not running.
+    pub fn restart() -> Result<(), ServiceError> {
+        run(
+            "restart the agent",
+            "launchctl",
+            &["kickstart", "-k", &service()],
+        )
     }
 
     pub fn uninstall() -> Result<Option<String>, ServiceError> {
@@ -513,8 +575,7 @@ mod platform {
         if !plist.exists() {
             return Ok(None);
         }
-        // An agent that is not loaded has nothing to unload; what matters is that the file goes.
-        let _ = run("unload the agent", "launchctl", &["bootout", &service()]);
+        unload_agent(LAUNCH_AGENT);
         remove_file(&plist).map_err(|error| {
             ServiceError::new("remove the agent", format!("{}: {error}", plist.display()))
         })?;
@@ -620,6 +681,19 @@ mod platform {
         )
     }
 
+    /// Stop the daemon. Ending a task ends its process outright, which the store survives as it
+    /// survives any kill.
+    pub fn stop() -> Result<(), ServiceError> {
+        run("end the task", "schtasks", &["/End", "/TN", SCHEDULED_TASK])
+    }
+
+    /// Stop the daemon and start it again. Ending a task that is not running fails, and is not a
+    /// reason to leave it stopped.
+    pub fn restart() -> Result<(), ServiceError> {
+        let _ = stop();
+        start()
+    }
+
     pub fn uninstall() -> Result<Option<String>, ServiceError> {
         if autostart() == Autostart::NotInstalled {
             return Ok(None);
@@ -664,6 +738,14 @@ mod platform {
 
     pub fn start() -> Result<(), ServiceError> {
         Err(ServiceError::new("start", UNSUPPORTED))
+    }
+
+    pub fn stop() -> Result<(), ServiceError> {
+        Err(ServiceError::new("stop", UNSUPPORTED))
+    }
+
+    pub fn restart() -> Result<(), ServiceError> {
+        Err(ServiceError::new("restart", UNSUPPORTED))
     }
 
     pub fn uninstall() -> Result<Option<String>, ServiceError> {

@@ -182,6 +182,66 @@ async fn an_install_the_service_manager_refuses_leaves_no_unit_behind() {
         !sandbox.unit_dir().join("keepster.service").exists(),
         "a unit systemd does not run would read as installed"
     );
+    assert!(
+        !sandbox.tray_entry().exists(),
+        "no tray is started at login for a daemon that is not"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn install_takes_a_choice_of_no_tray() {
+    let sandbox = Sandbox::new();
+
+    let run = sandbox.run(&["service", "install", "--no-tray"]).await;
+
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "refused by the service manager, not by the parser: {}",
+        text(&run.stderr)
+    );
+    assert!(!sandbox.tray_entry().exists());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_service_verbs_ask_the_service_manager_and_say_what_it_answered() {
+    let sandbox = Sandbox::new();
+
+    for verb in ["start", "stop", "restart"] {
+        let run = sandbox.run(&["service", verb]).await;
+
+        assert_eq!(run.status.code(), Some(1), "{verb}: {}", text(&run.stderr));
+        let stderr = text(&run.stderr);
+        assert!(
+            stderr.contains(&format!("{verb} the unit")) && stderr.contains("systemctl"),
+            "{verb}: {stderr}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn uninstall_removes_the_trays_autostart_entry_too() {
+    let sandbox = Sandbox::new();
+    let entry = sandbox.tray_entry();
+    std::fs::create_dir_all(entry.parent().expect("a parent")).expect("its directory");
+    std::fs::write(
+        &entry,
+        keepster_service::autostart::tray::desktop_entry(Path::new("/usr/bin/keepster-tray")),
+    )
+    .expect("the entry");
+
+    let run = sandbox.run(&["service", "uninstall"]).await;
+
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(!entry.exists());
+    assert!(
+        text(&run.stdout).contains(&format!("removed {}", entry.display())),
+        "{}",
+        text(&run.stdout)
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -211,6 +271,7 @@ async fn install_without_the_web_ui_leaves_an_existing_configuration_and_names_t
     let said = format!("{}{}", text(&run.stdout), text(&run.stderr));
     assert!(said.contains("listener = false"), "{said}");
     assert!(said.contains("[ui]"), "{said}");
+    assert!(said.contains("`keepster service restart`"), "{said}");
 }
 
 #[tokio::test]

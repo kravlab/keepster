@@ -60,6 +60,16 @@ fn on_disk() -> OnDisk {
             }],
             error: None,
         },
+        tray_log: LogTail {
+            format: "text".to_owned(),
+            files: vec![LogFileTail {
+                name: "tray.log".to_owned(),
+                size: 30,
+                text: "INFO keepster_tray: starting\n".to_owned(),
+                truncated: false,
+            }],
+            error: None,
+        },
     }
 }
 
@@ -111,8 +121,9 @@ async fn a_bundle_the_daemon_collected_holds_every_section_and_says_what_each_di
             .iter()
             .map(|missing| missing.name.as_str())
             .collect::<Vec<_>>(),
-        ["logs/"],
-        "a daemon in a test process writes no log, and the bundle says so"
+        ["logs/", "logs/tray.log"],
+        "a daemon in a test process writes no log, so knows no directory for the tray's, and the \
+         bundle says so"
     );
 }
 
@@ -142,6 +153,7 @@ fn a_bundle_collected_without_the_daemon_names_every_section_it_lacks() {
             "configuration.json",
             "registry.json",
             "logs/daemon.log",
+            "logs/tray.log",
         ]
     );
     let missing: Vec<&str> = bundle
@@ -289,12 +301,73 @@ async fn a_log_that_could_not_be_read_is_named_missing_with_why() {
 
     let bundle = Bundle::from_daemon(keepster_daemon::version_info(), found);
 
-    assert_eq!(
-        missing(&bundle),
-        [(
+    assert!(
+        missing(&bundle).contains(&(
             "logs/",
             "the log could not be read: daemon.log: permission denied"
-        )],
-        "never \"no log file\" when there is one"
+        )),
+        "never \"no log file\" when there is one: {:?}",
+        missing(&bundle)
+    );
+}
+
+#[test]
+fn the_tray_s_log_is_held_with_where_it_came_from_and_what_it_discloses() {
+    let bundle = Bundle::from_disk(
+        keepster_daemon::version_info(),
+        on_disk(),
+        "no daemon is listening",
+    );
+
+    let tray = bundle
+        .files()
+        .iter()
+        .find(|file| file.name == "logs/tray.log")
+        .expect("the tray's log");
+    assert_eq!(tray.source, "the tray's log, the whole file");
+    assert!(
+        tray.discloses.starts_with("the tray's own lines"),
+        "{}",
+        tray.discloses
+    );
+    assert_eq!(tray.content, b"INFO keepster_tray: starting\n");
+}
+
+#[test]
+fn a_tray_that_wrote_no_log_is_named_missing() {
+    let mut found = on_disk();
+    found.tray_log.files.clear();
+
+    let bundle = Bundle::from_disk(
+        keepster_daemon::version_info(),
+        found,
+        "no daemon is listening",
+    );
+
+    assert!(
+        missing(&bundle).contains(&("logs/tray.log", "the tray has written no log here")),
+        "{:?}",
+        missing(&bundle)
+    );
+}
+
+#[tokio::test]
+async fn a_tray_log_that_could_not_be_read_is_named_missing_with_why() {
+    let mut found = from_the_daemon().await;
+    found.tray_log = Some(LogTail {
+        format: "text".to_owned(),
+        files: Vec::new(),
+        error: Some("tray.log: permission denied".to_owned()),
+    });
+
+    let bundle = Bundle::from_daemon(keepster_daemon::version_info(), found);
+
+    assert!(
+        missing(&bundle).contains(&(
+            "logs/tray.log",
+            "the log could not be read: tray.log: permission denied"
+        )),
+        "{:?}",
+        missing(&bundle)
     );
 }

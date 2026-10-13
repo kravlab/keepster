@@ -9,6 +9,7 @@
 // routed nor documented, and this is what turns that silent omission into a build failure (ticket 40).
 #![deny(dead_code)]
 
+mod alarms;
 mod autostart;
 pub mod bundle;
 mod configuration;
@@ -35,6 +36,7 @@ mod restore;
 mod roots;
 mod search;
 mod snapshots;
+mod trays;
 mod triggers;
 mod ui;
 mod volumes;
@@ -187,9 +189,11 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
         pid = std::process::id(),
         "the daemon is starting"
     );
+    let events = Arc::new(events::EventBus::new(events::REPLAY_BOUND));
     let log_levels = Arc::new(logging::LogLevels::new(
         settings.log_level.clone(),
         config.log.clone(),
+        Arc::clone(&events),
     ));
     let token_path = config.runtime_dir.join(TOKEN_FILE);
     // Whatever a previous start left: a token is this start's or none, and a start that ends up with
@@ -212,6 +216,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
         configuration,
         listener,
         log_levels,
+        events,
         config.store_base,
         ceiling,
         config.retry_after.unwrap_or(keepster_core::RETRY_AFTER),
@@ -249,6 +254,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
             // No pass and no job starts from here on; one that is waiting for its store ends failed, and
             // says so while the stream is still open.
             housekeeping_state.stop();
+            // Said before the streams end, so that a tray tells a stop from a death (ticket 67).
+            events.publish_now(keepster_api::Event::DaemonStopping);
             // An open event stream would otherwise hold the graceful stop forever.
             events.close();
             let _ = signal.send(true);
@@ -486,6 +493,10 @@ struct DaemonState {
     log: Arc<logging::LogLevels>,
     /// The web UI's preferences file; the lock makes writes one at a time (ticket 66).
     preferences: Arc<Mutex<keepster_store::PreferencesStore>>,
+    /// What stopped the insurance, and the mute (ticket 67).
+    alarms: Arc<alarms::Alarms>,
+    /// What each attached tray last reported it can do (ticket 67).
+    trays: Arc<Mutex<trays::Trays>>,
 }
 
 impl DaemonState {
@@ -498,6 +509,7 @@ impl DaemonState {
         config: keepster_app::config::Configuration,
         listener: loopback::Listener,
         log: Arc<logging::LogLevels>,
+        events: Arc<events::EventBus>,
         store_base: PathBuf,
         watch_ceiling: Option<usize>,
         retry_after: std::time::Duration,
@@ -513,7 +525,7 @@ impl DaemonState {
             housekeeping: Arc::new(housekeeping::Housekeeping::new(housekeeping)),
             git: Arc::new(Mutex::new(None)),
             jobs: Arc::new(jobs::Jobs::default()),
-            events: Arc::new(events::EventBus::new(events::REPLAY_BOUND)),
+            events,
             announced: Arc::new(Mutex::new(events::Announced::default())),
             volumes,
             outcomes: Arc::new(volumes::Outcomes::default()),
@@ -525,16 +537,14 @@ impl DaemonState {
             listener: Arc::new(listener),
             service: Arc::new(autostart::Readings::default()),
             log,
+            alarms: Arc::new(alarms::Alarms::default()),
+            trays: Arc::new(Mutex::new(trays::Trays::default())),
         }
     }
 
     /// Tell every open event stream that `event` happened.
     fn publish(&self, event: keepster_api::Event) {
-        self.events.publish(
-            keepster_core::EventId::generate(roots::now()),
-            Instant::now(),
-            event,
-        );
+        self.events.publish_now(event);
     }
 
     /// The configuration of the Root `id` at `root_path` as it stands, re-reading whichever of its
@@ -572,8 +582,8 @@ impl DaemonState {
     ///
     /// Taken after the Registry wherever both are held, never before, so the two locks cannot
     /// deadlock. The whole order is: a store's lock, the Registry, the configuration, the runtimes,
-    /// housekeeping's table of what each Root owes, the `git` found, then what the event stream announced
-    /// and its buffer. The jobs' table is innermost: taken with at most a store's lock held. A panic while it is held loses nothing that matters: every file is compared with
+    /// housekeeping's table of what each Root owes, the `git` found, then what the event stream announced,
+    /// the alarms and the event buffer. The jobs' table is innermost: taken with at most a store's lock held. A panic while it is held loses nothing that matters: every file is compared with
     /// what was read last, so the next resolution reads again whatever a panic left half-done.
     fn config(&self) -> MutexGuard<'_, keepster_app::config::Configuration> {
         self.config
@@ -602,6 +612,13 @@ impl DaemonState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         Arc::clone(locks.entry(id).or_default())
+    }
+
+    /// The trays' reports: a leaf, taken with nothing else held.
+    fn trays(&self) -> MutexGuard<'_, trays::Trays> {
+        self.trays
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The Registry, held for the length of one operation.
@@ -720,6 +737,8 @@ fn on_both_listeners() -> OpenApiRouter<DaemonState> {
         .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))
         .routes(routes!(logging::raise, logging::end))
+        .routes(routes!(alarms::mute, alarms::unmute))
+        .routes(routes!(trays::report, trays::withdraw))
 }
 
 /// Which build and which API this daemon is.
@@ -771,6 +790,12 @@ async fn status_of(state: &DaemonState) -> Result<Status, problem::ProblemRespon
             git,
             listener: Some(state.listener.status()),
             log: Some(state.log.status()),
+            alarms: Some(state.alarms.active()),
+            muted_until: state
+                .alarms
+                .muted_until(roots::now())
+                .and_then(roots::rfc3339),
+            trays: Some(state.trays().current(Instant::now())),
         },
         roots: registered,
     })

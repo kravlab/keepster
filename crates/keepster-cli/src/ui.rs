@@ -62,7 +62,7 @@ pub async fn ui(args: &UiArgs, control_path: &Path) -> u8 {
 ///
 /// The URL is passed as one argument, never through a shell: it is the daemon's, and holds nothing but
 /// the loopback address and a hex code, but no command line is built from text here.
-fn open(url: &str) -> io::Result<()> {
+pub fn open(url: &str) -> io::Result<()> {
     let mut command = if cfg!(target_os = "macos") {
         std::process::Command::new("open")
     } else if cfg!(windows) {

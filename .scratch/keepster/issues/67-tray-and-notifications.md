@@ -2,7 +2,7 @@
 
 **Blocked by:** 45 (The live event stream), 61 (Autostart on three platforms, and one supervised daemon)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **What to build:** a user sees at a glance that they are covered, and is told when they stop being covered — without
 being told anything about routine work.
@@ -13,20 +13,20 @@ notifications need a bundle identifier, so it is an app bundle. It is an ordinar
 is governed by one invariant — **a view, never a source**: everything it shows is derivable from the status payload
 and the event stream, and no notification carries a tray-only action.
 
-- [ ] The tray shows live state from the status payload and the event stream, never from its own bookkeeping, and
+- [x] The tray shows live state from the status payload and the event stream, never from its own bookkeeping, and
       offers no action the API does not already expose
-- [ ] Alarms fire only when the insurance stops — a Root `Unavailable` or `Degraded`, capture halted at the disk cap,
+- [x] Alarms fire only when the insurance stops — a Root `Unavailable` or `Degraded`, capture halted at the disk cap,
       an unexpected daemon death, and a failed user-initiated job — on transition, coalesced, with recovery replacing
       rather than adding
-- [ ] Muting is reported by `status`, so it never becomes a silent failure
-- [ ] The icon and the notification channel are two capability rows in `status` that fail independently, and neither
+- [x] Muting is reported by `status`, so it never becomes a silent failure
+- [x] The icon and the notification channel are two capability rows in `status` that fail independently, and neither
       affects the exit code
-- [ ] On Linux the tray notifies even where the desktop cannot draw its icon
-- [ ] The daemon decides, the tray delivers: no notification originates in the tray
-- [ ] The tray writes its own log file with its own ceiling, and takes its level from the event stream, falling back
+- [x] On Linux the tray notifies even where the desktop cannot draw its icon
+- [x] The daemon decides, the tray delivers: no notification originates in the tray
+- [x] The tray writes its own log file with its own ceiling, and takes its level from the event stream, falling back
       to the last known level when the daemon is unreachable
-- [ ] The CLI gains the restart, start and stop service verbs
-- [ ] The tray's autostart is installed by the install command, which reports honestly on a machine with no graphical
+- [x] The CLI gains the restart, start and stop service verbs
+- [x] The tray's autostart is installed by the install command, which reports honestly on a machine with no graphical
       session
 
 ## Comments
@@ -42,3 +42,7 @@ and the event stream, and no notification carries a tray-only action.
   writes `tray.log`, the bundle must hold its tail too: add it beside the daemon's in
   `keepster-daemon/src/diagnostics.rs` (`log_tail`, and `on_disk` for the bundle collected without the
   daemon), with its own line in the inventory in `keepster-daemon/src/bundle.rs`.
+- **Done.** The "capture halted at the disk cap" alarm is not raised here: the daemon has no such state yet,
+  so it moved to ticket 80, whose `## Comments` say its over-cap state must raise an alarm through the
+  daemon's `alarms` module. Windows `service stop` and `restart` end the task outright, so a stop reads as
+  a death to the tray there; that is ticket 84.

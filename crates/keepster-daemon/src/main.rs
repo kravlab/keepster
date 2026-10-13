@@ -96,6 +96,8 @@ async fn main() -> ExitCode {
         Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
         Command::Service(command) => supervised::service(command, &control_path).await,
         Command::LogLevel(args) => keepster_cli::log_level(args, &control_path).await,
+        Command::Mute(args) => keepster_cli::mute(args, &control_path).await,
+        Command::Unmute => keepster_cli::unmute(&control_path).await,
         Command::Diagnose(args) => diagnose::diagnose(args, &control_path, now()).await,
     };
 

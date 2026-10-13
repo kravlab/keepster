@@ -8,3 +8,37 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+keepster-api.workspace = true
+keepster-cli.workspace = true
+keepster-service.workspace = true
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry"] }
+
+[dev-dependencies]
+keepster-testkit.workspace = true
+
+# The icon is a StatusNotifierItem and notifications go to `org.freedesktop.Notifications`, both over the
+# session bus: no GTK, no X11, no system package to build against (ADR 0008).
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+
+# The icon is an `NSStatusItem` and notifications go through `UNUserNotificationCenter`; `block2` builds
+# the Objective-C block its authorisation request takes.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "objc2-core-foundation", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSGeometry", "NSObject", "NSString", "NSThread"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
+# The icon is a notification-area icon (`Shell_NotifyIconW`) owned by a hidden window on the main thread;
+# toasts go through WinRT's `ToastNotificationManager`, tagged so that a later one replaces an earlier.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "UI_Notifications"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

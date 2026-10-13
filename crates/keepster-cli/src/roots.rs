@@ -262,7 +262,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::QueryInvalid
         | ErrorCode::SearchInvalid
         | ErrorCode::LogLevelInvalid
-        | ErrorCode::PreferenceInvalid => exit::USAGE,
+        | ErrorCode::PreferenceInvalid
+        | ErrorCode::MuteInvalid => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
@@ -278,6 +279,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::DirectoryUnreadable
         | ErrorCode::TokenFailed
         | ErrorCode::PreferencesFailed
+        // Answered to a tray's report, which the CLI never sends.
+        | ErrorCode::TrayInvalid
         // Answered by the loopback listener alone, which the CLI never speaks to.
         | ErrorCode::Unauthorized
         | ErrorCode::HostRefused

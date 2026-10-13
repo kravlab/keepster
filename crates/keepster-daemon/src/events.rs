@@ -148,7 +148,8 @@ pub(crate) fn announce_changes(state: &DaemonState, registry: &Registry) {
         })
         .collect();
     let current: HashMap<String, Seen> = reported
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|root| {
             let config = configurations.get(&root.id).cloned();
             let seen = Seen {
@@ -182,6 +183,9 @@ pub(crate) fn announce_changes(state: &DaemonState, registry: &Registry) {
         }
     }
     announced.roots = current;
+    drop(announced);
+    state.alarms.observe_roots(&reported, Instant::now());
+    crate::alarms::announce_due(state);
 }
 
 /// One event in the SSE framing.
@@ -275,6 +279,15 @@ impl EventBus {
         let _ = live.send(kept.clone());
         inner.kept.push_back(kept);
         self.evict(&mut inner, at);
+    }
+
+    /// Send `event` to every open stream now, under an identity minted from the wall clock.
+    pub(crate) fn publish_now(&self, event: Event) {
+        self.publish(
+            EventId::generate(crate::roots::now()),
+            Instant::now(),
+            event,
+        );
     }
 
     /// A stream that starts after `last`, the identity the client saw last — or with what happens from

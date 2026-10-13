@@ -89,6 +89,8 @@ error_codes! {
     ListenerUnavailable = "listener_unavailable": "The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`.",
     PreferenceInvalid = "preference_invalid": "A preference names a value this build does not take: a `theme` other than `system`, `light` or `dark`, or a `syntax_line_limit` outside 1 to 10 000 000; nothing was stored.",
     PreferencesFailed = "preferences_failed": "The preferences could not be written; the ones stored before are unchanged.",
+    MuteInvalid = "mute_invalid": "A mute names a duration outside 1 to 1440 minutes; nothing was muted.",
+    TrayInvalid = "tray_invalid": "A tray's instance is not 1 to 64 letters, digits, `.`, `_` or `-`; nothing was recorded.",
 }
 
 impl ErrorCode {

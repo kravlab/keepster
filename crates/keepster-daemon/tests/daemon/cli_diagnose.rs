@@ -234,3 +234,48 @@ async fn without_a_daemon_the_log_format_is_the_one_its_lines_were_written_in() 
         "{inventory}"
     );
 }
+
+/// A line of the tray's log, chosen so that it appears nowhere else.
+const TRAY_LINE: &str = "INFO keepster_tray::run: tray-canary-0b6f connected to the daemon";
+
+/// The tray's log beside the daemon's, as a tray running in the sandbox would write it.
+fn write_tray_log(sandbox: &Sandbox) {
+    let file = sandbox.log_file().with_file_name("tray.log");
+    std::fs::create_dir_all(file.parent().expect("a directory")).expect("the log directory");
+    std::fs::write(file, format!("{TRAY_LINE}\n")).expect("the tray's log");
+}
+
+#[tokio::test]
+async fn a_bundle_holds_the_tray_s_log_beside_the_daemon_s() {
+    let sandbox = Sandbox::new();
+    let (_daemon, _root) = with_history(&sandbox).await;
+    write_tray_log(&sandbox);
+    let out = sandbox.scratch("out");
+
+    let ran = diagnose(&sandbox, &out, &["-o", "bundle.zip"]).await;
+
+    assert_eq!(ran.status.code(), Some(0), "{}", text(&ran.stderr));
+    let inventory = text(&ran.stdout);
+    assert!(inventory.contains("logs/tray.log"), "{inventory}");
+    assert!(inventory.contains("the tray's log"), "{inventory}");
+    let archive = std::fs::read(out.join("bundle.zip")).expect("the bundle is written");
+    assert!(holds(&archive, TRAY_LINE), "the tray's lines are in it");
+}
+
+#[tokio::test]
+async fn without_a_daemon_the_tray_s_log_is_collected_from_the_disk_too() {
+    let sandbox = Sandbox::new();
+    write_tray_log(&sandbox);
+    let out = sandbox.scratch("out");
+
+    let ran = diagnose(&sandbox, &out, &["-o", "bundle.zip"]).await;
+
+    assert_eq!(ran.status.code(), Some(3), "{}", text(&ran.stderr));
+    assert!(
+        text(&ran.stdout).contains("logs/tray.log"),
+        "{}",
+        text(&ran.stdout)
+    );
+    let archive = std::fs::read(out.join("bundle.zip")).expect("the bundle is written");
+    assert!(holds(&archive, TRAY_LINE), "the tray's lines are in it");
+}

@@ -341,6 +341,13 @@ pub(crate) fn now() -> std::time::SystemTime {
     std::time::SystemTime::now()
 }
 
+/// `moment` as RFC 3339 in UTC, as the wire spells a moment; `None` for one outside what it can spell.
+pub(crate) fn rfc3339(moment: std::time::SystemTime) -> Option<String> {
+    jiff::Timestamp::try_from(moment)
+        .ok()
+        .map(|moment| moment.to_string())
+}
+
 /// How a Root appears on the wire, including one this build cannot serve.
 ///
 /// A Root whose record cannot be read is still reported, as `Unavailable` with the reason: ticket 08
@@ -423,11 +430,7 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
             .map(|since| since.elapsed().as_secs()),
         follow_targets: activity.follow_every.map(|interval| FollowTargets {
             count: activity.followed,
-            last_reconciled_at: activity.followed_at.and_then(|moment| {
-                jiff::Timestamp::try_from(moment)
-                    .ok()
-                    .map(|moment| moment.to_string())
-            }),
+            last_reconciled_at: activity.followed_at.and_then(rfc3339),
             interval: interval.as_secs(),
         }),
         unrecognized_records: (activity.unrecognized > 0).then_some(activity.unrecognized),

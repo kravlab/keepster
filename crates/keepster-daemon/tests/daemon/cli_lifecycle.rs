@@ -70,6 +70,11 @@ impl Sandbox {
         self.base().join("config/systemd/user")
     }
 
+    /// Where the tray's XDG autostart entry of this sandbox's user goes (ticket 67).
+    pub(crate) fn tray_entry(&self) -> PathBuf {
+        self.base().join("config/autostart/keepster-tray.desktop")
+    }
+
     pub(crate) fn write_config(&self, content: &[u8]) {
         let path = self.config_path();
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("its directory");

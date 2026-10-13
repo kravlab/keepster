@@ -18,6 +18,9 @@ a downgrade is a supported path and on several channels a downgrade is remove-th
 - [ ] deb and rpm packages declare the external `git` prerequisite with each distribution's correct package name, and
       place the user unit and the tray autostart entry in the documented locations
 - [ ] One package carries both binaries, so a base install is never silent when the insurance fails
+- [ ] The Windows installer creates a Start-menu shortcut named `Keepster.lnk`, in the per-user or the all-users
+      `Programs` folder, carrying the AppUserModelID `Keepster.Tray`: the tray (ticket 67) shows toasts only while
+      that shortcut exists, and reports `no_app_id` otherwise
 - [ ] The package ships files and the **user** registers: nothing enables a service behind the user's back, and a
       fresh install reports "service never installed" naming the command
 - [ ] `keepster install` and `keepster uninstall` create and remove exactly the autostart entries, leaving history,

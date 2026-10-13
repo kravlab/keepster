@@ -2,7 +2,9 @@
 //! a crate of its own. One binary links once, where one per file linked dozens of times over — most of
 //! what a test run cost on Windows.
 
+mod alarms;
 mod bundle;
+mod cli_alarms;
 mod cli_diagnose;
 mod cli_diff;
 mod cli_follow;
