@@ -65,6 +65,7 @@ impl Sandbox {
     }
 
     /// Where the systemd user unit of this sandbox's user goes.
+    #[cfg(target_os = "linux")]
     pub(crate) fn unit_dir(&self) -> PathBuf {
         self.base().join("config/systemd/user")
     }

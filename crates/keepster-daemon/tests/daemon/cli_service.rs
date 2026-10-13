@@ -3,6 +3,7 @@
 //! real systemd, launchd or Task Scheduler does — registering a unit changes the machine a test runs on.
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use crate::cli_lifecycle::Sandbox;
