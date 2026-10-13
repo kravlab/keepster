@@ -1,3 +1,7 @@
 # The committed `/v1` document is compared byte for byte with the generated one (ticket 40), so a
 # checkout must never rewrite its line endings — a Windows clone would otherwise fail the drift test.
 /openapi.json text eol=lf
+
+# The built web UI is embedded byte for byte and checked against a fresh build in CI, so a checkout must
+# never rewrite it either.
+/ui/dist/** -text

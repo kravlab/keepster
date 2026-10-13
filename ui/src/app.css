@@ -1,0 +1,49 @@
+/*
+ * The page-wide palette and base styles. One light palette for now: themes are ticket 66, and CodeMirror's
+ * default highlight style is made for a light background.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --line: #d9dce1;
+  --fg: #1f2328;
+  --muted: #656d76;
+  --accent: #0969da;
+  --selected: #ddeaff;
+  --added: #1a7f37;
+  --warn: #9a6700;
+  --danger: #cf222e;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    13px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+button,
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* Text roles every screen shares. */
+.muted {
+  color: var(--muted);
+}
+.error {
+  color: var(--danger);
+}

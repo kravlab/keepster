@@ -1,6 +1,3 @@
-# Web UI build artefacts. `ui/` holds tracked SPA sources (ticket 08), so only its generated output is ignored,
-# matching `ui/.gitignore` on the `prototype/web-ui` branch.
+# The web UI's built `ui/dist` is committed (ticket 27), so only its dependencies are ignored.
 /target/
 node_modules/
-ui/dist/
-ui/measure/out/

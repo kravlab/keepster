@@ -48,6 +48,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Every other cargo call enables every feature, so the build without the embedded web UI (ticket 24)
+      # would otherwise never compile here. No `--all-targets`: the tests' harness depends on the daemon with
+      # its default features, which would switch the web UI back on.
+      - name: The daemon builds without the web UI
+        run: cargo clippy -p keepster-daemon --no-default-features --locked -- -D warnings
       - name: The CLI must link no store dependency and no server stack
         # Ticket 08 turns "the UI must not own persistence contracts" into a build fact; this is the
         # check for it, and it is cheap enough to run on every change. Ticket 40 adds the schema
@@ -147,3 +152,31 @@ jobs:
       # Licences and bans only: ticket 32 puts the advisory database on a schedule, because its verdict
       # is a property of the day rather than of the diff.
       - run: cargo deny check licenses bans
+
+  ui:
+    name: the web UI
+    # The only job that installs node (ticket 28): every other one builds the binary from the committed
+    # `ui/dist`, which this job proves is the build of the committed sources.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The pnpm version is the one `packageManager` in ui/package.json names.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ui/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Strict type checking, formatting, linting and unit tests
+        run: make check-ui
+      - name: The bundle stays within its budget, grammars lazy
+        run: make check-ui-size
+      - name: The committed ui/dist is the build of the committed sources
+        run: |
+          if [ -n "$(git status --porcelain -- ui/dist)" ]; then
+            git status --short -- ui/dist >&2
+            echo "ui/dist is stale: run make ui and commit the result" >&2
+            exit 1
+          fi

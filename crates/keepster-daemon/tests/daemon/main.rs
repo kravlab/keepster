@@ -42,4 +42,6 @@ mod status;
 mod triggers;
 mod version;
 mod volumes;
+#[cfg(feature = "embed-ui")]
+mod web_ui;
 mod withheld;

@@ -8,3 +8,9 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# `deterministic-timestamps`: no build-host mtimes in the binary (ticket 27). `debug-embed`: a debug build
+# embeds too, instead of reading `ui/dist` from disk at run time. `mime-guess`: each file's Content-Type.
+# `include-exclude`: Vite's manifest is a build record, not something to serve.
+rust-embed = { version = "8.13.0", features = ["deterministic-timestamps", "debug-embed", "mime-guess", "include-exclude"] }

@@ -37,6 +37,8 @@ mod snapshots;
 mod triggers;
 mod ui;
 mod volumes;
+#[cfg(feature = "embed-ui")]
+mod web;
 
 use std::collections::HashMap;
 use std::io;
@@ -638,15 +640,27 @@ async fn answered(
 fn loopback_router(state: DaemonState, gate: Arc<loopback::Gate>) -> Router {
     let (router, _) = on_both_listeners().split_for_parts();
 
-    router
-        .route("/", axum::routing::get(landing))
+    with_web_ui(router)
         .with_state(state)
         .layer(axum::middleware::from_fn(answered))
         .layer(axum::middleware::from_fn_with_state(gate, loopback::guard))
 }
 
-/// Where a browser session lands until ticket 64 embeds the web UI: a build without it still serves
-/// `/v1` here, because the API is public for third-party clients (ticket 24).
+/// The embedded web UI, at every path no route of `/v1` takes.
+#[cfg(feature = "embed-ui")]
+fn with_web_ui(router: Router<DaemonState>) -> Router<DaemonState> {
+    router.fallback(web::serve)
+}
+
+/// A build without the web UI (`embed-ui` off) lands a browser session on a placeholder.
+#[cfg(not(feature = "embed-ui"))]
+fn with_web_ui(router: Router<DaemonState>) -> Router<DaemonState> {
+    router.route("/", axum::routing::get(landing))
+}
+
+/// Where a browser session lands in a build without the web UI: it still serves `/v1` here, because the
+/// API is public for third-party clients (ticket 24).
+#[cfg(not(feature = "embed-ui"))]
 async fn landing() -> axum::response::Html<&'static str> {
     axum::response::Html(
         "<!doctype html><meta charset=\"utf-8\"><title>Keepster</title>\

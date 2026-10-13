@@ -19,6 +19,12 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# The web UI, embedded and served on the loopback listener (ticket 64). On by default; without it the
+# listener still serves `/v1`, whose clients need no UI, and its default is the same either way (ticket 24).
+default = ["embed-ui"]
+embed-ui = ["dep:keepster-ui"]
+
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 clap = { version = "4.6.7", features = ["derive"] }
@@ -31,6 +37,7 @@ keepster-cli.workspace = true
 keepster-core.workspace = true
 keepster-service.workspace = true
 keepster-store.workspace = true
+keepster-ui = { workspace = true, optional = true }
 keepster-watch.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
