@@ -24,10 +24,18 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
 - `src/lib/`: everything that is not drawing, with unit tests beside it. The `/v1` client and its narrow
   types (`api.ts`, `wire.ts`), what a failure says on screen (`failures.ts`), daemon hunks to editor ranges
   (`hunks.ts`, and its failure in `mismatch.ts`), the live event stream (`events.ts`), the rail's day
-  headings and its list kept current (`rail.ts`, `timeline.ts`), the changed-file list (`files.ts`), the
-  long-line threshold (`lines.ts`), and every user-facing text (`strings.ts`).
+  headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
+  Root-relative paths (`paths.ts`), the changed-file list (`files.ts`), a
+  Snapshot's changes in words and what counts as routine (`summary.ts`), the selection carried across view
+  modes (`selection.ts`), the lazy file tree (`tree.ts`), Snapshot ids as moments (`ids.ts`), Restore's
+  questions and request (`restore.ts`), the long-line threshold (`lines.ts`), and every user-facing text
+  (`strings.ts`).
 - `src/editor/`: the CodeMirror adapter and the curated grammars, loaded lazily.
-- `src/history/`: the History screen.
+- `src/history/`: the History screen. `History.svelte` holds the three view modes and the selection they
+  share: the rail (`RailMode.svelte`), file first (`FileMode.svelte`) and the activity feed
+  (`FeedMode.svelte`). The diff pane
+  (`DiffPane.svelte`) is common to all three, and so is the Restore dialog it opens
+  (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show.
 
 ## Budget
 

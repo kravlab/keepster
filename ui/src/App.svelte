@@ -61,7 +61,10 @@
   {:else if roots === null}
     <p class="message">{strings.loading}</p>
   {:else if root}
-    <History rootId={root.id} onSessionEnded={endSession} />
+    <!-- Keyed: another Root is another history, and nothing selected in one means anything in the other. -->
+    {#key root.id}
+      <History rootId={root.id} onSessionEnded={endSession} />
+    {/key}
   {:else}
     <p class="message">{strings.noRoots}</p>
   {/if}

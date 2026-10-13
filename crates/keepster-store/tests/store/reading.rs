@@ -144,6 +144,45 @@ fn the_timeline_lists_snapshots_newest_first_with_what_each_changed() {
 }
 
 #[test]
+fn the_timeline_says_how_many_paths_each_snapshot_added_and_deleted() {
+    // What a client needs to say "only deleted files" in words: the counts by kind, beside the total.
+    let fixture = Fixture::new();
+    let [first, second, third] = three_snapshots(&fixture);
+
+    let page = fixture.timeline(everything());
+
+    let counts: Vec<_> = page
+        .snapshots
+        .iter()
+        .map(|snapshot| (snapshot.added_paths, snapshot.deleted_paths))
+        .collect();
+    assert_eq!(
+        counts,
+        [(0, 1), (1, 0), (2, 0)],
+        "deleted one; added one beside a modification; added two"
+    );
+    assert_eq!(
+        [first, second, third].map(|captured| (captured.added_paths, captured.deleted_paths)),
+        [(Some(2), Some(0)), (Some(1), Some(0)), (Some(0), Some(1))],
+        "the capture's own answer agrees with the timeline"
+    );
+
+    let filtered = fixture.timeline(TimelineQuery {
+        path: Some(path("a.txt")),
+        ..everything()
+    });
+    assert_eq!(
+        filtered
+            .snapshots
+            .iter()
+            .map(|snapshot| (snapshot.added_paths, snapshot.deleted_paths))
+            .collect::<Vec<_>>(),
+        [(0, 1), (1, 0), (2, 0)],
+        "a filtered timeline counts the whole Snapshot, not the path asked about"
+    );
+}
+
+#[test]
 fn filtering_by_a_path_returns_only_the_snapshots_that_changed_it_and_how() {
     let fixture = Fixture::new();
     let [first, second, third] = three_snapshots(&fixture);

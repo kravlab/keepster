@@ -660,6 +660,8 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
             })
             .collect(),
         changed_paths: captured.changed_paths.clone().ok(),
+        added_paths: captured.added_paths,
+        deleted_paths: captured.deleted_paths,
         change: None,
         pinned: false,
         forgotten_paths: None,
@@ -677,6 +679,8 @@ pub(crate) fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
         omitted: Vec::new(),
         withheld: Vec::new(),
         changed_paths: Some(summary.changed_paths),
+        added_paths: Some(summary.added_paths),
+        deleted_paths: Some(summary.deleted_paths),
         change: summary.change.map(|kind| match kind {
             ChangeKind::Added => Change::Added,
             ChangeKind::Modified => Change::Modified,

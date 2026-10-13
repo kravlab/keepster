@@ -233,6 +233,12 @@ pub struct CapturedSnapshot {
     /// Counting happens after the commit and the ref update, so a failure here is not the capture's:
     /// the Snapshot exists, and refusing the request would only invite a retry that takes a second one.
     pub changed_paths: Result<u64, String>,
+    /// How many of those paths hold content now and held none before; absent exactly when
+    /// `changed_paths` could not be counted.
+    pub added_paths: Option<u64>,
+    /// How many of those paths held content before and hold none now; absent exactly when
+    /// `changed_paths` could not be counted.
+    pub deleted_paths: Option<u64>,
     /// Why the derived index could not be brought up to date, if it could not.
     ///
     /// The Snapshot itself is durable either way — the commit and the ref came first — so a failing
@@ -274,6 +280,10 @@ pub struct SnapshotSummary {
     pub omitted: u64,
     /// How many paths differ from the Snapshot before it.
     pub changed_paths: u64,
+    /// How many of those paths it added: content here, none in the Snapshot before.
+    pub added_paths: u64,
+    /// How many of those paths it deleted: content in the Snapshot before, none here.
+    pub deleted_paths: u64,
     /// With a timeline filtered by a path, how that path changed in this Snapshot.
     pub change: Option<ChangeKind>,
     /// Whether it is pinned, and so survives Retention unconditionally (ADR 0002).
@@ -791,6 +801,13 @@ impl HistoryStore {
             )
             .map_err(self.failed("written"))?;
 
+        let count = |kind: ChangeKind| {
+            changes.as_ref().ok().map(|changes| {
+                let of_kind = changes.iter().filter(|change| change.kind == kind).count();
+                u64::try_from(of_kind).unwrap_or(u64::MAX)
+            })
+        };
+        let (added_paths, deleted_paths) = (count(ChangeKind::Added), count(ChangeKind::Deleted));
         let changed_paths = changes
             .map(|changes| u64::try_from(changes.len()).unwrap_or(u64::MAX))
             .map_err(|source| self.failed("read")(source).to_string());
@@ -806,6 +823,8 @@ impl HistoryStore {
             incomplete: walked.incomplete.clone(),
             withheld: walked.withheld.clone(),
             changed_paths,
+            added_paths,
+            deleted_paths,
             index_lag: index_lag.clone(),
         };
 
@@ -2696,6 +2715,8 @@ impl From<index::IndexedSnapshot> for SnapshotSummary {
             trigger: snapshot.trigger,
             omitted: snapshot.omitted,
             changed_paths: snapshot.changed,
+            added_paths: snapshot.added,
+            deleted_paths: snapshot.deleted,
             change: snapshot.change,
             pinned: snapshot.pinned,
             forgotten_paths: snapshot.forgotten,

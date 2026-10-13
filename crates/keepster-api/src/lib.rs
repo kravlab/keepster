@@ -346,6 +346,15 @@ pub struct Snapshot {
     /// written — the Snapshot exists, and the timeline carries its count once the index has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_paths: Option<u64>,
+    /// How many of `changed_paths` it added: content here, none in the Snapshot before. With
+    /// `deleted_paths`, what lets a client say "only deleted files" in words; the rest of
+    /// `changed_paths` are modifications. Absent exactly when `changed_paths` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_paths: Option<u64>,
+    /// How many of `changed_paths` it deleted: content in the Snapshot before, none here. Absent
+    /// exactly when `changed_paths` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_paths: Option<u64>,
     /// With a timeline filtered by `path`, how that path changed in this Snapshot. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,

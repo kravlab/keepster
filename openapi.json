@@ -5987,6 +5987,15 @@
           "incomplete"
         ],
         "properties": {
+          "added_paths": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many of `changed_paths` it added: content here, none in the Snapshot before. With\n`deleted_paths`, what lets a client say \"only deleted files\" in words; the rest of\n`changed_paths` are modifications. Absent exactly when `changed_paths` is.",
+            "minimum": 0
+          },
           "change": {
             "oneOf": [
               {
@@ -6005,6 +6014,15 @@
             ],
             "format": "int64",
             "description": "How many paths differ from the Snapshot before it. Zero is a real answer: nothing changed.\n\nAbsent only from the answer to a capture whose count failed after the Snapshot was already\nwritten — the Snapshot exists, and the timeline carries its count once the index has it.",
+            "minimum": 0
+          },
+          "deleted_paths": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many of `changed_paths` it deleted: content in the Snapshot before, none here. Absent\nexactly when `changed_paths` is.",
             "minimum": 0
           },
           "forgotten_paths": {

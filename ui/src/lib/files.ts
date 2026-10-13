@@ -1,6 +1,7 @@
 /**
  * The changed-file list of the selected Snapshot, in one shape whichever endpoint it came from: the diff
- * summary against the Snapshot before it, or, for a Root's first Snapshot, what that Snapshot holds.
+ * summary against the Snapshot before it, or, for a Root's first Snapshot, what that Snapshot holds. A
+ * file chosen that the Snapshot did not change takes the same shape, marked `unchanged`.
  */
 import type { DiffFile, Entry, FileChange } from './wire'
 
@@ -10,15 +11,16 @@ import type { DiffFile, Entry, FileChange } from './wire'
  */
 export const TOO_LARGE_BYTES = 8 * 1024 * 1024
 
-/** Why a card stands in place of the editor. */
-export type Card = 'binary' | 'too_large' | 'withheld' | 'omitted' | 'symlink'
+/** Why a card stands in place of the editor; `absent` when the Snapshot holds nothing at the path. */
+export type Card = 'binary' | 'too_large' | 'withheld' | 'omitted' | 'symlink' | 'absent'
 
 /** One row of the file list. */
 export interface ShownFile {
   path: string
   /** Where a renamed file was on the older side. */
   oldPath: string | null
-  change: FileChange
+  /** How it changed in the Snapshot; `unchanged` for a file chosen that the Snapshot did not touch. */
+  change: FileChange | 'unchanged'
   /** Why no editor is shown for it; `null` when one is. */
   card: Card | null
 }
@@ -38,6 +40,14 @@ export function fromEntries(entries: readonly Entry[]): ShownFile[] {
   return entries
     .filter((entry) => entry.kind !== 'dir')
     .map((entry) => ({ path: entry.path, oldPath: null, change: 'added', card: entryCard(entry) }))
+}
+
+/**
+ * A file the user chose that the Snapshot did not change, from what the Snapshot holds at its path —
+ * `null` when it holds nothing there (not yet created, or deleted earlier).
+ */
+export function unchangedFile(path: string, entry: Entry | null): ShownFile {
+  return { path, oldPath: null, change: 'unchanged', card: entry ? entryCard(entry) : 'absent' }
 }
 
 /** Why a first Snapshot's entry gets a card: what is not a file, or a file too large or binary to show. */

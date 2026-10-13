@@ -87,6 +87,47 @@ async fn the_timeline_lists_snapshots_newest_first_in_the_documented_shape() {
 }
 
 #[tokio::test]
+async fn the_timeline_and_the_capture_say_how_many_paths_were_added_and_deleted() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (root, project) = registered(&daemon).await;
+    let snapshots = three(&daemon, &root, &project).await;
+
+    let page = daemon
+        .get_json(&format!("/v1/roots/{root}/snapshots"))
+        .await;
+
+    let counts = |snapshot: &Value| {
+        (
+            snapshot["added_paths"].clone(),
+            snapshot["deleted_paths"].clone(),
+        )
+    };
+    assert_eq!(
+        page["snapshots"]
+            .as_array()
+            .expect("the snapshots")
+            .iter()
+            .map(counts)
+            .collect::<Vec<_>>(),
+        [
+            (0.into(), 1.into()),
+            (0.into(), 0.into()),
+            (2.into(), 0.into())
+        ],
+        "deleted one; modified one; added both"
+    );
+    assert_eq!(
+        snapshots.iter().map(counts).collect::<Vec<_>>(),
+        [
+            (2.into(), 0.into()),
+            (0.into(), 0.into()),
+            (0.into(), 1.into())
+        ],
+        "the capture's own answer agrees"
+    );
+}
+
+#[tokio::test]
 async fn pages_follow_by_cursor_and_a_cursor_to_a_vanished_snapshot_is_not_an_error() {
     let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let (root, project) = registered(&daemon).await;

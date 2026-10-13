@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TOO_LARGE_BYTES, fromDiff, fromEntries } from './files'
+import { TOO_LARGE_BYTES, fromDiff, fromEntries, unchangedFile } from './files'
 import type { DiffFile } from './wire'
 
 const diffFile = (over: Partial<DiffFile>): DiffFile => ({
@@ -66,5 +66,30 @@ describe('fromEntries', () => {
 
   it('shows a file exactly at the size limit', () => {
     expect(fromEntries([{ path: 'x', kind: 'file', binary: false, size: TOO_LARGE_BYTES }])[0]?.card).toBeNull()
+  })
+})
+
+describe('unchangedFile', () => {
+  it('shows a file the Snapshot holds but did not change, as it holds it', () => {
+    expect(unchangedFile('a.txt', { path: 'a.txt', kind: 'file', size: 3, binary: false })).toEqual({
+      path: 'a.txt',
+      oldPath: null,
+      change: 'unchanged',
+      card: null,
+    })
+  })
+
+  it('gives a card to what the editor cannot show, as for a first Snapshot', () => {
+    expect(unchangedFile('b.bin', { path: 'b.bin', kind: 'file', size: 3, binary: true })?.card).toBe('binary')
+    expect(unchangedFile('l', { path: 'l', kind: 'symlink' })?.card).toBe('symlink')
+  })
+
+  it('says the Snapshot does not hold a path it has no entry for', () => {
+    expect(unchangedFile('gone.txt', null)).toEqual({
+      path: 'gone.txt',
+      oldPath: null,
+      change: 'unchanged',
+      card: 'absent',
+    })
   })
 })

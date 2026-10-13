@@ -178,6 +178,17 @@ fn pinning_and_unpinning_are_idempotent_and_pins_are_listed() {
         .map(|pin| pin.id)
         .collect();
     assert_eq!(pins, vec![second, first], "newest first, as the timeline");
+    assert_eq!(
+        fixture
+            .store
+            .pins()
+            .expect("the pins")
+            .iter()
+            .map(|pin| (pin.added_paths, pin.deleted_paths))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0)],
+        "counted by kind, as the timeline counts them"
+    );
 
     assert!(fixture.store.unpin(second).expect("unpinned"));
     assert!(

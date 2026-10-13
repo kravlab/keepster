@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withNewer } from './timeline'
+import { loadedPredecessor, withNewer } from './timeline'
 
 const s = (id: string) => ({ id })
 
@@ -25,5 +25,25 @@ describe('withNewer', () => {
 
   it('gives up when nothing was shown', () => {
     expect(withNewer([], [s('1')])).toBeNull()
+  })
+})
+
+describe('loadedPredecessor', () => {
+  const list = [s('3'), s('2'), s('1')]
+
+  it('is the next row of the list', () => {
+    expect(loadedPredecessor(list, 0, true)).toBe('2')
+  })
+
+  it("is none past the Root's first Snapshot, once the oldest page is loaded", () => {
+    expect(loadedPredecessor(list, 2, false)).toBeNull()
+  })
+
+  it('is unknown past the last loaded row while older pages remain', () => {
+    expect(loadedPredecessor(list, 2, true)).toBeUndefined()
+  })
+
+  it('is unknown for a Snapshot the list does not hold', () => {
+    expect(loadedPredecessor(list, -1, false)).toBeUndefined()
   })
 })

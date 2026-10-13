@@ -2,15 +2,18 @@
   /*
    * One file of the selected Snapshot: its diff against the Snapshot before it, from the daemon's hunks
    * (ticket 09), or the file alone in a Root's first Snapshot. The pane has its own bar, holding the
-   * wrap toggle (off by default, tickets 09 and 15). A card stands in for the editor when there is no text
-   * to compare. The editor module is imported only when a file is shown, keeping it out of the eager bundle.
+   * wrap toggle (off by default, tickets 09 and 15) and Restore, whose dialog is the same in every view
+   * mode. A card stands in for the editor when there is no text to compare. The editor module is imported
+   * only when a file is shown, keeping it out of the eager bundle.
    */
   import { untrack } from 'svelte'
+  import RestoreDialog from './RestoreDialog.svelte'
   import type { Shown } from '../editor/cm6'
   import { fileContent, fileDiff } from '../lib/api'
   import { failureText } from '../lib/failures'
   import type { ShownFile } from '../lib/files'
   import { SYNTAX_LINE_LIMIT, hasLongLine } from '../lib/lines'
+  import { baseName } from '../lib/paths'
   import { strings } from '../lib/strings'
 
   let {
@@ -21,7 +24,7 @@
     onSessionEnded,
   }: {
     rootId: string
-    /** The Snapshot before `to`; `null` for a Root's first Snapshot. */
+    /** The Snapshot before `to`; `null` for a Root's first Snapshot. Unused for an `unchanged` file. */
     from: string | null
     to: string
     file: ShownFile | null
@@ -33,7 +36,15 @@
   let status = $state<'idle' | 'loading' | 'ready' | 'error'>('idle')
   let error = $state('')
   let plain = $state(false)
+  let restoring = $state(false)
   let shown: Shown | null = null
+
+  /*
+   * The version Restore writes back is the one the pane shows on its newer side, except for a deleted
+   * file, which the Snapshot that deleted it does not hold: that one comes from the Snapshot before.
+   */
+  const deleted = $derived(file?.change === 'deleted')
+  const restoreFrom = $derived(deleted && from !== null ? from : to)
 
   /* Mounts the editor for the selected file; a newer selection cancels an older one still loading. */
   $effect(() => {
@@ -54,7 +65,7 @@
         const editor = import('../editor/cm6')
         const wrapped = untrack(() => wrap)
         let mount: (el: HTMLElement) => Promise<Shown>
-        if (older === null) {
+        if (older === null || target.change === 'unchanged') {
           const doc = await fileContent(rootId, newer, target.path)
           plain = hasLongLine(doc)
           const { showFile } = await editor
@@ -106,12 +117,18 @@
       {#if file.oldPath}<span class="muted">{strings.renamedFrom(file.oldPath)}</span>{/if}
     {/if}
     <span class="spacer"></span>
+    {#if file && file.card !== 'absent'}
+      <button onclick={() => (restoring = true)}>{strings.restore.open}</button>
+    {/if}
     <label class="wrap">
       <input type="checkbox" bind:checked={wrap} />
       {strings.wrapLines}
     </label>
   </div>
 
+  {#if file?.change === 'unchanged' && file.card !== 'absent'}
+    <p class="note muted">{strings.unchangedHere(baseName(file.path))}</p>
+  {/if}
   {#if status === 'ready' && plain}
     <p class="note">{strings.highlightOff(SYNTAX_LINE_LIMIT)}</p>
   {/if}
@@ -127,6 +144,17 @@
   {/if}
   <div class="host" bind:this={host} hidden={!file || !!file.card || status === 'error'}></div>
 </section>
+
+{#if restoring && file}
+  <RestoreDialog
+    {rootId}
+    from={restoreFrom}
+    path={file.path}
+    beforeDeletion={deleted}
+    onClose={() => (restoring = false)}
+    {onSessionEnded}
+  />
+{/if}
 
 <style>
   .pane {

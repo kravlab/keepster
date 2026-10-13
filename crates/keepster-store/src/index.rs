@@ -89,6 +89,16 @@ const SCHEMA: &str = "
     ) STRICT, WITHOUT ROWID;
 ";
 
+/// The two columns every read of a Snapshot row selects after `forgotten`: how many of its changes are
+/// additions and how many deletions, counted from `changes` at read time so the schema needs no column
+/// for them. Each query names its `snapshots` row `s`.
+macro_rules! kind_counts {
+    () => {
+        ", (SELECT count(*) FROM changes k WHERE k.snapshot = s.id AND k.kind = 'added'),
+           (SELECT count(*) FROM changes k WHERE k.snapshot = s.id AND k.kind = 'deleted')"
+    };
+}
+
 /// What the last pass saw of one file, and the content it read for it: the evidence a pass compares
 /// against before deciding whether to read the file again (ADR 0014).
 ///
@@ -128,6 +138,10 @@ pub(crate) struct IndexedSnapshot {
     pub(crate) trigger: String,
     pub(crate) omitted: u64,
     pub(crate) changed: u64,
+    /// How many of the changed paths it added.
+    pub(crate) added: u64,
+    /// How many of the changed paths it deleted.
+    pub(crate) deleted: u64,
     /// How the path a timeline was filtered by changed in this Snapshot, when it was filtered.
     pub(crate) change: Option<ChangeKind>,
 }
@@ -484,8 +498,11 @@ impl Index {
     pub(crate) fn snapshot(&self, id: SnapshotId) -> Result<Option<IndexedSnapshot>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten
-                 FROM snapshots WHERE id = ?1",
+                concat!(
+                    "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten",
+                    kind_counts!(),
+                    " FROM snapshots s WHERE id = ?1"
+                ),
                 [id.to_string()],
                 indexed_snapshot,
             )
@@ -516,13 +533,14 @@ impl Index {
             None => {
                 let mut statement = self
                     .connection
-                    .prepare(
+                    .prepare(concat!(
                         "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned,
-                                forgotten
-                         FROM snapshots
+                                forgotten",
+                        kind_counts!(),
+                        " FROM snapshots s
                          WHERE id < ?1 AND id >= ?2
-                         ORDER BY id DESC LIMIT ?3",
-                    )
+                         ORDER BY id DESC LIMIT ?3"
+                    ))
                     .map_err(self.failed("read"))?;
                 statement
                     .query_map(params![upper, lower, limit], indexed_snapshot)
@@ -531,13 +549,14 @@ impl Index {
             Some(path) => {
                 let mut statement = self
                     .connection
-                    .prepare(
+                    .prepare(concat!(
                         "SELECT s.id, s.segment, s.commit_id, s.trigger, s.omitted, s.changed, c.kind,
-                                s.pinned, s.forgotten
-                         FROM changes c JOIN snapshots s ON s.id = c.snapshot
+                                s.pinned, s.forgotten",
+                        kind_counts!(),
+                        " FROM changes c JOIN snapshots s ON s.id = c.snapshot
                          WHERE c.path = ?1 AND s.id < ?2 AND s.id >= ?3
-                         ORDER BY s.id DESC LIMIT ?4",
-                    )
+                         ORDER BY s.id DESC LIMIT ?4"
+                    ))
                     .map_err(self.failed("read"))?;
                 statement
                     .query_map(
@@ -555,10 +574,11 @@ impl Index {
     pub(crate) fn pinned(&self) -> Result<Vec<IndexedSnapshot>, StoreError> {
         let mut statement = self
             .connection
-            .prepare(
-                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten
-                 FROM snapshots WHERE pinned = 1 ORDER BY id DESC",
-            )
+            .prepare(concat!(
+                "SELECT id, segment, commit_id, trigger, omitted, changed, NULL, pinned, forgotten",
+                kind_counts!(),
+                " FROM snapshots s WHERE pinned = 1 ORDER BY id DESC"
+            ))
             .map_err(self.failed("read"))?;
 
         statement
@@ -1155,6 +1175,8 @@ fn indexed_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedSnapshot
         trigger: row.get(3)?,
         omitted: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
         changed: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+        added: u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+        deleted: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
         change: change.as_deref().and_then(ChangeKind::parse),
     })
 }
