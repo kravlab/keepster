@@ -17,7 +17,7 @@
   import DiffPane from './DiffPane.svelte'
   import { changedFiles, entryAt, previousSnapshot, snapshotEntries } from '../lib/api'
   import { failureText } from '../lib/failures'
-  import { fromDiff, fromEntries, unchangedFile, type ShownFile } from '../lib/files'
+  import { fromDiff, fromEntries, unchangedFile, type DiffTarget, type ShownFile } from '../lib/files'
   import { TimelinePages } from '../lib/pages.svelte'
   import { railRows, timeOfDay } from '../lib/rail'
   import { strings } from '../lib/strings'
@@ -68,6 +68,8 @@
   /* Counts the times the kept paths were thrown away; the cards are drawn anew, and those in view ask again. */
   let epoch = $state(0)
   let open = $state<{ snapshot: Snapshot; from: string | null; file: ShownFile } | null>(null)
+  /* The open diff as the pane takes it: one value, made anew only when another diff is opened. */
+  const openTarget = $derived<DiffTarget | null>(open && { to: open.snapshot.id, from: open.from, file: open.file })
   /* Why a search result handed in could not be opened. */
   let arrivalError = $state('')
 
@@ -241,7 +243,7 @@
       <button onclick={(e) => e.currentTarget.closest('dialog')?.close()}>{strings.closeDiff}</button>
     </header>
     <div class="body">
-      <DiffPane {rootId} from={open.from} to={open.snapshot.id} file={open.file} {onSessionEnded} />
+      <DiffPane {rootId} target={openTarget} {onSessionEnded} />
     </div>
   </dialog>
 {/if}

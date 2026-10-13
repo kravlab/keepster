@@ -25,6 +25,19 @@ export interface ShownFile {
   card: Card | null
 }
 
+/**
+ * What the diff pane shows, given whole: a Snapshot, the one before it, and the file. One value rather than
+ * three, so that no mode can hand the pane one selection's Snapshot with another's predecessor or file
+ * (ticket 83).
+ */
+export interface DiffTarget {
+  to: string
+  /** The Snapshot before `to`; `null` for a Root's first Snapshot. Unused for an `unchanged` file. */
+  from: string | null
+  /** `null` while no file is selected. */
+  file: ShownFile | null
+}
+
 /** The rows of a diff summary. Too large is named before binary: the daemon decides it first. */
 export function fromDiff(files: readonly DiffFile[]): ShownFile[] {
   return files.map((file) => ({

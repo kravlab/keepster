@@ -14,7 +14,7 @@
   import type { Shown } from '../editor/cm6'
   import { fileContent, fileDiff } from '../lib/api'
   import { failureText } from '../lib/failures'
-  import type { ShownFile } from '../lib/files'
+  import type { DiffTarget } from '../lib/files'
   import { hasLongLine } from '../lib/lines'
   import { baseName } from '../lib/paths'
   import { SYNTAX_LINE_LIMITS } from '../lib/preferences'
@@ -23,18 +23,19 @@
 
   let {
     rootId,
-    from,
-    to,
-    file,
+    target,
     onSessionEnded,
   }: {
     rootId: string
-    /** The Snapshot before `to`; `null` for a Root's first Snapshot. Unused for an `unchanged` file. */
-    from: string | null
-    to: string
-    file: ShownFile | null
+    /** The Snapshot, its predecessor and the file, given together; `null` while none is known yet. */
+    target: DiffTarget | null
     onSessionEnded: () => void
   } = $props()
+
+  /* Read off the one value, so the three always belong to the same selection (ticket 83). */
+  const from = $derived(target?.from ?? null)
+  const to = $derived(target?.to ?? null)
+  const file = $derived(target?.file ?? null)
 
   const preferences = usePreferences()
 
@@ -55,12 +56,12 @@
   /* Mounts the editor for the selected file; a newer selection cancels an older one still loading. */
   $effect(() => {
     const el = host
-    const target = file && !file.card ? file : null
+    const chosen = file && !file.card ? file : null
     const older = from
     const newer = to
     /* Tracked: a changed limit decides afresh whether the file is highlighted. */
     const limit = preferences.current.syntax_line_limit
-    if (!el || !target) {
+    if (!el || !chosen || newer === null) {
       status = 'idle'
       return
     }
@@ -73,20 +74,20 @@
         const editor = import('../editor/cm6')
         const wrapped = untrack(() => preferences.current.wrap_lines)
         let mount: (el: HTMLElement) => Promise<Shown>
-        if (older === null || target.change === 'unchanged') {
-          const doc = await fileContent(rootId, newer, target.path)
+        if (older === null || chosen.change === 'unchanged') {
+          const doc = await fileContent(rootId, newer, chosen.path)
           plain = hasLongLine(doc, limit)
           const { showFile } = await editor
-          mount = (el) => showFile({ el, path: target.path, doc, wrap: wrapped, highlight: !plain })
+          mount = (el) => showFile({ el, path: chosen.path, doc, wrap: wrapped, highlight: !plain })
         } else {
           const [diff, a, b] = await Promise.all([
-            fileDiff(rootId, older, newer, target.path),
-            target.change === 'added' ? '' : fileContent(rootId, older, target.oldPath ?? target.path),
-            target.change === 'deleted' ? '' : fileContent(rootId, newer, target.path),
+            fileDiff(rootId, older, newer, chosen.path),
+            chosen.change === 'added' ? '' : fileContent(rootId, older, chosen.oldPath ?? chosen.path),
+            chosen.change === 'deleted' ? '' : fileContent(rootId, newer, chosen.path),
           ])
           plain = hasLongLine(a, limit) || hasLongLine(b, limit)
           const { showDiff } = await editor
-          mount = (el) => showDiff({ el, path: target.path, a, b, hunks: diff.hunks, wrap: wrapped, highlight: !plain })
+          mount = (el) => showDiff({ el, path: chosen.path, a, b, hunks: diff.hunks, wrap: wrapped, highlight: !plain })
         }
         if (cancelled) return
         const mounted = await mount(el)
@@ -169,7 +170,7 @@
   <div class="host" bind:this={host} hidden={!file || !!file.card || status === 'error'}></div>
 </section>
 
-{#if restoring && file}
+{#if restoring && file && restoreFrom}
   <RestoreDialog
     {rootId}
     from={restoreFrom}

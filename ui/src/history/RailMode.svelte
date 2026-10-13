@@ -12,13 +12,14 @@
   import { tick, untrack } from 'svelte'
   import DiffPane from './DiffPane.svelte'
   import FileTree from './FileTree.svelte'
-  import { changedFiles, entryAt, newestTouching, previousSnapshot, snapshotEntries } from '../lib/api'
+  import { newestTouching } from '../lib/api'
   import { failureText } from '../lib/failures'
-  import { fromDiff, fromEntries, unchangedFile, type ShownFile } from '../lib/files'
+  import type { DiffTarget } from '../lib/files'
   import { TimelinePages } from '../lib/pages.svelte'
   import { baseName, dirName } from '../lib/paths'
   import { railRows, timeOfDay } from '../lib/rail'
   import { arrivingSnapshot, keptSelection } from '../lib/selection'
+  import { currentFor, snapshotChanges, untouchedAt, type SnapshotChanges, type UntouchedFile } from '../lib/shown'
   import { changeShape, isRoutine } from '../lib/summary'
   import { strings } from '../lib/strings'
   import { loadedPredecessor } from '../lib/timeline'
@@ -39,18 +40,21 @@
   } = $props()
 
   let error = $state('')
-  let files = $state<ShownFile[] | null>(null)
   let filesError = $state('')
   let rail = $state<HTMLOListElement>()
   let hideRoutine = $state(false)
   let onlyFile = $state(false)
   /* The file column: the flat list of changes by default, the Snapshot's whole tree as an option. */
   let view = $state<'list' | 'tree'>('list')
-  /* The selected file when the selected Snapshot did not change it, as that Snapshot holds it. */
-  let untouchedFile = $state<ShownFile | null>(null)
-  /* The Snapshot before the selected one in the Root's history, and whether it is known yet. */
-  let fromId = $state<string | null>(null)
-  let fromKnown = $state(false)
+  /*
+   * What was found for the selection, each naming the Snapshot (and file) it was found for: the selected
+   * Snapshot's changes, and the selected file as that Snapshot holds it when it did not change it. The
+   * selection moves at once while an answer is on its way, so everything shown is derived from these only
+   * while they name the current selection; reset by effects instead, they reached the diff pane a step late,
+   * the new Snapshot paired with the previous one's predecessor and file (ticket 83).
+   */
+  let found = $state<SnapshotChanges | null>(null)
+  let foundUntouched = $state<UntouchedFile | null>(null)
 
   /** The text of a failure; a dead session also goes to the shell. */
   const failure = (e: unknown) => failureText(e, onSessionEnded)
@@ -76,10 +80,15 @@
   const adjacentId = $derived(
     filterPath === undefined ? loadedPredecessor(pages.snapshots, index, pages.cursor !== undefined) : undefined,
   )
-  const isFirstSnapshot = $derived(toId !== null && fromKnown && fromId === null)
-  const file = $derived(files?.find((f) => f.path === path) ?? untouchedFile)
+  /* The selected Snapshot's changes, once found; `null` while they are on their way. */
+  const changes = $derived(currentFor(found, toId, null))
+  const files = $derived(changes?.files ?? null)
+  const isFirstSnapshot = $derived(changes !== null && changes.from === null)
+  const file = $derived(files?.find((f) => f.path === path) ?? currentFor(foundUntouched, toId, path)?.file ?? null)
   /* Whether the selected file is one the selected Snapshot did not change. */
   const notChangedHere = $derived(path !== null && files !== null && !files.some((f) => f.path === path))
+  /* The diff pane's Snapshot, predecessor and file, all from what was found for the current selection. */
+  const target = $derived<DiffTarget | null>(changes && { to: changes.to, from: changes.from, file })
 
   /*
    * A selection the list does not hold, or the routine filter hides, gives way to the newest Snapshot still
@@ -115,26 +124,22 @@
   /* The live stream, for as long as this mode is shown. */
   $effect(() => pages.follow({ until: () => snapshotId }))
 
-  /* The selected Snapshot's predecessor: from the list when it can tell, otherwise asked for. */
+  /*
+   * The selected Snapshot's changes, against its predecessor: the list's next row when it can tell, otherwise
+   * asked for. What was found for the same Snapshot stays shown until the new answer replaces it.
+   */
   $effect(() => {
     const to = toId
     const adjacent = adjacentId
-    if (to === null) {
-      fromKnown = false
-      return
-    }
-    if (adjacent !== undefined) {
-      fromId = adjacent
-      fromKnown = true
-      return
-    }
-    fromKnown = false
+    filesError = ''
+    if (to === null) return
     let cancelled = false
-    previousSnapshot(rootId, to)
-      .then((previous) => {
+    snapshotChanges(rootId, to, adjacent)
+      .then((list) => {
         if (cancelled) return
-        fromId = previous
-        fromKnown = true
+        found = list
+        // The selection is kept even where this Snapshot did not change it: it is then "unchanged here".
+        if (path === null) path = list.files[0]?.path ?? null
       })
       .catch((e: unknown) => {
         if (!cancelled) filesError = failure(e)
@@ -144,43 +149,15 @@
     }
   })
 
-  /* The selected Snapshot's files: its changes against its predecessor, or all it holds for the first. */
-  $effect(() => {
-    const to = toId
-    const from = fromId
-    const known = fromKnown
-    files = null
-    filesError = ''
-    if (to === null || !known) return
-    let cancelled = false
-    void (async () => {
-      try {
-        const list = from
-          ? fromDiff(await changedFiles(rootId, from, to))
-          : fromEntries(await snapshotEntries(rootId, to))
-        if (cancelled) return
-        files = list
-        // The selection is kept even where this Snapshot did not change it: it is then "unchanged here".
-        if (path === null) path = list[0]?.path ?? null
-      } catch (e) {
-        if (!cancelled) filesError = failure(e)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  })
-
   /* A selected file this Snapshot did not change is shown as the Snapshot holds it, if it holds it. */
   $effect(() => {
-    const target = path
+    const chosen = path
     const to = toId
-    untouchedFile = null
-    if (!notChangedHere || target === null || to === null) return
+    if (!notChangedHere || chosen === null || to === null) return
     let cancelled = false
-    entryAt(rootId, to, target)
-      .then((entry) => {
-        if (!cancelled) untouchedFile = unchangedFile(target, entry)
+    untouchedAt(rootId, to, chosen)
+      .then((untouched) => {
+        if (!cancelled) foundUntouched = untouched
       })
       .catch((e: unknown) => {
         if (!cancelled) filesError = failure(e)
@@ -301,8 +278,8 @@
   </section>
 
   {#if toId}
-    <!-- By identity, not `selected.id`: reading it through the object re-runs the pane on every reload. -->
-    <DiffPane {rootId} from={fromId} to={toId} {file} {onSessionEnded} />
+    <!-- From what was found, not from `selected`: a reload replaces that object, and would re-run the pane. -->
+    <DiffPane {rootId} {target} {onSessionEnded} />
   {/if}
 </div>
 

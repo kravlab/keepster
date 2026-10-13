@@ -1,37 +1,37 @@
 {
-  "_dist-BF3MVzqS.js": {
-    "file": "assets/dist-BF3MVzqS.js",
+  "_dist-CXFzWhdI.js": {
+    "file": "assets/dist-CXFzWhdI.js",
+    "name": "dist",
+    "imports": [
+      "_dist-CjZgNMfx.js",
+      "_dist-DspUc-Jf.js",
+      "src/editor/cm6.ts"
+    ]
+  },
+  "_dist-CjZgNMfx.js": {
+    "file": "assets/dist-CjZgNMfx.js",
     "name": "dist",
     "imports": [
       "src/editor/cm6.ts"
     ]
   },
-  "_dist-Brm-7UAt.js": {
-    "file": "assets/dist-Brm-7UAt.js",
+  "_dist-D7Lqro3i.js": {
+    "file": "assets/dist-D7Lqro3i.js",
     "name": "dist",
     "imports": [
-      "_dist-BF3MVzqS.js",
+      "_dist-CjZgNMfx.js",
       "src/editor/cm6.ts"
     ]
   },
-  "_dist-Cu4zypIJ.js": {
-    "file": "assets/dist-Cu4zypIJ.js",
+  "_dist-DspUc-Jf.js": {
+    "file": "assets/dist-DspUc-Jf.js",
     "name": "dist",
     "imports": [
-      "src/editor/cm6.ts"
-    ]
-  },
-  "_dist-PoWEjH5E.js": {
-    "file": "assets/dist-PoWEjH5E.js",
-    "name": "dist",
-    "imports": [
-      "_dist-BF3MVzqS.js",
-      "_dist-Cu4zypIJ.js",
       "src/editor/cm6.ts"
     ]
   },
   "index.html": {
-    "file": "assets/index-BgMZNQwS.js",
+    "file": "assets/index-DCYlqG_h.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -43,88 +43,88 @@
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-go@6.0.1/node_modules/@codemirror/lang-go/dist/index.js": {
-    "file": "assets/dist-P69omPty.js",
+    "file": "assets/dist-Cle0HOCP.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-go@6.0.1/node_modules/@codemirror/lang-go/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
-      "_dist-Cu4zypIJ.js",
+      "_dist-CjZgNMfx.js",
+      "_dist-DspUc-Jf.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-html@6.4.12/node_modules/@codemirror/lang-html/dist/index.js": {
-    "file": "assets/dist-DS-63l_L.js",
+    "file": "assets/dist-_9Rm460B.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-html@6.4.12/node_modules/@codemirror/lang-html/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
-      "_dist-Brm-7UAt.js",
-      "_dist-PoWEjH5E.js",
+      "_dist-CjZgNMfx.js",
+      "_dist-D7Lqro3i.js",
+      "_dist-CXFzWhdI.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-json@6.0.2/node_modules/@codemirror/lang-json/dist/index.js": {
-    "file": "assets/dist-CLn9OFEb.js",
+    "file": "assets/dist-Cs44T-4H.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-json@6.0.2/node_modules/@codemirror/lang-json/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
+      "_dist-CjZgNMfx.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-markdown@6.5.2/node_modules/@codemirror/lang-markdown/dist/index.js": {
-    "file": "assets/dist-DXm9iaPq.js",
+    "file": "assets/dist-Xoqatz1C.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-markdown@6.5.2/node_modules/@codemirror/lang-markdown/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-Cu4zypIJ.js",
+      "_dist-DspUc-Jf.js",
       "node_modules/.pnpm/@codemirror+lang-html@6.4.12/node_modules/@codemirror/lang-html/dist/index.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-python@6.2.1/node_modules/@codemirror/lang-python/dist/index.js": {
-    "file": "assets/dist-9-qgmtIS.js",
+    "file": "assets/dist-DCr2mqj4.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-python@6.2.1/node_modules/@codemirror/lang-python/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
-      "_dist-Cu4zypIJ.js",
+      "_dist-CjZgNMfx.js",
+      "_dist-DspUc-Jf.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-rust@6.0.2/node_modules/@codemirror/lang-rust/dist/index.js": {
-    "file": "assets/dist-CKDJIPtW.js",
+    "file": "assets/dist-C8TX9hLi.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-rust@6.0.2/node_modules/@codemirror/lang-rust/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
+      "_dist-CjZgNMfx.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-sql@6.10.0/node_modules/@codemirror/lang-sql/dist/index.js": {
-    "file": "assets/dist-CmXS8HJY.js",
+    "file": "assets/dist-CW6vdjoC.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-sql@6.10.0/node_modules/@codemirror/lang-sql/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
-      "_dist-Cu4zypIJ.js",
+      "_dist-CjZgNMfx.js",
+      "_dist-DspUc-Jf.js",
       "src/editor/cm6.ts"
     ]
   },
   "node_modules/.pnpm/@codemirror+lang-yaml@6.1.3/node_modules/@codemirror/lang-yaml/dist/index.js": {
-    "file": "assets/dist-CxVMp7JZ.js",
+    "file": "assets/dist-C1zTPAe8.js",
     "name": "dist",
     "src": "node_modules/.pnpm/@codemirror+lang-yaml@6.1.3/node_modules/@codemirror/lang-yaml/dist/index.js",
     "isDynamicEntry": true,
     "imports": [
-      "_dist-BF3MVzqS.js",
+      "_dist-CjZgNMfx.js",
       "src/editor/cm6.ts"
     ]
   },
@@ -141,7 +141,7 @@
     "isDynamicEntry": true
   },
   "src/editor/cm6.ts": {
-    "file": "assets/cm6-Dq6fGmNl.js",
+    "file": "assets/cm6-Dhkryxz2.js",
     "name": "cm6",
     "src": "src/editor/cm6.ts",
     "isDynamicEntry": true,
@@ -150,7 +150,7 @@
     ],
     "dynamicImports": [
       "node_modules/.pnpm/@codemirror+lang-rust@6.0.2/node_modules/@codemirror/lang-rust/dist/index.js",
-      "_dist-PoWEjH5E.js",
+      "_dist-CXFzWhdI.js",
       "node_modules/.pnpm/@codemirror+lang-json@6.0.2/node_modules/@codemirror/lang-json/dist/index.js",
       "node_modules/.pnpm/@codemirror+legacy-modes@6.5.5/node_modules/@codemirror/legacy-modes/mode/toml.js",
       "node_modules/.pnpm/@codemirror+lang-yaml@6.1.3/node_modules/@codemirror/lang-yaml/dist/index.js",
@@ -160,7 +160,7 @@
       "node_modules/.pnpm/@codemirror+lang-sql@6.10.0/node_modules/@codemirror/lang-sql/dist/index.js",
       "node_modules/.pnpm/@codemirror+legacy-modes@6.5.5/node_modules/@codemirror/legacy-modes/mode/shell.js",
       "node_modules/.pnpm/@codemirror+lang-html@6.4.12/node_modules/@codemirror/lang-html/dist/index.js",
-      "_dist-Brm-7UAt.js"
+      "_dist-D7Lqro3i.js"
     ]
   }
 }

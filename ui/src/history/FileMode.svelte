@@ -13,12 +13,13 @@
   import { tick, untrack } from 'svelte'
   import DiffPane from './DiffPane.svelte'
   import FileTree from './FileTree.svelte'
-  import { changedFiles, entryAt, previousSnapshot, timeline } from '../lib/api'
+  import { timeline } from '../lib/api'
   import { failureText } from '../lib/failures'
-  import { fromDiff, fromEntries, type ShownFile } from '../lib/files'
+  import type { DiffTarget } from '../lib/files'
   import { momentOf } from '../lib/ids'
   import { TimelinePages } from '../lib/pages.svelte'
   import { versionAt } from '../lib/selection'
+  import { currentFor, fileVersion, type FileVersion } from '../lib/shown'
   import { strings } from '../lib/strings'
   import type { Snapshot } from '../lib/wire'
 
@@ -38,9 +39,17 @@
   } = $props()
 
   let newest = $state<string | null>(null)
+  /* Why the Root's tree could not be loaded. */
   let error = $state('')
-  let fromId = $state<string | null>(null)
-  let file = $state<ShownFile | null>(null)
+  /* Why the version shown could not be loaded; cleared when another version or file is chosen. */
+  let versionError = $state('')
+  /*
+   * The selected version as last found, naming the Snapshot and file it was found for. The selection moves
+   * at once while an answer is on its way, so the diff pane is given it only while it names the current
+   * selection; reset by an effect instead, it reached the pane a step late, the new Snapshot paired with
+   * the previous one's predecessor and file (ticket 83).
+   */
+  let found = $state<FileVersion | null>(null)
   let scrubber = $state<HTMLDivElement>()
 
   /** The text of a failure; a dead session also goes to the shell. */
@@ -67,6 +76,8 @@
   const at = $derived(ticks.findIndex((v) => v.id === toId))
   const hasNewer = $derived(at !== -1 && at < ticks.length - 1)
   const hasOlder = $derived(at > 0 || (at !== -1 && pages?.cursor !== undefined))
+  /* The diff pane's Snapshot, predecessor and file, once found for the version shown. */
+  const target = $derived<DiffTarget | null>(currentFor(found, toId, path))
 
   /* The tree is the Root as its newest Snapshot holds it. */
   $effect(() => {
@@ -90,27 +101,17 @@
    */
   $effect(() => {
     const to = toId
-    const target = path
-    file = null
-    if (to === null || target === null) return
+    const chosen = path
+    versionError = ''
+    if (to === null || chosen === null) return
     let cancelled = false
-    void (async () => {
-      try {
-        const from = await previousSnapshot(rootId, to)
-        let shown: ShownFile | undefined
-        if (from) {
-          shown = fromDiff(await changedFiles(rootId, from, to)).find((f) => f.path === target)
-        } else {
-          const entry = await entryAt(rootId, to, target)
-          shown = entry ? fromEntries([entry])[0] : undefined
-        }
-        if (cancelled) return
-        fromId = from
-        file = shown ?? null
-      } catch (e) {
-        if (!cancelled) error = failure(e)
-      }
-    })()
+    fileVersion(rootId, to, chosen)
+      .then((version) => {
+        if (!cancelled) found = version
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) versionError = failure(e)
+      })
     return () => {
       cancelled = true
     }
@@ -153,7 +154,9 @@
   </aside>
 
   <section class="main">
-    {#if error || pages?.error}<p class="empty error">{strings.failed} {error || pages?.error}</p>{/if}
+    {#if error || versionError || pages?.error}
+      <p class="empty error">{strings.failed} {error || versionError || pages?.error}</p>
+    {/if}
     {#if path === null}
       <p class="empty">{strings.chooseFile}</p>
     {:else}
@@ -188,7 +191,7 @@
         <p class="empty">{strings.noVersions}</p>
       {/if}
       {#if toId}
-        <DiffPane {rootId} from={fromId} to={toId} {file} {onSessionEnded} />
+        <DiffPane {rootId} {target} {onSessionEnded} />
       {/if}
     {/if}
   </section>
