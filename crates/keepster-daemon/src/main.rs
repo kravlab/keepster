@@ -11,6 +11,7 @@ use keepster_cli::{Cli, Command, exit};
 use keepster_daemon::DaemonConfig;
 
 mod diagnose;
+mod erasing;
 mod supervised;
 
 #[tokio::main]
@@ -35,7 +36,11 @@ async fn main() -> ExitCode {
         match &cli.command {
             // `diagnose` exists for the moment the daemon will not run: starting it would hide that,
             // so without one the bundle is collected from the disk (ticket 63).
-            Command::Daemon | Command::Service(_) | Command::Diagnose(_) => {}
+            Command::Daemon
+            | Command::Install(_)
+            | Command::Uninstall(_)
+            | Command::Service(_)
+            | Command::Diagnose(_) => {}
             Command::Status(_) => {
                 return ExitCode::from(supervised::unreachable(&control_path));
             }
@@ -75,6 +80,7 @@ async fn main() -> ExitCode {
         Command::Preview(args) => keepster_cli::preview(args, &control_path).await,
         Command::Roots => keepster_cli::roots(&control_path).await,
         Command::Unwatch(args) => keepster_cli::unwatch(args, &control_path).await,
+        Command::Purge(args) => keepster_cli::purge(args, &control_path).await,
         Command::Move(args) => keepster_cli::move_root(args, &control_path).await,
         Command::Snapshot(args) => keepster_cli::snapshot(args, &control_path).await,
         Command::Log(args) => keepster_cli::log(args, &control_path, now()).await,
@@ -94,6 +100,8 @@ async fn main() -> ExitCode {
         Command::Job(args) => keepster_cli::job(args, &control_path).await,
         Command::Forget(args) => keepster_cli::forget(args, &control_path).await,
         Command::Ui(args) => keepster_cli::ui(args, &control_path).await,
+        Command::Install(args) => supervised::install(args, &control_path).await,
+        Command::Uninstall(args) => supervised::uninstall(args, &control_path).await,
         Command::Service(command) => supervised::service(command, &control_path).await,
         Command::LogLevel(args) => keepster_cli::log_level(args, &control_path).await,
         Command::Mute(args) => keepster_cli::mute(args, &control_path).await,

@@ -423,6 +423,20 @@ pub struct RegisterRoot {
     pub path: String,
 }
 
+/// A Root no longer watched whose history is kept (ticket 53), as `GET /v1/unwatched-roots` lists it.
+///
+/// Its identity is all that reaches its history, so the listing is how a client learns it — to pin in
+/// that history, or to erase it (ticket 68).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UnwatchedRoot {
+    /// The Root's identity, in its canonical form.
+    pub id: String,
+    /// Where its directory was when it was unwatched; absent when its record cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 /// A Snapshot, as the API serves it — from a capture and from the timeline alike.
 ///
 /// One shape for both, so a client renders the Snapshot it just took with the same code as the ones it
@@ -1040,6 +1054,13 @@ pub enum Event {
         /// Whether its History Store was erased with it.
         purged: bool,
     },
+    /// A Root's history was erased on request (ticket 68). A client showing its timeline refetches it:
+    /// every Snapshot it shows is gone. A Root still watched stays watched and captures afresh.
+    #[serde(rename = "history.erased")]
+    HistoryErased {
+        /// The Root.
+        root: String,
+    },
     /// A Root's directory was recorded at a new path.
     #[serde(rename = "root.moved")]
     RootMoved {
@@ -1178,6 +1199,7 @@ impl Event {
             Self::SnapshotCreated { .. } => "snapshot.created",
             Self::RootRegistered { .. } => "root.registered",
             Self::RootUnregistered { .. } => "root.unregistered",
+            Self::HistoryErased { .. } => "history.erased",
             Self::RootMoved { .. } => "root.moved",
             Self::RootStateChanged { .. } => "root.state_changed",
             Self::ConfigReloaded { .. } => "config.reloaded",
@@ -2257,6 +2279,7 @@ mod tests {
                 root: root(),
                 purged: false,
             },
+            Event::HistoryErased { root: root() },
             Event::RootMoved { root: root() },
             Event::RootStateChanged {
                 root: root(),

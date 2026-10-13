@@ -15,13 +15,16 @@ mod volume;
 #[cfg(windows)]
 mod windows;
 
-pub use pid::{PID_FILE, PidLock, PidLockError, lock_pid_file};
+pub use pid::{
+    PID_FILE, PidLock, PidLockError, RuntimeDirCleared, TRAY_PID_FILE, clear_runtime_dir,
+    lock_pid_file,
+};
 pub use volume::{Volume, mount_points, volume_of};
 
 #[cfg(windows)]
 pub use windows::{
-    OwnerOnlyAccess, create_control_pipe, current_user_sid, git_for_windows, hard_link_names,
-    to_wide,
+    OwnerOnlyAccess, create_control_pipe, create_shortcut, current_user_sid, git_for_windows,
+    hard_link_names, to_wide,
 };
 
 /// Where the daemon listens for the CLI, and where the CLI looks for it.
@@ -217,7 +220,7 @@ pub enum NoWebUi {
 /// Declare at install time that this machine has no web UI: write the configuration that switches the
 /// loopback listener off — only when this creates the file (ticket 24).
 ///
-/// `keepster service install --no-web-ui` calls this (ticket 61). The file stays the single source of
+/// `keepster install --no-web-ui` calls this (ticket 61). The file stays the single source of
 /// truth: this is one way of producing it, and the daemon cannot tell how the key got there. A file
 /// created at the same moment by someone else is theirs, and is left alone like any existing one.
 pub fn declare_no_web_ui(config_path: &Path) -> io::Result<NoWebUi> {
@@ -238,9 +241,7 @@ pub fn declare_no_web_ui(config_path: &Path) -> io::Result<NoWebUi> {
         Err(error) => return Err(error),
     };
     let written = file
-        .write_all(
-            format!("# Written by `keepster service install --no-web-ui`.\n{NO_WEB_UI}").as_bytes(),
-        )
+        .write_all(format!("# Written by `keepster install --no-web-ui`.\n{NO_WEB_UI}").as_bytes())
         .and_then(|()| file.sync_all());
     if let Err(error) = written {
         // A file half-written by this call is not a person's; it goes rather than leave a typo behind.

@@ -715,6 +715,8 @@ fn on_both_listeners() -> OpenApiRouter<DaemonState> {
         .routes(routes!(events::stream))
         .routes(routes!(roots::list, roots::register))
         .routes(routes!(roots::show, roots::deregister, roots::move_root))
+        .routes(routes!(roots::list_unwatched))
+        .routes(routes!(roots::erase_history))
         .routes(routes!(snapshots::list, snapshots::create))
         .routes(routes!(snapshots::reconcile))
         .routes(routes!(snapshots::entries))

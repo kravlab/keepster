@@ -53,7 +53,7 @@ is three platform facts that are invisible from the code.
   into the CLI, because the tray's restart menu item would otherwise be a tray-only action; and it is why the
   tray's own capability rows in `status` leave the exit code alone — ticket 11 gave the non-zero exit to things
   that impair the insurance, and a missing view cannot impair what it views.
-- **A machine with no tray is a normal machine.** The daemon, `service install` and `status` must be fully usable
+- **A machine with no tray is a normal machine.** The daemon, `keepster install` and `status` must be fully usable
   where the tray was never installed. The honest price is that such a machine gets no alarms, which `status`
   reports as "no tray attached".
 - **The daemon decides, the tray delivers.** The transition detection, coalescing and replacement rules live in the

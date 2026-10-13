@@ -80,6 +80,27 @@ pub fn location(root_dir: &Path) -> StoreLocation {
     }
 }
 
+/// Erase a Root's history — its History Store and its derived index — leaving the Registry's record
+/// beside them (ticket 68), so that a Root still watched starts its history over at its next capture: a
+/// store that is not there is created with a fresh Segment, as for a Root just registered. What is
+/// already gone is not an error. The caller holds the store's lock, or knows no daemon runs.
+pub fn erase_history(root_dir: &Path) -> Result<(), crate::roots::RootError> {
+    let location = location(root_dir);
+    match std::fs::remove_dir_all(&location.store) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+            return Err(RegistryError::Io {
+                path: location.store,
+                operation: "erased",
+                source,
+            }
+            .into());
+        }
+        _ => {}
+    }
+
+    Ok(keepster_store::discard_index(&location.index)?)
+}
+
 /// One pass over the Root: walk it, read what the last pass's evidence cannot vouch for, and write a
 /// Snapshot unless the request says an unchanged tree needs none.
 ///

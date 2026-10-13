@@ -16,6 +16,7 @@ mod cli_roots;
 mod cli_service;
 mod cli_status;
 mod cli_ui;
+mod cli_uninstall;
 mod configuration;
 mod diagnostics;
 mod diff;

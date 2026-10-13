@@ -146,6 +146,223 @@ async fn purging_history_needs_consent_of_its_own() {
     );
 }
 
+/// A watched Root with one Snapshot, and its identity.
+async fn captured(daemon: &Harness) -> String {
+    captured_at(daemon, "project").await
+}
+
+/// A watched Root at the scratch directory `name`, with one Snapshot, and its identity.
+async fn captured_at(daemon: &Harness, name: &str) -> String {
+    let project = daemon.scratch(name);
+    std::fs::write(project.join("notes.md"), "worth keeping").expect("a file");
+    let created = daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": project }))
+        .await;
+    let id = created["id"].as_str().expect("an id").to_owned();
+    daemon
+        .post_json(&format!("/v1/roots/{id}/snapshots"), &serde_json::json!({}))
+        .await;
+
+    id
+}
+
+#[tokio::test]
+async fn purge_needs_consent_and_keeps_the_root_watched() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let id = captured(&daemon).await;
+    let history = daemon.store_dir(&id).join("history.git");
+
+    let refused = daemon.run_cli(KEEPSTER, &["purge", "--root", &id]).await;
+
+    assert_eq!(refused.exit_code, Some(2), "stderr: {}", refused.stderr);
+    assert!(
+        refused.stderr.contains("--yes"),
+        "the refusal says how to consent, in:\n{}",
+        refused.stderr
+    );
+    assert!(
+        history.exists(),
+        "erasing history must not happen on one word"
+    );
+
+    let accepted = daemon
+        .run_cli(KEEPSTER, &["purge", "--root", &id, "--yes"])
+        .await;
+
+    assert_eq!(accepted.exit_code, Some(0), "stderr: {}", accepted.stderr);
+    assert!(!history.exists(), "consent given, the history is erased");
+    assert_eq!(
+        daemon.get(&format!("/v1/roots/{id}")).await.status,
+        200,
+        "the Root stays watched, to start its history over"
+    );
+}
+
+#[tokio::test]
+async fn purge_reaches_a_root_no_longer_watched_by_its_identity() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let id = captured(&daemon).await;
+    daemon.delete(&format!("/v1/roots/{id}")).await;
+
+    let run = daemon
+        .run_cli(KEEPSTER, &["purge", "--root", &id, "--yes"])
+        .await;
+
+    assert_eq!(run.exit_code, Some(0), "stderr: {}", run.stderr);
+    assert!(!daemon.store_dir(&id).exists());
+}
+
+#[tokio::test]
+async fn unwatch_purge_reaches_a_root_no_longer_watched_by_its_identity() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let id = captured(&daemon).await;
+    daemon.delete(&format!("/v1/roots/{id}")).await;
+
+    let run = daemon
+        .run_cli(KEEPSTER, &["unwatch", "--root", &id, "--purge", "--yes"])
+        .await;
+
+    assert_eq!(run.exit_code, Some(0), "stderr: {}", run.stderr);
+    assert!(!daemon.store_dir(&id).exists());
+}
+
+/// Two watched Roots and one no longer watched, each with history: what the all-Roots forms act on.
+async fn three_histories(daemon: &Harness) -> (String, String, String) {
+    let one = captured_at(daemon, "one").await;
+    let two = captured_at(daemon, "two").await;
+    let former = captured_at(daemon, "former").await;
+    daemon.delete(&format!("/v1/roots/{former}")).await;
+
+    (one, two, former)
+}
+
+#[tokio::test]
+async fn purge_all_erases_every_history_and_keeps_every_root_watched() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (one, two, former) = three_histories(&daemon).await;
+
+    let refused = daemon.run_cli(KEEPSTER, &["purge", "--all"]).await;
+
+    assert_eq!(refused.exit_code, Some(2), "stderr: {}", refused.stderr);
+    for id in [&one, &two] {
+        assert!(daemon.store_dir(id).join("history.git").exists());
+    }
+    assert!(daemon.store_dir(&former).exists());
+
+    let accepted = daemon.run_cli(KEEPSTER, &["purge", "--all", "--yes"]).await;
+
+    assert_eq!(accepted.exit_code, Some(0), "stderr: {}", accepted.stderr);
+    for id in [&one, &two] {
+        assert!(!daemon.store_dir(id).join("history.git").exists());
+        assert_eq!(daemon.get(&format!("/v1/roots/{id}")).await.status, 200);
+    }
+    // A Root no longer watched is reached too, as `uninstall --history` reaches it.
+    assert!(!daemon.store_dir(&former).exists());
+}
+
+#[tokio::test]
+async fn purge_takes_either_one_root_or_all_of_them() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let id = captured(&daemon).await;
+
+    let refused = daemon
+        .run_cli(KEEPSTER, &["purge", "--all", "--root", &id, "--yes"])
+        .await;
+
+    assert_eq!(refused.exit_code, Some(2), "stderr: {}", refused.stderr);
+    assert!(daemon.store_dir(&id).join("history.git").exists());
+}
+
+#[tokio::test]
+async fn erasing_every_root_without_consent_is_refused_before_the_daemon_is_asked() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    // Nothing listens here: a refusal that needed the daemon would end as "not running" instead.
+    let unused = daemon.scratch("nobody-listens").join("daemon.sock");
+
+    for args in [
+        &["purge", "--all"][..],
+        &["unwatch", "--all", "--purge"][..],
+    ] {
+        let run = daemon
+            .run_cli_with_control_path(KEEPSTER, &unused, args)
+            .await;
+
+        assert_eq!(run.exit_code, Some(2), "{args:?}: {}", run.stderr);
+        assert!(
+            run.stderr
+                .contains("nothing was changed. Pass --yes as well to confirm"),
+            "{args:?}: {}",
+            run.stderr
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_help_says_that_a_root_no_longer_watched_is_erased_whole() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+
+    // Its history is all such a Root still has, so erasing its history leaves no record behind either.
+    for args in [&["purge", "--help"][..], &["uninstall", "--help"][..]] {
+        let run = daemon.run_cli(KEEPSTER, args).await;
+
+        assert_eq!(run.exit_code, Some(0), "{args:?}: {}", run.stderr);
+        let help = String::from_utf8(run.stdout).expect("text");
+        assert!(
+            help.contains("no longer watched") && help.contains("erased whole"),
+            "{args:?}:\n{help}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unwatch_all_stops_watching_every_root_and_keeps_every_history() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (one, two, former) = three_histories(&daemon).await;
+
+    let run = daemon.run_cli(KEEPSTER, &["unwatch", "--all"]).await;
+
+    assert_eq!(run.exit_code, Some(0), "stderr: {}", run.stderr);
+    assert_eq!(daemon.get_json("/v1/roots").await, serde_json::json!([]));
+    for id in [&one, &two, &former] {
+        assert!(
+            daemon.store_dir(id).join("history.git").exists(),
+            "unwatching keeps the history"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unwatch_all_purge_needs_consent_and_erases_every_root() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let (one, two, former) = three_histories(&daemon).await;
+
+    let refused = daemon
+        .run_cli(KEEPSTER, &["unwatch", "--all", "--purge"])
+        .await;
+
+    assert_eq!(refused.exit_code, Some(2), "stderr: {}", refused.stderr);
+    assert_eq!(
+        daemon
+            .get_json("/v1/roots")
+            .await
+            .as_array()
+            .expect("an array")
+            .len(),
+        2,
+        "nothing is unwatched without consent"
+    );
+
+    let accepted = daemon
+        .run_cli(KEEPSTER, &["unwatch", "--all", "--purge", "--yes"])
+        .await;
+
+    assert_eq!(accepted.exit_code, Some(0), "stderr: {}", accepted.stderr);
+    assert_eq!(daemon.get_json("/v1/roots").await, serde_json::json!([]));
+    for id in [&one, &two, &former] {
+        assert!(!daemon.store_dir(id).exists());
+    }
+}
+
 #[tokio::test]
 async fn move_records_the_new_path() {
     let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;

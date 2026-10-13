@@ -15,7 +15,7 @@ pub mod tray;
 ///
 /// launchd's `KeepAlive` and Task Scheduler's restart cannot filter by exit code: a refused daemon there
 /// is started again after their throttle interval, for as long as a daemon no manager started holds the
-/// lock. `keepster service install` refuses beside one; the rest is ticket 82's to observe.
+/// lock. `keepster install` refuses beside one; the rest is ticket 82's to observe.
 pub const REFUSED_EXIT: u8 = 5;
 
 /// The systemd unit's name.
@@ -34,7 +34,7 @@ const STOP_TIMEOUT_SECONDS: u32 = 10;
 /// The systemd user unit that runs `exe daemon`.
 pub fn systemd_unit(exe: &Path) -> String {
     format!(
-        "# Written by `keepster service install`; `keepster service uninstall` removes it.\n\
+        "# Written by `keepster install`; `keepster uninstall` removes it.\n\
          [Unit]\n\
          Description=Keepster, editor-independent file history\n\
          \n\
@@ -78,7 +78,7 @@ pub fn launch_agent(exe: &Path) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <!-- Written by `keepster service install`; `keepster service uninstall` removes it. -->\n\
+         <!-- Written by `keepster install`; `keepster uninstall` removes it. -->\n\
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key>\n\
@@ -117,7 +117,7 @@ pub fn scheduled_task(exe: &Path, user: &str) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
          <Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
          \x20 <RegistrationInfo>\n\
-         \x20   <Description>Keepster, editor-independent file history. Written by `keepster service install`; `keepster service uninstall` removes it.</Description>\n\
+         \x20   <Description>Keepster, editor-independent file history. Written by `keepster install`; `keepster uninstall` removes it.</Description>\n\
          \x20 </RegistrationInfo>\n\
          \x20 <Triggers>\n\
          \x20   <LogonTrigger>\n\

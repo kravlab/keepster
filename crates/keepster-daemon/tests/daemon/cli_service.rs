@@ -1,6 +1,7 @@
-//! `keepster service` and the CLI's way to a daemon that is not running (ticket 61), in a sandbox whose
-//! service manager cannot be reached: what is asserted is what Keepster decides and says, never what a
-//! real systemd, launchd or Task Scheduler does — registering a unit changes the machine a test runs on.
+//! `keepster install`, `keepster uninstall` and `keepster service`, and the CLI's way to a daemon that is
+//! not running (tickets 61 and 68), in a sandbox whose service manager cannot be reached: what is asserted
+//! is what Keepster decides and says, never what a real systemd, launchd or Task Scheduler does —
+//! registering a unit changes the machine a test runs on.
 #![cfg(unix)]
 
 #[cfg(target_os = "linux")]
@@ -8,11 +9,12 @@ use std::path::Path;
 
 use crate::cli_lifecycle::Sandbox;
 
-fn text(bytes: &[u8]) -> String {
+/// A command's output as text, whatever bytes it held.
+pub(crate) fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// What a person would have after `keepster service install` on Linux, as files: the unit, and the link
+/// What a person would have after `keepster install` on Linux, as files: the unit, and the link
 /// enabling it.
 #[cfg(target_os = "linux")]
 fn installed_unit(sandbox: &Sandbox) {
@@ -36,7 +38,7 @@ async fn with_no_daemon_and_no_unit_a_command_points_at_the_install_and_starts_n
 
     assert_eq!(run.status.code(), Some(3), "daemon unreachable");
     let stderr = text(&run.stderr);
-    assert!(stderr.contains("keepster service install"), "{stderr}");
+    assert!(stderr.contains("keepster install"), "{stderr}");
     assert!(
         !sandbox.control_path().exists(),
         "no daemon was forked behind the service manager's back"
@@ -99,7 +101,7 @@ async fn service_status_reports_a_unit_never_installed_as_not_found() {
     assert_eq!(run.status.code(), Some(4), "{}", text(&run.stderr));
     let stdout = text(&run.stdout);
     assert!(stdout.contains("not installed"), "{stdout}");
-    assert!(stdout.contains("keepster service install"), "{stdout}");
+    assert!(stdout.contains("keepster install"), "{stdout}");
 }
 
 #[cfg(target_os = "linux")]
@@ -139,7 +141,7 @@ async fn the_status_rows_say_whether_the_daemon_comes_back_and_survives_logout()
     assert_eq!(daemon["autostart_reason"], "not_installed", "{status}");
     assert_eq!(daemon["linger"], "unavailable", "{status}");
     let human = text(&shown.stdout);
-    assert!(human.contains("keepster service install"), "{human}");
+    assert!(human.contains("keepster install"), "{human}");
     if cfg!(target_os = "macos") {
         assert_eq!(daemon["linger_reason"], "logout_gap", "{status}");
         assert!(human.contains("coverage ends at logout"), "{human}");
@@ -170,7 +172,7 @@ async fn an_installed_and_enabled_unit_reads_as_autostart_available() {
 async fn an_install_the_service_manager_refuses_leaves_no_unit_behind() {
     let sandbox = Sandbox::new();
 
-    let run = sandbox.run(&["service", "install"]).await;
+    let run = sandbox.run(&["install"]).await;
 
     assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
     assert!(
@@ -193,7 +195,7 @@ async fn an_install_the_service_manager_refuses_leaves_no_unit_behind() {
 async fn install_takes_a_choice_of_no_tray() {
     let sandbox = Sandbox::new();
 
-    let run = sandbox.run(&["service", "install", "--no-tray"]).await;
+    let run = sandbox.run(&["install", "--no-tray"]).await;
 
     assert_eq!(
         run.status.code(),
@@ -233,7 +235,7 @@ async fn uninstall_removes_the_trays_autostart_entry_too() {
     )
     .expect("the entry");
 
-    let run = sandbox.run(&["service", "uninstall"]).await;
+    let run = sandbox.run(&["uninstall"]).await;
 
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert!(!entry.exists());
@@ -249,7 +251,7 @@ async fn uninstall_removes_the_trays_autostart_entry_too() {
 async fn install_without_the_web_ui_creates_a_configuration_with_the_listener_off() {
     let sandbox = Sandbox::new();
 
-    sandbox.run(&["service", "install", "--no-web-ui"]).await;
+    sandbox.run(&["install", "--no-web-ui"]).await;
 
     let written = std::fs::read_to_string(sandbox.config_path()).expect("created");
     assert!(written.contains("[ui]\nlistener = false\n"), "{written}");
@@ -262,7 +264,7 @@ async fn install_without_the_web_ui_leaves_an_existing_configuration_and_names_t
     let mine = b"# mine\n[files]\nexclude = [\"*.log\"]\n";
     sandbox.write_config(mine);
 
-    let run = sandbox.run(&["service", "install", "--no-web-ui"]).await;
+    let run = sandbox.run(&["install", "--no-web-ui"]).await;
 
     assert_eq!(
         std::fs::read(sandbox.config_path()).expect("the file"),
@@ -278,7 +280,7 @@ async fn install_without_the_web_ui_leaves_an_existing_configuration_and_names_t
 async fn uninstalling_what_was_never_installed_changes_nothing_and_says_so() {
     let sandbox = Sandbox::new();
 
-    let run = sandbox.run(&["service", "uninstall"]).await;
+    let run = sandbox.run(&["uninstall"]).await;
 
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert!(
@@ -295,7 +297,7 @@ async fn install_refuses_beside_a_daemon_no_service_manager_started() {
     let sandbox = Sandbox::new();
     let bare = sandbox.daemon().await;
 
-    let run = sandbox.run(&["service", "install"]).await;
+    let run = sandbox.run(&["install"]).await;
 
     assert_eq!(run.status.code(), Some(5), "{}", text(&run.stderr));
     let stderr = text(&run.stderr);
@@ -307,5 +309,90 @@ async fn install_refuses_beside_a_daemon_no_service_manager_started() {
     assert!(
         !sandbox.unit_dir().join("keepster.service").exists(),
         "nothing was registered"
+    );
+}
+
+#[tokio::test]
+async fn service_no_longer_installs_or_uninstalls() {
+    let sandbox = Sandbox::new();
+
+    for verb in ["install", "uninstall"] {
+        let run = sandbox.run(&["service", verb]).await;
+
+        assert_eq!(
+            run.status.code(),
+            Some(2),
+            "`keepster {verb}` replaced it: {}",
+            text(&run.stderr)
+        );
+    }
+}
+
+/// The runtime directory a daemon and a tray of this sandbox leave behind, with nothing holding it.
+fn left_runtime_directory(sandbox: &Sandbox) -> std::path::PathBuf {
+    let runtime = sandbox
+        .control_path()
+        .parent()
+        .expect("the runtime directory")
+        .to_path_buf();
+    std::fs::create_dir_all(&runtime).expect("the runtime directory");
+    for name in [
+        "daemon.sock",
+        "ui-token",
+        keepster_service::PID_FILE,
+        keepster_service::TRAY_PID_FILE,
+    ] {
+        std::fs::write(runtime.join(name), b"left").expect("a leftover");
+    }
+    runtime
+}
+
+#[tokio::test]
+async fn uninstall_removes_the_runtime_directory() {
+    let sandbox = Sandbox::new();
+    let runtime = left_runtime_directory(&sandbox);
+
+    let run = sandbox.run(&["uninstall"]).await;
+
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(!runtime.exists(), "nothing of a daemon's start is left");
+    assert!(
+        text(&run.stdout).contains(&format!("removed {}", runtime.display())),
+        "{}",
+        text(&run.stdout)
+    );
+}
+
+#[tokio::test]
+async fn uninstall_leaves_the_lock_of_a_tray_still_running() {
+    // A tray running now goes on until its session ends; unlinking its lock would let a second one start
+    // beside it.
+    let sandbox = Sandbox::new();
+    let runtime = left_runtime_directory(&sandbox);
+    let tray = keepster_service::lock_pid_file(&runtime.join(keepster_service::TRAY_PID_FILE))
+        .expect("the tray's lock");
+
+    let run = sandbox.run(&["uninstall"]).await;
+
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(runtime.join(keepster_service::TRAY_PID_FILE).exists());
+    for gone in ["daemon.sock", "ui-token", keepster_service::PID_FILE] {
+        assert!(!runtime.join(gone).exists(), "{gone} is left");
+    }
+    drop(tray);
+}
+
+#[tokio::test]
+async fn uninstall_leaves_the_runtime_directory_of_a_daemon_still_running() {
+    // One no service manager started, which no unit removal stops: its socket and its lock are its own.
+    let sandbox = Sandbox::new();
+    let _bare = sandbox.daemon().await;
+
+    let run = sandbox.run(&["uninstall"]).await;
+
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(
+        keepster_service::daemon_answers(&sandbox.control_path()),
+        "the daemon still answers"
     );
 }

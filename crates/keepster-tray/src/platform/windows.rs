@@ -3,20 +3,20 @@
 //!
 //! The connection runs on its own thread and hands each call to the main thread by posting the window a
 //! message; the icon, its menu and the window are only ever touched from the main thread. A toast from an
-//! unpackaged program is shown only while a Start-menu shortcut carries its AppUserModelID, which the
-//! installer creates (ticket 68): without it the tray says `no_app_id` rather than show toasts nobody sees.
+//! unpackaged program is shown only while a Start-menu shortcut carries its AppUserModelID, which
+//! `keepster install` creates (ticket 68): without it the tray says `no_app_id` rather than show toasts
+//! nobody sees.
 #![allow(
     unsafe_code,
     reason = "the Win32 calls below have no safe wrapper in std; they are confined to this module"
 )]
 
 use std::cell::RefCell;
-use std::ffi::OsString;
-use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+use keepster_service::autostart::tray::{APP_ID, shortcut_locations};
 use keepster_service::to_wide;
 use tokio::sync::mpsc as tokio_mpsc;
 use windows::Data::Xml::Dom::XmlDocument;
@@ -55,10 +55,6 @@ const WM_DRAIN: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
 /// The reason the icon row is unavailable when the notification area refuses the icon.
 const NO_TASKBAR: &str = "no_taskbar";
-/// The AppUserModelID toasts are shown under, which the installer's Start-menu shortcut carries.
-const APP_ID: &str = "Keepster.Tray";
-/// The installer's Start-menu shortcut, in either `Programs` folder (ticket 68).
-const SHORTCUT: &str = "Keepster.lnk";
 /// Why the notifications row is unavailable: no Start-menu shortcut carries the AppUserModelID.
 const NO_APP_ID: &str = "no_app_id";
 /// Why the notifications row is unavailable: Windows has notifications turned off for the app, for the
@@ -319,25 +315,11 @@ fn toast(notice: &Notice) -> windows::core::Result<bool> {
     Ok(true)
 }
 
-/// Whether the installer's shortcut is in either `Programs` folder.
+/// Whether the shortcut `keepster install` writes is in either `Programs` folder (ticket 68).
 fn shortcut_installed() -> bool {
-    shortcut_paths(|name| std::env::var_os(name))
+    shortcut_locations(|name| std::env::var_os(name))
         .iter()
         .any(|path| path.is_file())
-}
-
-/// Where the installer's shortcut may be: the user's own `Programs` folder, then every user's, as named by
-/// the environment `var` reads.
-fn shortcut_paths(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
-    ["APPDATA", "ProgramData"]
-        .into_iter()
-        .filter_map(|name| var(name).filter(|value| !value.is_empty()))
-        .map(|base| {
-            PathBuf::from(base)
-                .join(r"Microsoft\Windows\Start Menu\Programs")
-                .join(SHORTCUT)
-        })
-        .collect()
 }
 
 /// Show the menu where the pointer is, and pass on what is chosen from it.
@@ -428,47 +410,5 @@ fn stock_icon(icon: Icon) -> *const u16 {
         Icon::Covered => IDI_SHIELD,
         Icon::Attention => IDI_WARNING,
         Icon::Stopped => IDI_ERROR,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_shortcut_is_looked_for_in_the_users_programs_then_in_every_users() {
-        let paths = shortcut_paths(|name| match name {
-            "APPDATA" => Some(OsString::from(r"C:\Users\u\AppData\Roaming")),
-            "ProgramData" => Some(OsString::from(r"C:\ProgramData")),
-            _ => None,
-        });
-
-        assert_eq!(
-            paths,
-            [
-                PathBuf::from(
-                    r"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Keepster.lnk"
-                ),
-                PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Keepster.lnk"),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_folder_the_environment_does_not_name_is_not_looked_in() {
-        let paths = shortcut_paths(|name| {
-            (name == "ProgramData").then(|| OsString::from(r"C:\ProgramData"))
-        });
-
-        assert_eq!(
-            paths,
-            [PathBuf::from(
-                r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Keepster.lnk"
-            )]
-        );
-        assert!(
-            shortcut_paths(|_| Some(OsString::new())).is_empty(),
-            "an empty value names nothing"
-        );
     }
 }

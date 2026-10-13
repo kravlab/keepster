@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use keepster_core::{RootId, SnapshotId, VolumePlace};
-use keepster_store::{Registry, RegistryEntry, RegistryError, RootRecord, StoreError};
+use keepster_store::{
+    HeldEntry, Registry, RegistryEntry, RegistryError, RootRecord, Standing, StoreError,
+};
 
 use crate::snapshots;
 
@@ -118,6 +120,16 @@ pub fn list(registry: &Registry) -> Result<Vec<RegistryEntry>, RegistryError> {
     registry.list()
 }
 
+/// Every Root no longer watched whose history is kept, in the Registry's order, including the ones
+/// whose record cannot be read: its identity alone reaches its history.
+pub fn unwatched(registry: &Registry) -> Result<Vec<HeldEntry>, RegistryError> {
+    Ok(registry
+        .held()?
+        .into_iter()
+        .filter(|held| held.standing == Standing::Unwatched)
+        .collect())
+}
+
 /// The Root holding `path`, if any — the answer behind "which Root am I in".
 ///
 /// The path is made absolute first, so a caller may pass one relative to its own working directory.
@@ -195,6 +207,69 @@ pub fn deregister(
     registry.remove(id)?;
 
     Ok(pinned)
+}
+
+/// Erase one Root's history (ticket 68): a watched Root stays registered and watched, and its next
+/// capture starts the history over; one no longer watched, whose history was all it still had, is
+/// erased whole, as `deregister` with `purge` erases it. The caller holds the store's lock, or knows no
+/// daemon runs.
+pub fn erase_history(registry: &Registry, id: RootId) -> Result<(), RootError> {
+    if registry.contains(id) {
+        snapshots::erase_history(&registry.root_dir(id))
+    } else if registry.holds(id) {
+        Ok(registry.purge(id)?)
+    } else {
+        Err(RootError::NotFound { id })
+    }
+}
+
+/// What `keepster uninstall` erases besides the autostart entries (ticket 68), each only when asked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Erasure {
+    /// Every Root's history: a watched Root stays registered, to start its history over; one no longer
+    /// watched, which held nothing else, is erased whole.
+    pub history: bool,
+    /// Every Root's registration: each watched Root is unwatched as `unwatch` does it, its last state
+    /// pinned and its history left to decay. With `history` too, every Root is erased whole.
+    pub roots: bool,
+}
+
+/// What [`erase`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Erased {
+    /// How many Roots' histories were erased.
+    pub histories: usize,
+    /// How many watched Roots were unwatched.
+    pub unwatched: usize,
+}
+
+/// Erase what `erasure` selects from every Root the Registry holds, watched or not.
+///
+/// Nothing reaches here without the user's separate consent, and no daemon may be running: the caller
+/// has stopped it, so no store lock is taken. A Root whose record cannot be read is still erased, since
+/// its identity — the directory's name — is all the erasing needs.
+pub fn erase(registry: &Registry, erasure: Erasure) -> Result<Erased, RootError> {
+    let mut erased = Erased::default();
+    for held in registry.held()? {
+        let watched = held.standing == Standing::Watched;
+        match (erasure.history, erasure.roots, watched) {
+            (true, true, _) => {
+                registry.purge(held.id)?;
+                erased.histories += 1;
+            }
+            (true, false, _) => {
+                erase_history(registry, held.id)?;
+                erased.histories += 1;
+            }
+            (false, true, true) => {
+                deregister(registry, held.id, false)?;
+                erased.unwatched += 1;
+            }
+            (false, _, _) => {}
+        }
+    }
+
+    Ok(erased)
 }
 
 /// Record that a Root's directory is now somewhere else.

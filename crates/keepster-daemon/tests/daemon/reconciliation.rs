@@ -132,6 +132,23 @@ async fn a_reload_that_changes_the_rules_reconciles_the_root() {
 }
 
 #[tokio::test]
+async fn a_root_whose_history_is_erased_is_captured_again_without_waiting_for_a_change() {
+    let daemon = Harness::start_with_global_config(UNWATCHED).await;
+    let project = project(&daemon);
+    write(&project, "notes.txt", b"never edited again");
+    let root = register(&daemon, &project).await;
+    snapshot_changing(&daemon, &root, "notes.txt", "reconcile").await;
+
+    let erased = daemon.delete(&format!("/v1/roots/{root}/history")).await;
+    assert_eq!(erased.status, 204);
+
+    // Nothing in the Root changes, so without a pass of its own the history would stay empty until
+    // something did — and the version the first edit replaces would be in no Snapshot (ticket 68).
+    let taken = snapshot_changing(&daemon, &root, "notes.txt", "reconcile").await;
+    assert_eq!(taken["change"], "added", "the history started over");
+}
+
+#[tokio::test]
 async fn a_root_captured_only_by_hand_is_reconciled_once_something_captures_it() {
     let daemon = Harness::start_with_global_config(b"[triggers]\nactive = []\n").await;
     let project = project(&daemon);

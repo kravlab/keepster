@@ -18,9 +18,16 @@ libc = "0.2.189"
 [target."cfg(unix)".dependencies]
 rustix = { version = "1.1.5", features = ["fs", "process"] }
 
+# `windows` holds the shell's COM interfaces, which `windows-sys` does not: the Start-menu shortcut
+# carrying the tray's AppUserModelID is written through them (ticket 68).
 [target."cfg(windows)".dependencies]
 tokio = { version = "1.53.1", features = ["net"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# The shortcut test reads the shortcut back through the shell, which also takes `IShellLinkW::GetPath`.
+[target."cfg(windows)".dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem"] }

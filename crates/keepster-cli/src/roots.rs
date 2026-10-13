@@ -1,5 +1,5 @@
-//! The Watched Root commands: putting a directory under history, listing the Roots, unwatching one
-//! and recording that one has moved.
+//! The Watched Root commands: putting a directory under history, listing the Roots, unwatching one,
+//! erasing one's history and recording that one has moved.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -8,10 +8,11 @@ use keepster_api::{ErrorCode, Pins, Problem, RegisterRoot, Reported, Root, Statu
 use serde::de::DeserializeOwned;
 
 use crate::client::{ClientError, DaemonClient, Response};
-use crate::command::{MoveArgs, UnwatchArgs, WatchArgs};
+use crate::command::{MoveArgs, PurgeArgs, UnwatchArgs, WatchArgs};
 use crate::exit;
 use crate::preview::Shown;
 use crate::render::{write_git, write_roots};
+use crate::resolve::Target;
 
 /// Register a directory as a Watched Root.
 pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
@@ -310,63 +311,140 @@ fn print_roots(roots: &[Root]) -> u8 {
     }
 }
 
-/// Deregister a Root, keeping its history unless an explicit purge says otherwise.
+/// Deregister a Root, or every one, keeping its history unless an explicit purge says otherwise.
 pub async fn unwatch(args: &UnwatchArgs, control_path: &Path) -> u8 {
     let client = DaemonClient::new(control_path);
 
-    let root = match crate::resolve::resolve(&client, args.root.as_deref()).await {
-        Ok(root) => root,
+    // Only an erasing reaches a Root no longer watched: its history is all that is left of it.
+    let selection = Selection {
+        root: args.root.as_deref(),
+        all: args.all,
+        erasing: args.purge,
+        yes: args.yes,
+    };
+    let targets = match selection.consented(&client, "--purge").await {
+        Ok(targets) => targets,
         Err(code) => return code,
     };
-
-    // Erasing history is irreversible, so selecting it and consenting to it are two separate acts —
-    // one mistyped flag must not destroy the insurance (ticket 27).
-    if args.purge && !args.yes {
-        eprintln!(
-            "keepster: --purge erases every captured version of {}; pass --yes to confirm",
-            root.path
-        );
-
-        return exit::USAGE;
+    if targets.is_empty() {
+        println!("no Root is watched; nothing was changed");
     }
 
-    let url = if args.purge {
-        format!("/v1/roots/{}?purge=true", root.id)
-    } else {
-        format!("/v1/roots/{}", root.id)
-    };
-
-    match accepted(client.delete(&url).await) {
-        Err(code) => code,
-        Ok(()) => {
-            if args.purge {
-                println!("erased the history of {}", root.path);
-            } else {
-                // The history decays down the ladder to its last state, pinned by the daemon, and stays
-                // reachable by its identity alone (ticket 53). A Root that never captured anything has
-                // neither, and is not told it has.
-                let pinned = client
-                    .get(&format!("/v1/roots/{}/pins", root.id))
-                    .await
-                    .ok()
-                    .filter(|response| response.status.is_success())
-                    .and_then(|response| serde_json::from_slice::<Pins>(&response.body).ok())
-                    .is_some_and(|pins| !pins.snapshots.is_empty());
-                if pinned {
-                    println!(
-                        "stopped watching {}; its history is kept, decaying to its last state, which \
-                         is pinned: `keepster pins -r {}` lists it, and watching the directory again \
-                         resumes it",
-                        root.path, root.id
-                    );
-                } else {
-                    println!("stopped watching {} (it had no history to keep)", root.path);
-                }
-            }
-
-            exit::SUCCESS
+    for target in &targets {
+        if let Err(code) = unwatch_one(&client, target, args.purge).await {
+            return code;
         }
     }
+
+    exit::SUCCESS
+}
+
+/// Deregister one Root and say what became of its history.
+async fn unwatch_one(client: &DaemonClient, target: &Target, purge: bool) -> Result<(), u8> {
+    let Target { id, named } = target;
+    let url = if purge {
+        format!("/v1/roots/{id}?purge=true")
+    } else {
+        format!("/v1/roots/{id}")
+    };
+    accepted(client.delete(&url).await)?;
+
+    if purge {
+        println!("erased the history of {named}");
+    } else {
+        // The history decays down the ladder to its last state, pinned by the daemon, and stays
+        // reachable by its identity alone (ticket 53). A Root that never captured anything has
+        // neither, and is not told it has.
+        let pinned = client
+            .get(&format!("/v1/roots/{id}/pins"))
+            .await
+            .ok()
+            .filter(|response| response.status.is_success())
+            .and_then(|response| serde_json::from_slice::<Pins>(&response.body).ok())
+            .is_some_and(|pins| !pins.snapshots.is_empty());
+        if pinned {
+            println!(
+                "stopped watching {named}; its history is kept, decaying to its last state, which \
+                 is pinned: `keepster pins -r {id}` lists it, and watching the directory again \
+                 resumes it"
+            );
+        } else {
+            println!("stopped watching {named} (it had no history to keep)");
+        }
+    }
+
+    Ok(())
+}
+
+/// Erase a Root's history, or every Root's, and keep watching it (ticket 68); a Root no longer
+/// watched, whose history was all it still had, is erased whole.
+pub async fn purge(args: &PurgeArgs, control_path: &Path) -> u8 {
+    let client = DaemonClient::new(control_path);
+
+    let selection = Selection {
+        root: args.root.as_deref(),
+        all: args.all,
+        erasing: true,
+        yes: args.yes,
+    };
+    let targets = match selection.consented(&client, "purge").await {
+        Ok(targets) => targets,
+        Err(code) => return code,
+    };
+    if targets.is_empty() {
+        println!("no Root has a history; nothing was changed");
+    }
+
+    for Target { id, named } in &targets {
+        if let Err(code) = accepted(client.delete(&format!("/v1/roots/{id}/history")).await) {
+            return code;
+        }
+        println!("erased the history of {named}");
+    }
+
+    exit::SUCCESS
+}
+
+/// Which Roots an `unwatch` or a `purge` command line selects, and whether it consents to erasing.
+struct Selection<'a> {
+    /// The `--root` selector, if one was given.
+    root: Option<&'a str>,
+    /// Every Root rather than one.
+    all: bool,
+    /// Whether the command erases history.
+    erasing: bool,
+    /// The separate consent an erasing needs (ticket 27).
+    yes: bool,
+}
+
+impl Selection<'_> {
+    /// The Roots selected, once an erasing has its consent; `command` names the erasing in a refusal.
+    ///
+    /// Every Root is refused before the daemon is asked, since "every Root" is all a refusal can name;
+    /// one Root is found first, so that the refusal names it.
+    async fn consented(&self, client: &DaemonClient, command: &str) -> Result<Vec<Target>, u8> {
+        let unconsented = self.erasing && !self.yes;
+        if unconsented && self.all {
+            return Err(refuse(command, "every Root"));
+        }
+        let targets = crate::resolve::targets(client, self.root, self.all, self.erasing).await?;
+        match targets.as_slice() {
+            [Target { named, .. }] if unconsented => Err(refuse(command, named)),
+            _ => Ok(targets),
+        }
+    }
+}
+
+/// Say that `command` was refused for want of consent, and give the exit code.
+fn refuse(command: &str, named: &str) -> u8 {
+    eprintln!(
+        "keepster: {}",
+        crate::consent::refusal(&format!(
+            "{command} erases every captured version of {named}"
+        ))
+    );
+
+    exit::USAGE
 }
 
 /// Record that a Root's directory has moved.

@@ -7,6 +7,7 @@
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod consent;
 pub mod diff;
 pub mod events;
 pub mod explain;
@@ -32,10 +33,10 @@ pub mod ui;
 pub use client::{ClientError, DaemonClient, Response};
 pub use command::{
     CatArgs, Cli, Command, ConfigArgs, DiagnoseArgs, DiffArgs, ExplainArgs, ExportArgs, FindArgs,
-    ForgetArgs, GrepArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs, MuteArgs,
-    PinArgs, PinsArgs, PreviewArgs, ReconcileArgs, ResolutionArgs, RestoreArgs, ServiceCommand,
-    ServiceInstallArgs, SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand, UnpinArgs,
-    UnwatchArgs, WatchArgs,
+    ForgetArgs, GrepArgs, InstallArgs, JobArgs, LogArgs, LogLevelArgs, MaintainArgs, MoveArgs,
+    MuteArgs, PinArgs, PinsArgs, PreviewArgs, PurgeArgs, ReconcileArgs, ResolutionArgs,
+    RestoreArgs, ServiceCommand, SnapshotArgs, StatusArgs, TokenCommand, UiArgs, UiCommand,
+    UninstallArgs, UnpinArgs, UnwatchArgs, WatchArgs,
 };
 pub use config::config;
 pub use diff::diff;
@@ -53,7 +54,7 @@ pub use reconcile::reconcile;
 pub use render::{write_human, write_json, write_roots};
 pub use resolve::resolve;
 pub use restore::restore;
-pub use roots::{move_root, roots, unwatch, watch};
+pub use roots::{move_root, purge, roots, unwatch, watch};
 pub use search::{find, grep};
 pub use snapshots::snapshot;
 pub use status::{Outcome, exit_code_for, outcome, status};

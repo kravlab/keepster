@@ -5,21 +5,21 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
-use keepster_api::{Pins, Root};
+use keepster_api::Pins;
 
 use crate::client::DaemonClient;
 use crate::command::{PinArgs, PinsArgs, UnpinArgs};
 use crate::exit;
 use crate::history::{selected_in, write_log};
+use crate::resolve::{Target, held};
 use crate::roots::{answered, body_of};
-use crate::selector;
 
 /// Pin a Snapshot, `latest` unless another is named.
 pub async fn pin(args: &PinArgs, control_path: &Path, now: SystemTime) -> u8 {
     let client = DaemonClient::new(control_path);
     let typed = args.snapshot.as_deref().unwrap_or("latest");
 
-    let (root, named) = match target(&client, args.root.as_deref()).await {
+    let Target { id: root, named } = match held(&client, args.root.as_deref()).await {
         Ok(found) => found,
         Err(code) => return code,
     };
@@ -45,7 +45,7 @@ pub async fn pin(args: &PinArgs, control_path: &Path, now: SystemTime) -> u8 {
 pub async fn unpin(args: &UnpinArgs, control_path: &Path, now: SystemTime) -> u8 {
     let client = DaemonClient::new(control_path);
 
-    let (root, named) = match target(&client, args.root.as_deref()).await {
+    let Target { id: root, named } = match held(&client, args.root.as_deref()).await {
         Ok(found) => found,
         Err(code) => return code,
     };
@@ -71,8 +71,8 @@ pub async fn unpin(args: &UnpinArgs, control_path: &Path, now: SystemTime) -> u8
 pub async fn pins(args: &PinsArgs, control_path: &Path) -> u8 {
     let client = DaemonClient::new(control_path);
 
-    let (root, _) = match target(&client, args.root.as_deref()).await {
-        Ok(found) => found,
+    let root = match held(&client, args.root.as_deref()).await {
+        Ok(found) => found.id,
         Err(code) => return code,
     };
     // Kept as the daemon sent them, so `--json` passes every field through, as `log --json` does.
@@ -89,31 +89,4 @@ pub async fn pins(args: &PinsArgs, control_path: &Path) -> u8 {
     crate::history::warn_unreadable(&listed["unreadable"]);
 
     write_log(&items, args.json, &mut io::stdout().lock())
-}
-
-/// The Root a pin command is about, by its identity, and how a message names it.
-///
-/// A full identity is taken as it is when no watched Root has it: a Root no longer watched keeps its
-/// history, its last state pinned, and its identity is all that is left to reach it by (ticket 53).
-async fn target(client: &DaemonClient, selector: Option<&str>) -> Result<(String, String), u8> {
-    let identity = selector.filter(|selector| selector::is_identity(selector));
-    if let Some(identity) = identity {
-        let watched = client
-            .get(&format!("/v1/roots/{identity}"))
-            .await
-            .ok()
-            .filter(|response| response.status.is_success())
-            .and_then(|response| serde_json::from_slice::<Root>(&response.body).ok());
-
-        return Ok(match watched {
-            Some(root) => (root.id, root.path),
-            None => (
-                identity.to_ascii_uppercase(),
-                format!("the Root {identity}"),
-            ),
-        });
-    }
-
-    let root = crate::resolve::resolve(client, selector).await?;
-    Ok((root.id, root.path))
 }

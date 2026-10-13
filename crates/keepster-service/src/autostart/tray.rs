@@ -1,7 +1,7 @@
 //! The tray's autostart (ticket 67): it starts with the user's graphical session, where its icon and its
 //! notifications can be seen — an XDG autostart entry on Linux, a LaunchAgent limited to the Aqua session
-//! on macOS, a `Run` value on Windows — and is written and removed by `keepster service` alongside the
-//! daemon's own unit.
+//! on macOS, a `Run` value on Windows — and is written by `keepster install` and removed by `keepster
+//! uninstall` alongside the daemon's own unit.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,28 @@ pub const LAUNCH_AGENT: &str = "org.keepster.tray";
 /// The name of the tray's value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 pub const RUN_VALUE: &str = "Keepster Tray";
 
+/// The AppUserModelID the tray shows its toasts under on Windows, which the Start-menu shortcut carries.
+pub const APP_ID: &str = "Keepster.Tray";
+
+/// The Start-menu shortcut's file name on Windows (ticket 68).
+pub const SHORTCUT: &str = "Keepster.lnk";
+
+/// Where the Start-menu shortcut may be on Windows, as named by the environment `var` reads: the user's
+/// own `Programs` folder, which `keepster install` writes, then every user's, which an administrator may
+/// have written. A toast from an unpackaged program is shown only while such a shortcut carries its
+/// AppUserModelID, so the tray looks in both.
+pub fn shortcut_locations(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    ["APPDATA", "ProgramData"]
+        .into_iter()
+        .filter_map(|name| var(name).filter(|value| !value.is_empty()))
+        .map(|base| {
+            ["Microsoft", "Windows", "Start Menu", "Programs", SHORTCUT]
+                .iter()
+                .fold(PathBuf::from(base), |path, component| path.join(component))
+        })
+        .collect()
+}
+
 /// The tray installed beside the CLI at `cli`.
 pub fn beside(cli: &Path) -> PathBuf {
     cli.with_file_name(format!("{BINARY}{}", std::env::consts::EXE_SUFFIX))
@@ -27,7 +49,7 @@ pub fn beside(cli: &Path) -> PathBuf {
 pub fn desktop_entry(tray: &Path) -> String {
     format!(
         "[Desktop Entry]\n\
-         # Written by `keepster service install`; `keepster service uninstall` removes it.\n\
+         # Written by `keepster install`; `keepster uninstall` removes it.\n\
          Type=Application\n\
          Name=Keepster\n\
          Comment=Shows whether Keepster's file history is covering you, and tells you when it stops\n\
@@ -68,7 +90,7 @@ pub fn launch_agent(tray: &Path) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <!-- Written by `keepster service install`; `keepster service uninstall` removes it. -->\n\
+         <!-- Written by `keepster install`; `keepster uninstall` removes it. -->\n\
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key>\n\
@@ -308,11 +330,24 @@ mod platform {
     }
 }
 
-/// Windows: a value under the user's `Run` key.
+/// Windows: a value under the user's `Run` key, and the Start-menu shortcut whose AppUserModelID lets
+/// the tray's toasts show.
 #[cfg(windows)]
 mod platform {
-    use super::super::ServiceError;
+    use super::super::{ServiceError, remove_file};
     use super::*;
+
+    /// The shortcut `keepster install` writes: the one in the user's own `Programs` folder.
+    fn own_shortcut() -> Result<PathBuf, ServiceError> {
+        shortcut_locations(|name| {
+            (name == "APPDATA")
+                .then(|| std::env::var_os(name))
+                .flatten()
+        })
+        .into_iter()
+        .next()
+        .ok_or_else(|| ServiceError::new("find the Start menu", "APPDATA is not set"))
+    }
 
     /// The value has no file of the user's: it is named, not located.
     pub fn entry_location() -> Option<PathBuf> {
@@ -322,16 +357,33 @@ mod platform {
         )))
     }
 
-    /// Write the `Run` value and start the tray now.
+    /// Write the Start-menu shortcut and the `Run` value, then start the tray now. The shortcut comes
+    /// first, so that the tray started finds it and can show toasts from its first alarm.
     ///
     /// No graphical session is looked for: the `Run` key is read at an interactive logon, and a person
     /// running `keepster` on Windows is, short of an SSH login, in one.
     pub fn install(tray: &Path) -> Result<TrayInstalled, ServiceError> {
         existing(tray)?;
-        crate::windows::set_run_value(RUN_VALUE, &run_command(tray))
-            .map_err(|error| ServiceError::new("write the tray's Run value", error.to_string()))?;
-        if let Err(error) = spawn_detached(tray) {
+        let shortcut = own_shortcut()?;
+        crate::windows::create_shortcut(&shortcut, tray).map_err(|error| {
+            ServiceError::new(
+                "write the Start-menu shortcut",
+                format!("{}: {error}", shortcut.display()),
+            )
+        })?;
+        let undo = || {
             let _ = crate::windows::delete_run_value(RUN_VALUE);
+            let _ = remove_file(&shortcut);
+        };
+        if let Err(error) = crate::windows::set_run_value(RUN_VALUE, &run_command(tray)) {
+            undo();
+            return Err(ServiceError::new(
+                "write the tray's Run value",
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = spawn_detached(tray) {
+            undo();
             return Err(ServiceError::new(
                 "start the tray",
                 format!("{}: {error}", tray.display()),
@@ -339,22 +391,36 @@ mod platform {
         }
 
         Ok(TrayInstalled {
-            entry: entry_location()
-                .map(|location| location.display().to_string())
-                .unwrap_or_default(),
+            entry: entries(&shortcut),
             started: true,
         })
     }
 
-    /// Remove the `Run` value. A tray running now goes on until it is quit or the session ends.
+    /// Remove the `Run` value and the Start-menu shortcut. A tray running now goes on until it is quit
+    /// or the session ends.
     pub fn uninstall() -> Result<Option<String>, ServiceError> {
         let removed = crate::windows::delete_run_value(RUN_VALUE)
             .map_err(|error| ServiceError::new("remove the tray's Run value", error.to_string()))?;
+        let shortcut = own_shortcut()?;
+        let had_shortcut = shortcut.exists();
+        if had_shortcut {
+            remove_file(&shortcut).map_err(|error| {
+                ServiceError::new(
+                    "remove the Start-menu shortcut",
+                    format!("{}: {error}", shortcut.display()),
+                )
+            })?;
+        }
 
-        Ok(removed
-            .then(entry_location)
-            .flatten()
-            .map(|location| location.display().to_string()))
+        Ok((removed || had_shortcut).then(|| entries(&shortcut)))
+    }
+
+    /// What `keepster install` writes for the tray, for a person: the `Run` value and the shortcut.
+    fn entries(shortcut: &Path) -> String {
+        let run = entry_location()
+            .map(|location| location.display().to_string())
+            .unwrap_or_default();
+        format!("{run} and {}", shortcut.display())
     }
 }
 

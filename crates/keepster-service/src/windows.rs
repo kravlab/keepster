@@ -416,3 +416,54 @@ pub(crate) fn delete_run_value(name: &str) -> io::Result<bool> {
         error => Err(io::Error::from_raw_os_error(error as i32)),
     }
 }
+
+/// Write the Start-menu shortcut at `link` that starts `tray`, carrying the AppUserModelID the tray shows
+/// its toasts under (ticket 68), replacing one already there. `link`'s directory is created when missing.
+///
+/// A toast from an unpackaged program is shown only while a Start-menu shortcut carries its
+/// AppUserModelID, which is what makes this the installer's work rather than the tray's. The shell
+/// writes it — `IShellLinkW` for the target, its `IPropertyStore` for the AppUserModelID, its
+/// `IPersistFile` for the file — so it is exactly the shortcut Windows itself reads.
+pub fn create_shortcut(link: &std::path::Path, tray: &std::path::Path) -> io::Result<()> {
+    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize, IPersistFile,
+    };
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::{HSTRING, Interface};
+
+    if let Some(directory) = link.parent() {
+        std::fs::create_dir_all(directory)?;
+    }
+
+    // SAFETY: no pointer is passed; COM is initialised on this thread for the calls below.
+    let initialised = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    // A thread COM already runs on in another mode refuses the change, and stays usable as it is.
+    let owned = initialised.is_ok();
+    let written = (|| -> windows::core::Result<()> {
+        // SAFETY: every argument is a live value for the duration of its call, and each interface is
+        // released when it goes out of scope, before COM is uninitialised below.
+        unsafe {
+            let shell_link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            shell_link.SetPath(&HSTRING::from(tray.as_os_str()))?;
+            let properties: IPropertyStore = shell_link.cast()?;
+            properties.SetValue(
+                &PKEY_AppUserModel_ID,
+                &PROPVARIANT::from(crate::autostart::tray::APP_ID),
+            )?;
+            properties.Commit()?;
+            shell_link
+                .cast::<IPersistFile>()?
+                .Save(&HSTRING::from(link.as_os_str()), true)
+        }
+    })();
+    if owned {
+        // SAFETY: balances the successful `CoInitializeEx` above, on the same thread.
+        unsafe { CoUninitialize() };
+    }
+
+    written.map_err(io::Error::other)
+}

@@ -22,7 +22,7 @@ pub use history::{
     TimelinePage, TimelineQuery, Topology, Watermark, WithheldMet, WithheldPath, Within, Written,
     destination_naming, preview,
 };
-pub use index::INDEX_SCHEMA_VERSION;
+pub use index::{INDEX_SCHEMA_VERSION, discard as discard_index};
 pub use keepster_core::WithheldReason;
 pub use preferences::{Preferences, PreferencesError, PreferencesStore, Theme};
 pub use registry::{

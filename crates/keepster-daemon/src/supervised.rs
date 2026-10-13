@@ -1,4 +1,5 @@
-//! `keepster service`, and the CLI's way to a daemon that is not running (ticket 61).
+//! `keepster install`, `keepster uninstall` and `keepster service`, and the CLI's way to a daemon that is
+//! not running (tickets 61 and 68).
 //!
 //! Part of the binary rather than of `keepster-cli`: registering a unit with the platform is
 //! `keepster-service`'s, and the CLI stays a thin client over the API. Only the service manager ever
@@ -9,15 +10,18 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use keepster_api::Status;
-use keepster_cli::{DaemonClient, ServiceCommand, ServiceInstallArgs, exit};
+use keepster_cli::{DaemonClient, InstallArgs, ServiceCommand, UninstallArgs, exit};
+use keepster_service::RuntimeDirCleared;
 use keepster_service::autostart::{self, Autostart, tray};
+
+use crate::erasing;
 
 /// How long a daemon the service manager was asked to start has to answer: its start recovers every
 /// Root's index first, which on a large store is not instant.
 const START_PATIENCE: Duration = Duration::from_secs(20);
 
 /// What to tell a person whose autostart was never installed.
-const INSTALL_HINT: &str = "run `keepster service install`";
+const INSTALL_HINT: &str = "run `keepster install`";
 
 /// The command a person would run to start the daemon by hand, for when asking for them fails.
 fn start_command() -> String {
@@ -91,8 +95,6 @@ pub(crate) fn unreachable(control_path: &Path) -> u8 {
 /// Run one `keepster service` command.
 pub(crate) async fn service(command: &ServiceCommand, control_path: &Path) -> u8 {
     match command {
-        ServiceCommand::Install(args) => install(args, control_path).await,
-        ServiceCommand::Uninstall => uninstall().await,
         ServiceCommand::Status => status(control_path).await,
         ServiceCommand::Start => ask("started", autostart::start).await,
         ServiceCommand::Stop => ask("stopped", autostart::stop).await,
@@ -118,7 +120,9 @@ async fn ask(
     }
 }
 
-async fn install(args: &ServiceInstallArgs, control_path: &Path) -> u8 {
+/// Run `keepster install`: register the daemon and the tray, switch linger on, and check that the
+/// daemon the service manager started answers.
+pub(crate) async fn install(args: &InstallArgs, control_path: &Path) -> u8 {
     // A daemon no service manager started holds the pid file's lock, so the unit's own daemon would be
     // refused — and a check that "a daemon answers" would then pass for a supervised daemon that does
     // not exist. Only one with no unit installed can be such a daemon; a reinstall replaces its own.
@@ -127,7 +131,7 @@ async fn install(args: &ServiceInstallArgs, control_path: &Path) -> u8 {
             let pid = pid.map_or_else(String::new, |pid| format!(" (pid {pid})"));
             eprintln!(
                 "keepster: a daemon no service manager started is running{pid}; stop it, then run \
-                 `keepster service install` again, so that the daemon running is the supervised one"
+                 `keepster install` again, so that the daemon running is the supervised one"
             );
             return exit::STATE_CONFLICT;
         }
@@ -245,13 +249,22 @@ fn declare_no_web_ui() {
     }
 }
 
-async fn uninstall() -> u8 {
+/// Run `keepster uninstall`: remove exactly what `keepster install` created, then the runtime directory,
+/// and only then — asked for by a flag and consented to by `--yes` — erase (ticket 68).
+///
+/// Consent is checked before anything is touched, so a refused uninstall removes nothing at all.
+/// Erasing waits for the daemon to be gone: with none running, no store lock is needed, and with one
+/// still running — one no service manager started, which no unit removal stops — nothing is erased.
+pub(crate) async fn uninstall(args: &UninstallArgs, control_path: &Path) -> u8 {
+    let selected = erasing::Selection::of(args);
+    if let Err(refusal) = selected.consented(args.yes) {
+        eprintln!("keepster: {refusal}");
+        return exit::USAGE;
+    }
+
     let daemon = match blocking(autostart::uninstall).await {
         Ok(Some(unit)) => {
-            println!(
-                "removed {unit}; the daemon is stopped. History, Roots and configuration are left as \
-                 they are"
-            );
+            println!("removed {unit}; the daemon is stopped");
             exit::SUCCESS
         }
         Ok(None) => {
@@ -277,7 +290,52 @@ async fn uninstall() -> u8 {
         }
     };
 
-    daemon.max(tray)
+    // Last, once the daemon its unit ran is stopped: what is left there belonged to that one start.
+    let (runtime, daemon_locked) = runtime_dir_cleared();
+    let erased = if selected.is_nothing() {
+        println!("history, Roots and configuration are left as they are");
+        exit::SUCCESS
+    } else if daemon_locked || keepster_service::daemon_answers(control_path) {
+        // Its lock lives as long as the process, past the moment its socket stops answering.
+        eprintln!(
+            "keepster: a daemon no service manager stopped is still running, so nothing was erased; \
+             stop it, then run `keepster uninstall` again"
+        );
+        exit::STATE_CONFLICT
+    } else {
+        erasing::erase(selected)
+    };
+
+    daemon.max(tray).max(runtime).max(erased)
+}
+
+/// Clear the runtime directory, say what was left and why, and tell whether a daemon still holds its
+/// lock there.
+fn runtime_dir_cleared() -> (u8, bool) {
+    let Some(dir) = keepster_service::default_runtime_dir() else {
+        return (exit::SUCCESS, false);
+    };
+    match keepster_service::clear_runtime_dir(&dir) {
+        Ok(RuntimeDirCleared::Removed) => println!("removed {}", dir.display()),
+        Ok(RuntimeDirCleared::Absent) => {}
+        Ok(RuntimeDirCleared::DaemonRunning) => {
+            println!(
+                "a daemon no service manager stopped is still running, so {} was left as it is",
+                dir.display()
+            );
+            return (exit::SUCCESS, true);
+        }
+        Ok(RuntimeDirCleared::TrayRunning) => println!(
+            "emptied {} but for the lock of the tray still running, which goes when the tray is quit",
+            dir.display()
+        ),
+        Err(error) => {
+            eprintln!("keepster: {} was not removed: {error}", dir.display());
+            return (exit::OTHER, false);
+        }
+    }
+
+    (exit::SUCCESS, false)
 }
 
 /// Run a platform step off the async runtime: each one starts a process and waits for it.

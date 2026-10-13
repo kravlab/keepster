@@ -150,13 +150,12 @@ fn short_id(id: &str) -> String {
 pub fn autostart(row: Reported, reason: Option<&str>) -> String {
     match (row, reason) {
         (Reported::Unavailable, Some("not_installed")) => {
-            "not installed — the daemon will not come back after a reboot; run `keepster service \
-             install`"
+            "not installed — the daemon will not come back after a reboot; run `keepster install`"
                 .to_owned()
         }
         (Reported::Unavailable, Some("disabled")) => {
             "installed but disabled — the daemon will not come back after a reboot; run `keepster \
-             service install`"
+             install`"
                 .to_owned()
         }
         (row, _) => reported(row).to_owned(),

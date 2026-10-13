@@ -192,6 +192,141 @@ async fn purging_erases_the_history_it_was_asked_to_erase() {
     );
 }
 
+/// Watch `project`, holding one file with `content`, and capture it once: a Root with a history to
+/// erase. Its identity.
+async fn captured(daemon: &Harness, project: &std::path::Path, content: &str) -> String {
+    std::fs::write(project.join("notes.md"), content).expect("a file");
+    let created = daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": project }))
+        .await;
+    let id = created["id"].as_str().expect("an id").to_owned();
+    daemon
+        .post_json(&format!("/v1/roots/{id}/snapshots"), &serde_json::json!({}))
+        .await;
+
+    id
+}
+
+#[tokio::test]
+async fn erasing_the_history_keeps_the_root_watched_and_starts_it_over() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let project = daemon.scratch("project");
+    let id = captured(&daemon, &project, "first").await;
+    let timeline = format!("/v1/roots/{id}/snapshots");
+
+    let erased = daemon.delete(&format!("/v1/roots/{id}/history")).await;
+
+    assert_eq!(erased.status, 204);
+    // Starting the history over is not unwatching (ticket 27): the Root keeps its identity and its
+    // place in the Registry, and only what was captured is gone.
+    assert_eq!(daemon.get(&format!("/v1/roots/{id}")).await.status, 200);
+    assert!(
+        !daemon.store_dir(&id).join("history.git").exists(),
+        "the History Store is erased"
+    );
+    assert_eq!(
+        daemon.get_json(&timeline).await["snapshots"],
+        serde_json::json!([]),
+        "nothing captured before the erasing is listed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("notes.md")).expect("the file"),
+        "first",
+        "erasing history must never touch the watched directory"
+    );
+
+    let restarted = daemon.post_json(&timeline, &serde_json::json!({})).await;
+    assert_eq!(
+        daemon.get_json(&timeline).await["snapshots"][0]["id"],
+        restarted["id"],
+        "the next capture starts the history over"
+    );
+}
+
+#[tokio::test]
+async fn the_capture_after_an_erasing_reads_every_file_again() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let project = daemon.scratch("project");
+    let id = captured(&daemon, &project, "kept across the erasing").await;
+    let timeline = format!("/v1/roots/{id}/snapshots");
+
+    daemon.delete(&format!("/v1/roots/{id}/history")).await;
+    let restarted = daemon.post_json(&timeline, &serde_json::json!({})).await;
+
+    // The file did not change, so a stat cache that outlived the store would vouch for content the new
+    // store never received (ADR 0014): the capture has to hash it again.
+    assert_eq!(restarted["added_paths"], 1, "{restarted}");
+    let content = daemon
+        .get(&format!(
+            "/v1/roots/{id}/snapshots/{}/content?path=notes.md",
+            restarted["id"].as_str().expect("an identity")
+        ))
+        .await;
+    assert_eq!(content.status, 200);
+    assert_eq!(content.body, b"kept across the erasing");
+}
+
+#[tokio::test]
+async fn erasing_the_history_of_a_root_no_longer_watched_erases_it_whole() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let id = captured(&daemon, &daemon.scratch("project"), "first").await;
+    daemon.delete(&format!("/v1/roots/{id}")).await;
+
+    let erased = daemon.delete(&format!("/v1/roots/{id}/history")).await;
+
+    assert_eq!(erased.status, 204);
+    // Its history was all a Root no longer watched still had, so nothing of it is left behind.
+    assert!(!daemon.store_dir(&id).exists());
+}
+
+#[tokio::test]
+async fn erasing_the_history_of_a_root_never_registered_is_not_found() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+
+    let answer = daemon
+        .delete("/v1/roots/01ARZ3NDEKTSV4RRFFQ69G5FAV/history")
+        .await;
+
+    assert_eq!(answer.status, 404);
+    let problem: serde_json::Value =
+        serde_json::from_slice(&answer.body).expect("a problem document");
+    assert_eq!(problem["code"], "root_not_found");
+}
+
+#[tokio::test]
+async fn roots_no_longer_watched_are_listed_with_where_they_were() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let kept = daemon.scratch("kept");
+    let watched = daemon.scratch("watched");
+    let kept_id = daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": kept }))
+        .await["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    daemon
+        .post_json("/v1/roots", &serde_json::json!({ "path": watched }))
+        .await;
+    daemon.delete(&format!("/v1/roots/{kept_id}")).await;
+
+    let listed = daemon.get_json("/v1/unwatched-roots").await;
+
+    // Its history is kept after an unwatch, and its identity is all that reaches it (ticket 53): the
+    // listing is how a client learns that identity, to erase that history (ticket 68).
+    assert_eq!(
+        listed,
+        serde_json::json!([{ "id": kept_id, "path": kept.to_string_lossy() }]),
+        "only the Root no longer watched is listed"
+    );
+
+    daemon.delete(&format!("/v1/roots/{kept_id}/history")).await;
+    assert_eq!(
+        daemon.get_json("/v1/unwatched-roots").await,
+        serde_json::json!([]),
+        "a Root whose history is erased is gone from the listing"
+    );
+}
+
 #[tokio::test]
 async fn deregistering_something_that_was_never_registered_is_not_found() {
     let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;

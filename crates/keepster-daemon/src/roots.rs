@@ -1,10 +1,13 @@
-//! The Watched Root registry endpoints: registering, listing, resolving, moving and deregistering.
+//! The Watched Root registry endpoints: registering, listing, resolving, moving, deregistering and
+//! erasing a history.
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
-use keepster_api::{ErrorCode, Event, FollowTargets, Problem, RegisterRoot, Root, RootState};
+use keepster_api::{
+    ErrorCode, Event, FollowTargets, Problem, RegisterRoot, Root, RootState, UnwatchedRoot,
+};
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::{RootId, VolumeVerdict};
 use keepster_store::{RegistryEntry, RegistryError, RootRecord};
@@ -69,6 +72,36 @@ pub(crate) async fn list(
         }
         None => Ok(Json(reported(&state, &registry)?)),
     }
+}
+
+/// Every Root no longer watched whose history is kept (ticket 68): the identities that reach those
+/// histories, which `GET /v1/roots` does not list.
+#[utoipa::path(
+    get,
+    path = "/v1/unwatched-roots",
+    operation_id = "list_unwatched_roots",
+    tag = "roots",
+    responses(
+        (status = 200, description = "Every Root no longer watched whose history is kept; empty when there is none.", body = Vec<UnwatchedRoot>),
+        (status = 500, description = "The Registry could not be read.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(crate) async fn list_unwatched(
+    State(state): State<DaemonState>,
+) -> Result<Json<Vec<UnwatchedRoot>>, ProblemResponse> {
+    let held = roots::unwatched(&state.registry()).map_err(registry_problem)?;
+
+    Ok(Json(
+        held.into_iter()
+            .map(|held| UnwatchedRoot {
+                id: held.id.to_string(),
+                path: held
+                    .record
+                    .ok()
+                    .map(|record| record.path.to_string_lossy().into_owned()),
+            })
+            .collect(),
+    ))
 }
 
 /// One Root, addressed by its identity.
@@ -171,17 +204,10 @@ pub(crate) async fn deregister(
     let id = parse_id(&id)?;
     let purge = query.purge;
 
-    // Off the async runtime: the store's lock may wait for a capture's walk, and pinning writes to git.
-    tokio::task::spawn_blocking(move || {
-        // Erasing waits for a capture already in the store, and a capture that waited for this
-        // re-checks the Registry before it opens the store, so an erased store never comes back as an
-        // orphan. Keeping the history pins its last state, which a Maintenance Pass must not prune under
-        // (ticket 53). The store's lock is taken before the Registry, the one order every holder of both
-        // keeps.
-        let store = state.store_lock(id);
-        let _held = store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Erasing waits for a capture already in the store, and a capture that waited for this re-checks the
+    // Registry before it opens the store, so an erased store never comes back as an orphan. Keeping the
+    // history pins its last state, which a Maintenance Pass must not prune under (ticket 53).
+    under_store_lock(state, id, move |state| {
         let registry = state.registry();
         let pinned = roots::deregister(&registry, id, purge).map_err(root_problem)?;
         if let Some(pinned) = pinned {
@@ -191,9 +217,66 @@ pub(crate) async fn deregister(
             root: id.to_string(),
             purged: purge,
         });
-        configuration::reload_with(&state, &registry);
+        configuration::reload_with(state, &registry);
 
         Ok(StatusCode::NO_CONTENT)
+    })
+    .await
+}
+
+/// Erase a Root's history and keep watching it: what `keepster purge` asks for (ticket 68).
+#[utoipa::path(
+    delete,
+    path = "/v1/roots/{id}/history",
+    operation_id = "erase_root_history",
+    tag = "roots",
+    params(RootAddress),
+    responses(
+        (status = 204, description = "The Root's history is erased. A watched Root stays registered and watched, and its next capture starts the history over, reading every file again; one no longer watched is erased whole."),
+        (status = 404, description = "No such Root is watched, or kept since it was unwatched.", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The history could not be erased.", body = Problem, content_type = "application/problem+json"),
+    ),
+)]
+pub(crate) async fn erase_history(
+    State(state): State<DaemonState>,
+    Path(RootAddress { id }): Path<RootAddress>,
+) -> Result<StatusCode, ProblemResponse> {
+    let id = parse_id(&id)?;
+
+    // Under the store's lock no capture is mid-write, and the next one opens a fresh store.
+    under_store_lock(state, id, move |state| {
+        roots::erase_history(&state.registry(), id).map_err(root_problem)?;
+        tracing::info!(root = %id, "its history is erased");
+        state.publish(Event::HistoryErased {
+            root: id.to_string(),
+        });
+        // A Root still watched captures its tree afresh now rather than at its next change, which would
+        // otherwise replace a version no Snapshot holds. One no longer watched has no runtime to owe it.
+        state.runtimes.reconcile(id);
+
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
+}
+
+/// Run `work` on the Root `id`'s History Store while holding that store's lock, off the async runtime:
+/// the lock may wait for a capture's walk, and the work writes to git. The store's lock is taken before
+/// any Registry lock `work` takes, the one order every holder of both keeps.
+async fn under_store_lock<F>(
+    state: DaemonState,
+    id: RootId,
+    work: F,
+) -> Result<StatusCode, ProblemResponse>
+where
+    F: FnOnce(&DaemonState) -> Result<StatusCode, ProblemResponse> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let store = state.store_lock(id);
+        let _held = store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        work(&state)
     })
     .await
     .map_err(|joined| {

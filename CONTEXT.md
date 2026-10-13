@@ -10,6 +10,11 @@ relying on the directory's own version control.
 A directory registered for history, identified by a surrogate id that survives renaming or moving the directory.
 _Avoid_: project, repository, workspace, folder, directory
 
+**Unwatched Root**:
+A Root that is no longer watched but whose history is kept: nothing captures it any more, its history decays to its
+last state, which is pinned, and its identity alone reaches it. Erasing its history erases it entirely.
+_Avoid_: former Root, orphan, orphaned store, archived Root
+
 **Registry**:
 The daemon's record of every registered Root and its current path.
 _Avoid_: database, index, root list

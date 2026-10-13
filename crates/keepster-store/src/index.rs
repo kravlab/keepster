@@ -1281,7 +1281,7 @@ fn is_damage(error: &rusqlite::Error) -> bool {
 ///
 /// Deleting some of the set but not the others is itself a corruption vector (ticket 03, Phase 1), so
 /// the three are always removed as one, and a file that is already gone is not an error.
-pub(crate) fn discard(path: &Path) -> Result<(), StoreError> {
+pub fn discard(path: &Path) -> Result<(), StoreError> {
     for suffix in ["", "-wal", "-shm"] {
         let mut name = path.as_os_str().to_os_string();
         name.push(suffix);

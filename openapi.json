@@ -1265,6 +1265,51 @@
         }
       }
     },
+    "/v1/roots/{id}/history": {
+      "delete": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Erase a Root's history and keep watching it: what `keepster purge` asks for (ticket 68).",
+        "operationId": "erase_root_history",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The Root's identity, in its canonical form. A prefix or a path names no Root here: resolving\nthose is the client's convenience, done before the request.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The Root's history is erased. A watched Root stays registered and watched, and its next capture starts the history over, reading every file again; one no longer watched is erased whole."
+          },
+          "404": {
+            "description": "No such Root is watched, or kept since it was unwatched.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be erased.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/roots/{id}/maintenance": {
       "post": {
         "tags": [
@@ -2747,6 +2792,40 @@
         }
       }
     },
+    "/v1/unwatched-roots": {
+      "get": {
+        "tags": [
+          "roots"
+        ],
+        "summary": "Every Root no longer watched whose history is kept (ticket 68): the identities that reach those\nhistories, which `GET /v1/roots` does not list.",
+        "operationId": "list_unwatched_roots",
+        "responses": {
+          "200": {
+            "description": "Every Root no longer watched whose history is kept; empty when there is none.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UnwatchedRoot"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Registry could not be read.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/version": {
       "get": {
         "tags": [
@@ -3804,6 +3883,26 @@
               "root": {
                 "type": "string",
                 "description": "The Root that is no longer watched."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A Root's history was erased on request (ticket 68). A client showing its timeline refetches it:\nevery Snapshot it shows is gone. A Root still watched stays watched and captures afresh.",
+            "required": [
+              "root",
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "history.erased"
+                ]
+              },
+              "root": {
+                "type": "string",
+                "description": "The Root."
               }
             }
           },
@@ -6774,6 +6873,26 @@
           "root": {
             "type": "string",
             "description": "The Root, by identity."
+          }
+        }
+      },
+      "UnwatchedRoot": {
+        "type": "object",
+        "description": "A Root no longer watched whose history is kept (ticket 53), as `GET /v1/unwatched-roots` lists it.\n\nIts identity is all that reaches its history, so the listing is how a client learns it — to pin in\nthat history, or to erase it (ticket 68).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The Root's identity, in its canonical form."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where its directory was when it was unwatched; absent when its record cannot be read."
           }
         }
       },

@@ -177,6 +177,26 @@ async fn registering_moving_and_unwatching_a_root_are_announced() {
 }
 
 #[tokio::test]
+async fn erasing_a_history_is_announced() {
+    let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
+    let project = daemon.scratch("project");
+    std::fs::write(project.join("notes.md"), "kept until erased").expect("a file");
+    let root = register(&daemon, &project).await;
+    take(&daemon, &root).await;
+    let mut stream = daemon.events(None).await;
+
+    let erased = daemon.delete(&format!("/v1/roots/{root}/history")).await;
+    assert_eq!(erased.status, 204);
+
+    // A client showing the timeline refetches it: every Snapshot it shows is gone.
+    let (_, announced) = next_named(&mut stream, "history.erased").await;
+    assert_eq!(
+        announced,
+        serde_json::json!({ "event": "history.erased", "root": root })
+    );
+}
+
+#[tokio::test]
 async fn a_root_whose_state_changes_is_announced_with_its_new_state() {
     let daemon = Harness::start_with_global_config(keepster_testkit::MANUAL).await;
     let project = daemon.scratch("project");

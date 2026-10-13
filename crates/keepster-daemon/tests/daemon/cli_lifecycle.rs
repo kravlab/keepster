@@ -64,6 +64,16 @@ impl Sandbox {
         }
     }
 
+    /// Where a daemon run in this sandbox keeps the Registry and every History Store.
+    pub(crate) fn store_base(&self) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            self.base()
+                .join("home/Library/Application Support/Keepster")
+        } else {
+            self.base().join("data/keepster")
+        }
+    }
+
     /// Where the systemd user unit of this sandbox's user goes.
     #[cfg(target_os = "linux")]
     pub(crate) fn unit_dir(&self) -> PathBuf {

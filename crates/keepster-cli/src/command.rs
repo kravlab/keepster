@@ -36,8 +36,11 @@ pub enum Command {
     /// List the Watched Roots.
     Roots,
 
-    /// Stop watching a directory. Its history is kept unless a purge is asked for.
+    /// Stop watching a directory, or every one. Its history is kept unless a purge is asked for.
     Unwatch(UnwatchArgs),
+
+    /// Erase a Root's history, or every Root's, and keep watching: the next capture starts it over.
+    Purge(PurgeArgs),
 
     /// Record that a Watched Root's directory has moved.
     Move(MoveArgs),
@@ -102,8 +105,16 @@ pub enum Command {
     /// Open the web UI in a browser, signed in — or, with `token rotate`, end every browser session.
     Ui(UiArgs),
 
-    /// Install, remove or inspect the daemon's autostart: a systemd user unit, a LaunchAgent, or a
-    /// Scheduled Task at logon. Needs no administrator rights, and never touches history.
+    /// Register the daemon with this platform's service manager — a systemd user unit, a LaunchAgent,
+    /// or a Scheduled Task at logon — start it, and check that it answers; and start the tray at every
+    /// graphical login. Needs no administrator rights.
+    Install(InstallArgs),
+
+    /// Stop the daemon and remove what `keepster install` created. History, Roots and configuration are
+    /// left as they are unless a flag below asks, with `--yes`, for them to be erased.
+    Uninstall(UninstallArgs),
+
+    /// Start, stop or inspect the daemon through its service manager.
     #[command(subcommand)]
     Service(ServiceCommand),
 
@@ -164,14 +175,6 @@ pub struct MuteArgs {
 /// The subcommands of `keepster service`.
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommand {
-    /// Register the daemon with this platform's service manager, start it, and check that it answers;
-    /// and start the tray at every graphical login.
-    Install(ServiceInstallArgs),
-
-    /// Stop the daemon and remove its autostart and the tray's. History, Roots and configuration are
-    /// left as they are.
-    Uninstall,
-
     /// Ask the service manager to start the daemon.
     Start,
 
@@ -188,9 +191,9 @@ pub enum ServiceCommand {
     Status,
 }
 
-/// Options of `keepster service install`.
+/// Options of `keepster install`.
 #[derive(Debug, Args)]
-pub struct ServiceInstallArgs {
+pub struct InstallArgs {
     /// Declare that this machine has no web UI: when this creates the global configuration, it writes
     /// the loopback listener off. An existing configuration is never rewritten.
     #[arg(long)]
@@ -200,6 +203,30 @@ pub struct ServiceInstallArgs {
     /// coverage stops.
     #[arg(long)]
     pub no_tray: bool,
+}
+
+/// Options of `keepster uninstall`. No install or uninstall path erases anything on its own (ticket 68):
+/// each flag selects what to erase, and `--yes` consents to it separately.
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Also erase every Root's captured history. Watched Roots stay registered and start over; a Root
+    /// no longer watched, which has nothing but its history, is erased whole.
+    #[arg(long)]
+    pub history: bool,
+
+    /// Also stop watching every Root. Each one's history is kept, its last state pinned, as `unwatch`
+    /// leaves it.
+    #[arg(long)]
+    pub roots: bool,
+
+    /// Also erase everything Keepster keeps for this user: every Root and its history, the
+    /// configuration, the web UI's preferences and the logs.
+    #[arg(long, conflicts_with_all = ["history", "roots"])]
+    pub purge: bool,
+
+    /// Consent to an irreversible operation. Kept separate from selecting one.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Options of `keepster ui`.
@@ -678,14 +705,36 @@ pub struct SnapshotArgs {
 /// Options of `keepster unwatch`.
 #[derive(Debug, Args)]
 pub struct UnwatchArgs {
-    /// Which Root, as a full identity, an unambiguous prefix of one, or a path. Defaults to the Root
-    /// holding the working directory.
+    /// Which Root, as a full identity — with `--purge`, of a Root no longer watched too — an
+    /// unambiguous prefix of one, or a path. Defaults to the Root holding the working directory.
     #[arg(short = 'r', long)]
     pub root: Option<String>,
+
+    /// Stop watching every Root instead. With `--purge`, every Root no longer watched is erased too.
+    #[arg(long, conflicts_with = "root")]
+    pub all: bool,
 
     /// Also erase the Root's captured history.
     #[arg(long)]
     pub purge: bool,
+
+    /// Consent to an irreversible operation. Kept separate from selecting one.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Options of `keepster purge` (ticket 68).
+#[derive(Debug, Args)]
+pub struct PurgeArgs {
+    /// Which Root, as a full identity — of a Root no longer watched too, which is erased whole — an
+    /// unambiguous prefix of one, or a path. Defaults to the Root holding the working directory.
+    #[arg(short = 'r', long)]
+    pub root: Option<String>,
+
+    /// Erase every Root's history instead. A Root no longer watched, which has nothing but its
+    /// history, is erased whole.
+    #[arg(long, conflicts_with = "root")]
+    pub all: bool,
 
     /// Consent to an irreversible operation. Kept separate from selecting one.
     #[arg(long)]

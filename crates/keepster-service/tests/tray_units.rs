@@ -3,10 +3,11 @@
 //! them with the real session is a change to the machine, which no test makes.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use keepster_service::autostart::tray::{
     aqua_session, beside, desktop_entry, graphical_session_in, launch_agent, run_command,
+    shortcut_locations,
 };
 
 #[test]
@@ -113,4 +114,41 @@ fn a_macos_session_is_graphical_when_launchd_manages_it_as_aqua() {
     assert!(!aqua_session("Background\n"));
     assert!(!aqua_session("StandardIO"));
     assert!(!aqua_session(""));
+}
+
+#[test]
+fn the_shortcut_is_looked_for_in_the_users_programs_then_in_every_users() {
+    // Paths a Windows machine would name, spelled so that their components compare on any platform.
+    let locations = shortcut_locations(|name| match name {
+        "APPDATA" => Some(OsString::from("/Users/u/AppData/Roaming")),
+        "ProgramData" => Some(OsString::from("/ProgramData")),
+        _ => None,
+    });
+
+    assert_eq!(
+        locations,
+        [
+            PathBuf::from(
+                "/Users/u/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Keepster.lnk"
+            ),
+            PathBuf::from("/ProgramData/Microsoft/Windows/Start Menu/Programs/Keepster.lnk"),
+        ]
+    );
+}
+
+#[test]
+fn a_programs_folder_the_environment_does_not_name_is_not_looked_in() {
+    let locations =
+        shortcut_locations(|name| (name == "ProgramData").then(|| OsString::from("/ProgramData")));
+
+    assert_eq!(
+        locations,
+        [PathBuf::from(
+            "/ProgramData/Microsoft/Windows/Start Menu/Programs/Keepster.lnk"
+        )]
+    );
+    assert!(
+        shortcut_locations(|_| Some(OsString::new())).is_empty(),
+        "an empty value names nothing"
+    );
 }

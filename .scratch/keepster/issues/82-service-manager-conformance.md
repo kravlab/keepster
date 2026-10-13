@@ -22,4 +22,4 @@ to decide.
       unsupervised and need another mechanism (a watchdog task, or a repetition trigger with `IgnoreNew`)
 - [ ] Windows: whether the console window the task's process opens at logon is acceptable until a windowless
       entry point exists
-- [ ] `keepster service uninstall` on each leaves no unit, no running daemon, and every History Store untouched
+- [ ] `keepster uninstall` on each leaves no unit, no running daemon, and every History Store untouched
