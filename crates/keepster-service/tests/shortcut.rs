@@ -57,6 +57,13 @@ fn read_back(link: &Path) -> (String, String) {
     }
 }
 
+/// The file `path` names, in one spelling: the shell answers with the long form of a path that the
+/// temporary directory may give in its 8.3 short form (`RUNNER~1` for `runneradmin`), so two spellings
+/// of one file are compared as the file they name.
+fn file(path: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
 #[test]
 fn the_shortcut_starts_the_tray_and_carries_its_app_user_model_id() {
     let directory = tempfile::tempdir().expect("a directory");
@@ -71,7 +78,7 @@ fn the_shortcut_starts_the_tray_and_carries_its_app_user_model_id() {
         app_id, "Keepster.Tray",
         "the identity the tray shows toasts under"
     );
-    assert_eq!(Path::new(&target), tray);
+    assert_eq!(file(Path::new(&target)), file(&tray));
 }
 
 #[test]
@@ -87,5 +94,5 @@ fn writing_the_shortcut_again_replaces_it() {
     create_shortcut(&link, &old).expect("the first shortcut");
     create_shortcut(&link, &new).expect("the second shortcut");
 
-    assert_eq!(Path::new(&read_back(&link).1), new);
+    assert_eq!(file(Path::new(&read_back(&link).1)), file(&new));
 }
