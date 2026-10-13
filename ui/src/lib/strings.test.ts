@@ -61,3 +61,36 @@ describe('the Restore dialog’s words', () => {
     )
   })
 })
+
+describe('the words of a search', () => {
+  it('says how far a content search has got', () => {
+    expect(strings.search.progress(2, 5)).toBe('Searched 2 of 5 versions')
+  })
+
+  it('counts the matches not shown', () => {
+    expect(strings.search.unshown(3)).toBe('3 more matches not shown: narrow the search.')
+  })
+
+  it('sums up what a content search looked at', () => {
+    expect(strings.search.summary(4, 1, 2)).toBe('Searched 4 versions; skipped 1 binary, 2 without content.')
+  })
+
+  it('places a match by its line and the moment its version was first captured', () => {
+    const since = new Date('2026-10-12T10:00:00Z')
+
+    expect(strings.search.match(12, since)).toBe(`line 12, since ${strings.at(since)}`)
+  })
+
+  it('says how often a path changed and whether it is gone, in one phrase', () => {
+    expect(strings.search.pathDetail(1, true)).toBe('changed once')
+    expect(strings.search.pathDetail(3, false)).toBe('changed 3 times, gone now')
+  })
+
+  it('says how far one Root of a content search has got', () => {
+    expect(strings.search.rootProgress('/home/u/app', 2, 5)).toBe('/home/u/app: 2 of 5 versions')
+  })
+
+  it('names a Root the search could not read', () => {
+    expect(strings.search.notSearched('/home/u/app', 'unreadable')).toBe('/home/u/app was not searched: unreadable')
+  })
+})

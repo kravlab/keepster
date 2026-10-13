@@ -7,11 +7,12 @@
  */
 import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView, highlightSpecialChars, lineNumbers } from '@codemirror/view'
-import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { syntaxHighlighting } from '@codemirror/language'
 import { MergeView } from '@codemirror/merge'
 import { daemonChanges } from '../lib/hunks'
 import type { DiffHunk } from '../lib/wire'
 import { lookupLanguage } from './languages'
+import { editorTheme, highlightStyle } from './palette'
 
 /**
  * CodeMirror's own special characters without `\r`. Documents are split on `\n` only, so a CRLF file's
@@ -25,11 +26,11 @@ const SPECIAL_CHARS =
 const base: Extension = [
   lineNumbers(),
   highlightSpecialChars({ specialChars: SPECIAL_CHARS }),
-  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  syntaxHighlighting(highlightStyle),
   EditorState.lineSeparator.of('\n'),
   EditorState.readOnly.of(true),
   EditorView.editable.of(false),
-  EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
+  editorTheme,
 ]
 
 /** What the pane asks for, whichever view it is. */

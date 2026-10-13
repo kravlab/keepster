@@ -87,6 +87,8 @@ error_codes! {
     LogLevelInvalid = "log_level_invalid": "A raise of the log level names a level this build does not know, or no duration, or one shorter than a second or longer than seven days.",
     TokenFailed = "token_failed": "A token or a bootstrap code could not be minted or written; the token in force is unchanged.",
     ListenerUnavailable = "listener_unavailable": "The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`.",
+    PreferenceInvalid = "preference_invalid": "A preference names a value this build does not take: a `theme` other than `system`, `light` or `dark`, or a `syntax_line_limit` outside 1 to 10 000 000; nothing was stored.",
+    PreferencesFailed = "preferences_failed": "The preferences could not be written; the ones stored before are unchanged.",
 }
 
 impl ErrorCode {

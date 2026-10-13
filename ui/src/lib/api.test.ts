@@ -2,14 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   SessionEnded,
+  UnexpectedAnswer,
   fileContent,
   fileDiff,
   entryAt,
   listRoots,
   newestTouching,
   previousSnapshot,
+  readPreferences,
   restore,
+  searchContent,
+  searchPaths,
   timeline,
+  writePreferences,
 } from './api'
 
 /** Answers every request with `response`, recording the URLs asked for. */
@@ -189,6 +194,120 @@ describe('the /v1 client', () => {
       )
 
       await expect(restore('r', request)).rejects.toMatchObject({ status: 409, code: 'root_unavailable' })
+    })
+  })
+
+  describe('preferences', () => {
+    const chosen = { theme: 'dark', syntax_line_limit: 5000, wrap_lines: true }
+
+    it('reads them', async () => {
+      const asked = answer(() => json(chosen))
+
+      await expect(readPreferences()).resolves.toEqual(chosen)
+      expect(asked).toEqual(['/v1/preferences'])
+    })
+
+    it('replaces them whole with a PUT and answers with what the daemon stored', async () => {
+      const sent: { url: string; init?: RequestInit }[] = []
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push({ url, init })
+        return Promise.resolve(json(chosen))
+      })
+
+      await expect(writePreferences(chosen)).resolves.toEqual(chosen)
+      expect(sent).toEqual([
+        {
+          url: '/v1/preferences',
+          init: { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chosen) },
+        },
+      ])
+    })
+
+    it("reports a refused value with the daemon's explanation", async () => {
+      answer(() =>
+        json(
+          { title: 'Bad Request', status: 400, detail: 'it takes 1 to 10000000', code: 'preference_invalid' },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(writePreferences({ ...chosen, syntax_line_limit: 0 })).rejects.toMatchObject({
+        status: 400,
+        code: 'preference_invalid',
+        detail: 'it takes 1 to 10000000',
+      })
+    })
+  })
+
+  describe('search', () => {
+    const ndjson = (...lines: string[]) =>
+      new Response(lines.map((l) => `${l}\n`).join(''), { headers: { 'content-type': 'application/x-ndjson' } })
+
+    it('asks for the paths a fragment finds in every Root', async () => {
+      const found = { hits: [], truncated: false }
+      const asked = answer(() => json(found))
+
+      await expect(searchPaths('src/a b')).resolves.toEqual(found)
+      expect(asked).toEqual(['/v1/search/paths?q=src%2Fa+b'])
+    })
+
+    it('streams a content search of the Roots named, record by record', async () => {
+      const asked = answer(() => ndjson('{"type":"plan","roots":[]}', '{"type":"summary","versions_scanned":0}'))
+
+      const records = []
+      for await (const record of searchContent('needle', { roots: ['r1', 'r2'] })) records.push(record.type)
+
+      expect(records).toEqual(['plan', 'summary'])
+      expect(asked).toEqual(['/v1/search/content?q=needle&roots=r1%2Cr2'])
+    })
+
+    it('asks for every Root when told to', async () => {
+      const asked = answer(() => ndjson('{"type":"summary","versions_scanned":0}'))
+
+      for await (const record of searchContent('needle', 'all')) void record
+
+      expect(asked).toEqual(['/v1/search/content?q=needle&all=true'])
+    })
+
+    it("reports a refused search with the daemon's explanation", async () => {
+      answer(() =>
+        json(
+          { title: 'Bad Request', status: 400, detail: 'empty', code: 'query_invalid' },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      const reading = async () => {
+        for await (const record of searchContent('', 'all')) void record
+      }
+      await expect(reading()).rejects.toMatchObject({ status: 400, code: 'query_invalid' })
+    })
+
+    it('reports a line that is not a record as an answer it cannot read', async () => {
+      answer(() => ndjson('{"type":"plan","roots":[]}', 'garbage'))
+
+      const reading = async () => {
+        for await (const record of searchContent('x', 'all')) void record
+      }
+      await expect(reading()).rejects.toBeInstanceOf(UnexpectedAnswer)
+    })
+
+    it('hands the abort signal to both requests', async () => {
+      const signals: (AbortSignal | null | undefined)[] = []
+      vi.stubGlobal('fetch', (_: string, init?: RequestInit) => {
+        signals.push(init?.signal)
+        return Promise.resolve(
+          _.includes('content') ? ndjson('{"type":"summary"}') : json({ hits: [], truncated: false }),
+        )
+      })
+      const controller = new AbortController()
+
+      await searchPaths('x', controller.signal)
+      for await (const record of searchContent('x', 'all', controller.signal)) void record
+
+      expect(signals).toEqual([controller.signal, controller.signal])
     })
   })
 })

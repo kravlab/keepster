@@ -192,6 +192,27 @@ pub struct UiBootstrap {
     pub url: String,
 }
 
+/// The web UI's preferences: what `GET /v1/preferences` answers and `PUT /v1/preferences` replaces
+/// whole (ticket 66, ticket 16).
+///
+/// Every key is required in a `PUT` today. A key added inside `/v1` will be optional there, an absent
+/// one keeping the value stored, so a client older than the key cannot erase it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Preferences {
+    /// The palette: `system`, which follows the operating system's light or dark setting, `light` or
+    /// `dark`. A string rather than an enum, so that a palette added inside `/v1` is not a breaking
+    /// change to a client that reads this.
+    pub theme: String,
+    /// The longest line, in characters, a diff is still syntax-highlighted with: 1 to 10 000 000.
+    // Signed, so that a negative number reaches the range check and is refused as `preference_invalid`
+    // rather than as JSON of the wrong shape.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 10_000_000))]
+    pub syntax_line_limit: i64,
+    /// Whether the diff wraps long lines rather than scrolling sideways.
+    pub wrap_lines: bool,
+}
+
 /// The external `git` store maintenance runs with (ticket 52). Capture never needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

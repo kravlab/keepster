@@ -3,6 +3,7 @@
  * components is what lets one be added without touching them.
  */
 import { TOO_LARGE_BYTES, type Card } from './files'
+import type { Theme } from './preferences'
 import type { ChangeShape } from './summary'
 import type { Confirmation, FileChange, ModesChoice, NameCaseChoice, RestoreOutcome } from './wire'
 
@@ -44,6 +45,12 @@ export const strings = {
 
   rootLabel: 'Root',
   noRoots: 'No Roots are registered.',
+
+  themeLabel: 'Theme',
+  /** The palettes, by the daemon's name for each. */
+  themes: { system: 'System', light: 'Light', dark: 'Dark' } satisfies Record<Theme, string>,
+  /** Before the reason the preferences could not be read, or a change to them was not stored and undone. */
+  preferencesFailed: { read: 'Preferences could not be read:', save: 'Not saved:' },
 
   modesLabel: 'View',
   /** The view modes' tabs: the question each answers is the user's way in, not a screen's name. */
@@ -113,8 +120,12 @@ export const strings = {
   selectFile: 'Select a file to see what changed.',
   wrapLines: 'Wrap lines',
   renamedFrom: (path: string) => `renamed from ${path}`,
-  highlightOff: (limit: number) =>
-    `Syntax highlighting is off: a line is longer than ${limit.toLocaleString()} characters.`,
+  /** Around the field holding the limit, which the reader can raise right there. */
+  highlightOff: {
+    before: 'Syntax highlighting is off: a line is longer than',
+    after: 'characters.',
+    field: 'Longest line still highlighted, in characters',
+  },
 
   /** The text of the card shown in place of the editor. */
   cards: {
@@ -197,6 +208,43 @@ export const strings = {
     done: 'Done.',
     undo: (moment: Date, id: string) => `To undo it, restore from the Safety Snapshot of ${when(moment)} (${id}).`,
     noSafety: 'Nothing was written, so no Safety Snapshot was taken.',
+  },
+
+  /** The search field in the header and the overlay it opens (ticket 66). */
+  search: {
+    field: 'Search',
+    placeholder: 'Search…',
+    title: 'Search',
+    query: 'Search for',
+    content: 'Content',
+    everyRoot: 'Every Root',
+    results: 'Results',
+    cancel: 'Cancel',
+    close: 'Close',
+    searching: 'Searching…',
+    nothing: 'Nothing found.',
+    cancelled: 'Search cancelled.',
+    truncated: 'More paths match than are shown: narrow the search.',
+    /** A Root the search could not read, named by its directory. */
+    notSearched: (root: string, detail: string) => `${root} was not searched: ${detail}`,
+    progress: (done: number, total: number) =>
+      `Searched ${done.toLocaleString()} of ${total.toLocaleString()} versions`,
+    unshown: (count: number) => `${count.toLocaleString()} more matches not shown: narrow the search.`,
+    summary: (scanned: number, binaries: number, withheld: number) =>
+      `Searched ${scanned.toLocaleString()} versions; skipped ${binaries.toLocaleString()} binary, ` +
+      `${withheld.toLocaleString()} without content.`,
+    /** How often a path changed, and whether the newest Snapshot no longer holds it. */
+    pathDetail: (count: number, exists: boolean) =>
+      `${count === 1 ? 'changed once' : `changed ${count.toLocaleString()} times`}${exists ? '' : ', gone now'}`,
+    /** One Root's part of a content search over several, named by its directory. */
+    rootProgress: (root: string, done: number, total: number) =>
+      `${root}: ${done.toLocaleString()} of ${total.toLocaleString()} versions`,
+    /** Where a match is: its line, and when the version holding it was first captured. */
+    match: (line: number, since: Date) => `line ${line.toLocaleString()}, since ${when(since)}`,
+    /** Said aloud when picking a result switched the Root picker. */
+    switchedRoot: (root: string) => `Switched to ${root}`,
+    /** Said when a picked result is in a Root no longer registered, so there is nowhere to go. */
+    rootGone: 'That result is in a Root that is no longer registered.',
   },
 
   /** The mark and the accessible name of each kind of change in the file list and the tree. */

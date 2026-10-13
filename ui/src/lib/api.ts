@@ -6,10 +6,13 @@
  * `keepster ui` gets back in. Every other failure carries the daemon's own explanation (its problem body).
  */
 import type {
+  ContentRecord,
   Diff,
   DiffFile,
   Entries,
   Entry,
+  PathSearch,
+  Preferences,
   Problem,
   RestoreRequest,
   Restored,
@@ -18,6 +21,7 @@ import type {
   Timeline,
 } from './wire'
 import { momentOf } from './ids'
+import { ndjsonRecords } from './ndjson'
 import { dirName } from './paths'
 
 /** How many Snapshots one timeline page asks for: the daemon's default page size. */
@@ -68,16 +72,21 @@ function failure(response: Response, problem: Partial<Problem>): Error {
   return new ApiError(response.status, problem.detail, problem.code)
 }
 
-/** GETs `target`, turning a failure into `SessionEnded` or `ApiError`. */
-async function get(target: string): Promise<Response> {
-  const response = await fetch(target)
+/** GETs `target`, turning a failure into `SessionEnded` or `ApiError`; `signal` aborts the request. */
+async function get(target: string, signal?: AbortSignal): Promise<Response> {
+  const response = await fetch(target, signal ? { signal } : undefined)
   if (response.ok) return response
   throw failure(response, await problemOf(response))
 }
 
 /** GETs `target` and parses its JSON body as `T`, which the caller names from the endpoint's contract. */
-async function getJson<T>(target: string): Promise<T> {
-  return (await get(target)).json() as Promise<T>
+async function getJson<T>(target: string, signal?: AbortSignal): Promise<T> {
+  return (await get(target, signal)).json() as Promise<T>
+}
+
+/** Sends `body` as JSON to `target` with `method`, and hands back the answer whatever its status. */
+function sendJson(method: 'POST' | 'PUT', target: string, body: unknown): Promise<Response> {
+  return fetch(target, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 }
 
 /** Every registered Root. */
@@ -162,15 +171,52 @@ export type RestoreAnswer = { kind: 'done'; restored: Restored } | { kind: 'bloc
 
 /** Puts a Snapshot's versions back over the Working Tree, or, with `dry_run`, says what that would do. */
 export async function restore(root: string, request: RestoreRequest): Promise<RestoreAnswer> {
-  const response = await fetch(url(['roots', root, 'restore']), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(request),
-  })
+  const response = await sendJson('POST', url(['roots', root, 'restore']), request)
   if (response.ok) return { kind: 'done', restored: (await response.json()) as Restored }
   const problem = await problemOf(response)
   if (response.status === 400 && problem.code === 'confirmation_required' && problem.paths) {
     return { kind: 'blocked', paths: problem.paths }
   }
   throw failure(response, problem)
+}
+
+/** The web UI's preferences, as the daemon keeps them. */
+export function readPreferences(): Promise<Preferences> {
+  return getJson(url(['preferences']))
+}
+
+/**
+ * Replaces the web UI's preferences whole, and answers with what the daemon stored. A value it does not
+ * take is refused as an `ApiError` with code `preference_invalid` and its explanation.
+ */
+export async function writePreferences(preferences: Preferences): Promise<Preferences> {
+  const response = await sendJson('PUT', url(['preferences']), preferences)
+  if (response.ok) return (await response.json()) as Preferences
+  throw failure(response, await problemOf(response))
+}
+
+/** Every path any Snapshot of any Root changed that `q` finds, a fragment matched anywhere in the path. */
+export function searchPaths(q: string, signal?: AbortSignal): Promise<PathSearch> {
+  return getJson(url(['search', 'paths'], { q }), signal)
+}
+
+/**
+ * The records of a content search for `q` in the Roots named, or in every Root, as the daemon finds them.
+ * Leaving the loop early, or aborting `signal`, closes the connection, which stops the daemon's walk.
+ */
+export async function* searchContent(
+  q: string,
+  scope: { roots: readonly string[] } | 'all',
+  signal?: AbortSignal,
+): AsyncGenerator<ContentRecord> {
+  const query = scope === 'all' ? { q, all: 'true' } : { q, roots: scope.roots.join(',') }
+  const response = await get(url(['search', 'content'], query), signal)
+  if (!response.body) throw new UnexpectedAnswer('the content search answered with no body')
+  try {
+    for await (const record of ndjsonRecords(response.body, signal)) yield record as ContentRecord
+  } catch (e) {
+    if (e instanceof SyntaxError)
+      throw new UnexpectedAnswer(`the content search sent a line that is not JSON: ${e.message}`)
+    throw e
+  }
 }

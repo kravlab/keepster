@@ -12,6 +12,7 @@ mod links;
 mod maintenance;
 mod modes;
 mod pins;
+mod preferences;
 mod preview;
 mod reading;
 mod reconciliation;

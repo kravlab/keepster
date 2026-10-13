@@ -114,6 +114,7 @@ fn every_route_the_api_serves_is_described() {
             "GET /v1/fs",
             "GET /v1/jobs/{id}",
             "GET /v1/openapi.json",
+            "GET /v1/preferences",
             "GET /v1/preview",
             "GET /v1/roots",
             "GET /v1/roots/{id}",
@@ -141,6 +142,7 @@ fn every_route_the_api_serves_is_described() {
             "POST /v1/ui/bootstrap",
             "POST /v1/ui/token/rotate",
             "PUT /v1/log/level",
+            "PUT /v1/preferences",
             "PUT /v1/roots/{id}/pins/{snapshot}",
         ]
     );
@@ -255,6 +257,10 @@ fn every_operation_documents_its_failures_as_problems() {
         }
         if name == "DELETE /v1/log/level" {
             // Ending a raise is answered from memory alone, and ending none is no error.
+            continue;
+        }
+        if name == "GET /v1/preferences" {
+            // A file that cannot be read is served as the defaults, so reading the preferences never fails.
             continue;
         }
         if name == "GET /v1/events" {
@@ -376,6 +382,7 @@ fn every_operation_has_its_own_stable_name() {
             "get_diagnostics",
             "get_job",
             "get_openapi_document",
+            "get_preferences",
             "get_root",
             "get_root_config",
             "get_status",
@@ -393,6 +400,7 @@ fn every_operation_has_its_own_stable_name() {
             "read_content",
             "reconcile_root",
             "register_root",
+            "replace_preferences",
             "restore_root",
             "rotate_ui_token",
             "search_content",

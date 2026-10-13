@@ -5,6 +5,9 @@
    * wrap toggle (off by default, tickets 09 and 15) and Restore, whose dialog is the same in every view
    * mode. A card stands in for the editor when there is no text to compare. The editor module is imported
    * only when a file is shown, keeping it out of the eager bundle.
+   *
+   * Wrapping and the long-line limit are the daemon's preferences (ticket 66): the toggle and the limit's
+   * field in the highlighting note write them, and every pane follows.
    */
   import { untrack } from 'svelte'
   import RestoreDialog from './RestoreDialog.svelte'
@@ -12,8 +15,10 @@
   import { fileContent, fileDiff } from '../lib/api'
   import { failureText } from '../lib/failures'
   import type { ShownFile } from '../lib/files'
-  import { SYNTAX_LINE_LIMIT, hasLongLine } from '../lib/lines'
+  import { hasLongLine } from '../lib/lines'
   import { baseName } from '../lib/paths'
+  import { SYNTAX_LINE_LIMITS } from '../lib/preferences'
+  import { usePreferences } from '../lib/preferences.svelte'
   import { strings } from '../lib/strings'
 
   let {
@@ -31,8 +36,9 @@
     onSessionEnded: () => void
   } = $props()
 
+  const preferences = usePreferences()
+
   let host = $state<HTMLDivElement>()
-  let wrap = $state(false)
   let status = $state<'idle' | 'loading' | 'ready' | 'error'>('idle')
   let error = $state('')
   let plain = $state(false)
@@ -52,6 +58,8 @@
     const target = file && !file.card ? file : null
     const older = from
     const newer = to
+    /* Tracked: a changed limit decides afresh whether the file is highlighted. */
+    const limit = preferences.current.syntax_line_limit
     if (!el || !target) {
       status = 'idle'
       return
@@ -63,11 +71,11 @@
     void (async () => {
       try {
         const editor = import('../editor/cm6')
-        const wrapped = untrack(() => wrap)
+        const wrapped = untrack(() => preferences.current.wrap_lines)
         let mount: (el: HTMLElement) => Promise<Shown>
         if (older === null || target.change === 'unchanged') {
           const doc = await fileContent(rootId, newer, target.path)
-          plain = hasLongLine(doc)
+          plain = hasLongLine(doc, limit)
           const { showFile } = await editor
           mount = (el) => showFile({ el, path: target.path, doc, wrap: wrapped, highlight: !plain })
         } else {
@@ -76,7 +84,7 @@
             target.change === 'added' ? '' : fileContent(rootId, older, target.oldPath ?? target.path),
             target.change === 'deleted' ? '' : fileContent(rootId, newer, target.path),
           ])
-          plain = hasLongLine(a) || hasLongLine(b)
+          plain = hasLongLine(a, limit) || hasLongLine(b, limit)
           const { showDiff } = await editor
           mount = (el) => showDiff({ el, path: target.path, a, b, hunks: diff.hunks, wrap: wrapped, highlight: !plain })
         }
@@ -105,7 +113,7 @@
 
   /* Wrapping is switched in place: remounting would lose the reader's scroll position. */
   $effect(() => {
-    const on = wrap
+    const on = preferences.current.wrap_lines
     untrack(() => shown?.setWrap(on))
   })
 </script>
@@ -121,7 +129,11 @@
       <button onclick={() => (restoring = true)}>{strings.restore.open}</button>
     {/if}
     <label class="wrap">
-      <input type="checkbox" bind:checked={wrap} />
+      <input
+        type="checkbox"
+        checked={preferences.current.wrap_lines}
+        onchange={(e) => void preferences.change({ wrap_lines: e.currentTarget.checked })}
+      />
       {strings.wrapLines}
     </label>
   </div>
@@ -130,7 +142,19 @@
     <p class="note muted">{strings.unchangedHere(baseName(file.path))}</p>
   {/if}
   {#if status === 'ready' && plain}
-    <p class="note">{strings.highlightOff(SYNTAX_LINE_LIMIT)}</p>
+    <p class="note">
+      {strings.highlightOff.before}
+      <input
+        class="limit"
+        type="number"
+        min={SYNTAX_LINE_LIMITS.min}
+        max={SYNTAX_LINE_LIMITS.max}
+        aria-label={strings.highlightOff.field}
+        value={preferences.current.syntax_line_limit}
+        onchange={(e) => void preferences.change({ syntax_line_limit: e.currentTarget.valueAsNumber })}
+      />
+      {strings.highlightOff.after}
+    </p>
   {/if}
 
   {#if !file}
@@ -190,6 +214,15 @@
     padding: 4px 10px;
     border-bottom: 1px solid var(--line);
     color: var(--warn);
+  }
+  .limit {
+    width: 9ch;
+    font: inherit;
+    color: inherit;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 4px;
   }
   .host {
     flex: 1;

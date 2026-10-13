@@ -261,7 +261,8 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::DestInStore
         | ErrorCode::QueryInvalid
         | ErrorCode::SearchInvalid
-        | ErrorCode::LogLevelInvalid => exit::USAGE,
+        | ErrorCode::LogLevelInvalid
+        | ErrorCode::PreferenceInvalid => exit::USAGE,
         // The CLI builds every body and format from the contract types, so a refused one is this build's
         // fault and nothing the person typed.
         ErrorCode::BodyInvalid
@@ -276,6 +277,7 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
         | ErrorCode::DestUnwritable
         | ErrorCode::DirectoryUnreadable
         | ErrorCode::TokenFailed
+        | ErrorCode::PreferencesFailed
         // Answered by the loopback listener alone, which the CLI never speaks to.
         | ErrorCode::Unauthorized
         | ErrorCode::HostRefused

@@ -11,6 +11,11 @@ export function keptSelection(list: readonly { id: string }[], selected: string 
   return list[0]?.id ?? null
 }
 
+/** The History screen's view modes, in the order its tabs show them; the first is the default. */
+export const MODES = ['rail', 'files', 'feed'] as const
+/** One of [`MODES`]. */
+export type Mode = (typeof MODES)[number]
+
 /** What the History screen carries across a switch of view modes: a file and a Snapshot, either unset. */
 export interface Selection {
   path: string | null

@@ -28,6 +28,7 @@ mod ndjson;
 mod openapi;
 mod pins;
 mod places;
+mod preferences;
 mod preview;
 mod problem;
 mod restore;
@@ -483,6 +484,8 @@ struct DaemonState {
     service: Arc<autostart::Readings>,
     /// The level the log is written at, and a raise while it lasts (ticket 62).
     log: Arc<logging::LogLevels>,
+    /// The web UI's preferences file; the lock makes writes one at a time (ticket 66).
+    preferences: Arc<Mutex<keepster_store::PreferencesStore>>,
 }
 
 impl DaemonState {
@@ -515,6 +518,9 @@ impl DaemonState {
             volumes,
             outcomes: Arc::new(volumes::Outcomes::default()),
             previewing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            preferences: Arc::new(Mutex::new(keepster_store::PreferencesStore::at(
+                &store_base,
+            ))),
             store_base,
             listener: Arc::new(listener),
             service: Arc::new(autostart::Readings::default()),
@@ -710,6 +716,7 @@ fn on_both_listeners() -> OpenApiRouter<DaemonState> {
         .routes(routes!(search::paths))
         .routes(routes!(search::content))
         .routes(routes!(explain::explain))
+        .routes(routes!(preferences::show, preferences::replace))
         .routes(routes!(preview::preview))
         .routes(routes!(configuration::show))
         .routes(routes!(logging::raise, logging::end))

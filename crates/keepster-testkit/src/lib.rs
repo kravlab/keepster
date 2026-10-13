@@ -253,7 +253,13 @@ impl Harness {
     /// Tests use it to assert what deregistering does and does not erase — the one question where the
     /// answer is a file on disk rather than an answer from the API.
     pub fn store_dir(&self, root_id: &str) -> PathBuf {
-        self.base.join("store").join(root_id)
+        self.store_base().join(root_id)
+    }
+
+    /// The directory that holds every Root's directory, and beside them the daemon's own files such as
+    /// the UI preferences.
+    pub fn store_base(&self) -> PathBuf {
+        self.base.join("store")
     }
 
     /// The global configuration file this daemon reads, which need not exist.

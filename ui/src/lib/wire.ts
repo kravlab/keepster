@@ -187,3 +187,92 @@ export interface Problem {
   /** With `confirmation_required`: every file of the Restore and what it needs. */
   paths?: RestoredPath[]
 }
+
+/** The web UI's preferences, as `GET /v1/preferences` answers and `PUT` takes them (`keepster_api::Preferences`). */
+export interface Preferences {
+  /**
+   * `system`, `light` or `dark`. A string on the wire, as the contract has it: a daemon newer than this
+   * page may name a palette it does not know, which it then paints as `system`.
+   */
+  theme: string
+  /** The longest line, in characters, a diff is still syntax-highlighted with: 1 to 10 000 000. */
+  syntax_line_limit: number
+  wrap_lines: boolean
+}
+
+/** One path a path search found (`keepster_api::PathHit`). */
+export interface PathHit {
+  root: string
+  path: string
+  /** How many Snapshots changed it. */
+  snapshots: number
+  /** The first Snapshot that changed it. */
+  first: string
+  /** The last Snapshot that changed it: for a file already gone, the one that deleted it. */
+  last: string
+  /** Whether the newest Snapshot still holds it. */
+  exists: boolean
+}
+
+/** A Root a search could not read (`keepster_api::Unsearched`). */
+export interface Unsearched {
+  root: string
+  detail: string
+}
+
+/** What a path search found (`keepster_api::PathSearch`). */
+export interface PathSearch {
+  /** By Root, then by path. */
+  hits: PathHit[]
+  /** Whether there were more than the limit. */
+  truncated: boolean
+  unsearched?: Unsearched[]
+}
+
+/** What a content search reads in one Root (`keepster_api::SearchCost`). */
+export interface SearchCost {
+  root: string
+  versions: number
+  bytes: number
+}
+
+/** A line of a stored version that matched a content search. */
+export interface ContentMatch {
+  type: 'match'
+  root: string
+  path: string
+  /** The version's content identity, opaque. */
+  content: string
+  /** The first Snapshot that held this content at this path. */
+  first: string
+  last: string
+  /** Counted from 1. */
+  line: number
+  snippet: string
+}
+
+/** What one Root's content search is at: the totals of a planned walk. */
+export interface SearchProgress {
+  type: 'progress'
+  root: string
+  done: number
+  total: number
+}
+
+/** What the whole content search looked at, sent last. */
+export interface SearchSummary {
+  type: 'summary'
+  versions_scanned: number
+  binaries_skipped: number
+  withheld: number
+  unreadable?: number
+}
+
+/** One line of the `GET /v1/search/content` stream (`keepster_api::ContentRecord`). */
+export type ContentRecord =
+  | { type: 'plan'; roots: SearchCost[] }
+  | ContentMatch
+  | { type: 'withheld'; root: string; path: string; reason: string; snapshot: string; kind?: string | null }
+  | SearchProgress
+  | { type: 'error'; root: string; detail: string }
+  | SearchSummary

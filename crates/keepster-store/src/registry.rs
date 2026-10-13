@@ -4,12 +4,14 @@
 //! belongs to — so it lives in plain files the daemon owns and replaces atomically, rather than in the
 //! derived index, which may be deleted and rebuilt at any time (ticket 03).
 
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use keepster_core::{RootId, VolumePlace};
 use serde::{Deserialize, Serialize};
+
+use crate::atomic;
 
 /// The file that records one Root, beside that Root's History Store.
 const RECORD_FILE: &str = "root.toml";
@@ -401,8 +403,7 @@ fn version_of(path: &Path) -> Option<u32> {
         .map(|file| file.version)
 }
 
-/// Replace a record atomically: write a temporary file beside it, flush it to disk, rename over the
-/// old one, then flush the directory.
+/// Replace a record atomically (see [`atomic::replace_file`]).
 ///
 /// A reader therefore sees either the previous record or the new one, never a half-written file — the
 /// daemon can be killed at any point, and this is the one piece of state that cannot be rebuilt.
@@ -419,28 +420,7 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
         reason: error.to_string(),
     })?;
 
-    let temporary = path.with_extension("toml.new");
-    let write = || -> io::Result<()> {
-        let mut handle = File::create(&temporary)?;
-        handle.write_all(text.as_bytes())?;
-        handle.sync_all()?;
-        drop(handle);
-
-        fs::rename(&temporary, path)?;
-
-        // The rename itself needs flushing, or a crash can leave the directory entry unwritten even
-        // though the file's contents reached the disk. That is a POSIX notion: Windows cannot open a
-        // directory as a file at all ("Access is denied"), and NTFS journals the rename itself, so
-        // there is no directory to flush there.
-        #[cfg(unix)]
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-
-        Ok(())
-    };
-
-    write().map_err(|source| RegistryError::Io {
+    atomic::replace_file(path, text.as_bytes()).map_err(|source| RegistryError::Io {
         path: path.to_path_buf(),
         operation: "written",
         source,
@@ -450,16 +430,7 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
 /// Move a record from one name to the other atomically, flushing the directory as [`write_record`]
 /// does.
 fn rename(from: &Path, to: &Path) -> Result<(), RegistryError> {
-    let moved = || -> io::Result<()> {
-        fs::rename(from, to)?;
-        #[cfg(unix)]
-        if let Some(parent) = to.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    };
-
-    moved().map_err(|source| RegistryError::Io {
+    atomic::move_file(from, to).map_err(|source| RegistryError::Io {
         path: from.to_path_buf(),
         operation: "moved",
         source,

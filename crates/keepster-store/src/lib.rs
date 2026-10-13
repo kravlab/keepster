@@ -4,10 +4,12 @@
 //! daemon's state by whether git can reproduce it, and this crate is where both halves live so that no
 //! use-case above it can write them in the wrong order.
 
+mod atomic;
 mod format;
 mod git;
 mod history;
 mod index;
+mod preferences;
 mod registry;
 
 pub use git::{Git, GitUnavailable};
@@ -22,6 +24,7 @@ pub use history::{
 };
 pub use index::INDEX_SCHEMA_VERSION;
 pub use keepster_core::WithheldReason;
+pub use preferences::{Preferences, PreferencesError, PreferencesStore, Theme};
 pub use registry::{
     CONTAINER_VERSION, HeldEntry, Registry, RegistryEntry, RegistryError, RootRecord, Standing,
 };

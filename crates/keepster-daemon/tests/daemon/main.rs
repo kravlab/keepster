@@ -29,6 +29,7 @@ mod logging;
 mod modes;
 mod openapi;
 mod pins;
+mod preferences;
 mod preview;
 mod reading;
 mod reconciliation;

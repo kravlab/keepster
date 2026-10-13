@@ -8,15 +8,16 @@
    * A card asks for its changed paths only once it comes into view, and keeps them: a page holds a hundred
    * cards, and most are never looked at. A Root's first Snapshot lists what it holds, all of it new. The
    * feed publishes the file and Snapshot a user opens, but never consumes them: arriving from another mode
-   * must not open an overlay by itself.
+   * must not open an overlay by itself. A search result is the exception (ticket 66): picked here, it is
+   * what the user asked to see, so the feed walks back to its Snapshot and opens its diff.
    */
   import { untrack } from 'svelte'
   import type { Attachment } from 'svelte/attachments'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
   import DiffPane from './DiffPane.svelte'
-  import { changedFiles, previousSnapshot, snapshotEntries } from '../lib/api'
+  import { changedFiles, entryAt, previousSnapshot, snapshotEntries } from '../lib/api'
   import { failureText } from '../lib/failures'
-  import { fromDiff, fromEntries, type ShownFile } from '../lib/files'
+  import { fromDiff, fromEntries, unchangedFile, type ShownFile } from '../lib/files'
   import { TimelinePages } from '../lib/pages.svelte'
   import { railRows, timeOfDay } from '../lib/rail'
   import { strings } from '../lib/strings'
@@ -28,6 +29,7 @@
     rootId,
     path = $bindable(),
     snapshotId = $bindable(),
+    arriving,
     onSessionEnded,
   }: {
     /** Fixed for the life of the component: `History` mounts a new one for another Root. */
@@ -36,6 +38,8 @@
     path: string | null
     /** The selected Snapshot, carried across view modes; set when a path is opened. */
     snapshotId: string | null
+    /** Whether the selection was handed in by a search result, whose diff then opens at once. */
+    arriving: boolean
     onSessionEnded: () => void
   } = $props()
 
@@ -64,14 +68,24 @@
   /* Counts the times the kept paths were thrown away; the cards are drawn anew, and those in view ask again. */
   let epoch = $state(0)
   let open = $state<{ snapshot: Snapshot; from: string | null; file: ShownFile } | null>(null)
+  /* Why a search result handed in could not be opened. */
+  let arrivalError = $state('')
 
   const visible = $derived(hideRoutine ? pages.snapshots.filter((s) => !isRoutine(s)) : pages.snapshots)
   const rows = $derived(railRows(visible, { now: new Date() }))
 
-  /* The feed opens on the newest Snapshots. */
+  /*
+   * The feed opens on the newest Snapshots; with a search result handed in, on as many pages as reach its
+   * Snapshot, and then on its diff.
+   */
   $effect(() => {
     const list = pages
-    untrack(() => void list.reload())
+    untrack(() => {
+      const target = arriving && path !== null && snapshotId !== null ? { path, snapshot: snapshotId } : null
+      void list.reload(target?.snapshot).then(() => {
+        if (target) void openArrival(target.path, target.snapshot)
+      })
+    })
   })
 
   /* The live stream: new Snapshots go on top; after `resync` anything shown may be stale, paths included. */
@@ -107,6 +121,24 @@
     if (mine === epoch) cards.set(id, files)
   }
 
+  /**
+   * Opens the diff of `file` in Snapshot `id`, as its card lists it; a file the Snapshot did not change is
+   * shown as the Snapshot holds it. Nothing opens when the Snapshot is not in the feed.
+   */
+  async function openArrival(file: string, id: string) {
+    const snapshot = pages.snapshots.find((s) => s.id === id)
+    if (!snapshot) return
+    await load(id)
+    const card = cards.get(id)
+    if (card?.state !== 'ready') return
+    try {
+      const shown = card.files.find((f) => f.path === file) ?? unchangedFile(file, await entryAt(rootId, id, file))
+      show(snapshot, card.from, shown)
+    } catch (e) {
+      arrivalError = failure(e)
+    }
+  }
+
   /** Loads a card's paths the first time it comes within a screen of view. */
   function onFirstSight(id: string): Attachment<HTMLElement> {
     return (card) => {
@@ -134,6 +166,9 @@
 <section class="feed" aria-label={strings.feedLabel}>
   <div class="column">
     <label class="filter"><input type="checkbox" bind:checked={hideRoutine} /> {strings.hideRoutine}</label>
+    {#if arrivalError}
+      <p class="empty error">{strings.failed} {arrivalError}</p>
+    {/if}
     {#if pages.error}
       <p class="empty error">{strings.failed} {pages.error}</p>
     {:else if !pages.loaded}

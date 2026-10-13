@@ -1,6 +1,11 @@
 /*
- * The page-wide palette and base styles. One light palette for now: themes are ticket 66, and CodeMirror's
- * default highlight style is made for a light background.
+ * The page-wide palettes and base styles (ticket 66). Every color is a variable here; components and the
+ * editor read only these, so a palette is one block.
+ *
+ * `data-theme` on the root element pins a palette; without it the system's setting decides, live and with
+ * no script. The dark palette is written out twice for that reason: once for a pinned `dark`, once for a
+ * dark system without a pinned `light`. `light-dark()` would say it once, but it is not yet in the
+ * Baseline "Widely available" floor (ticket 28).
  */
 :root {
   color-scheme: light;
@@ -14,6 +19,58 @@
   --added: #1a7f37;
   --warn: #9a6700;
   --danger: #cf222e;
+  --code-keyword: #cf222e;
+  --code-string: #0a3069;
+  --code-number: #0550ae;
+  --code-comment: #6e7781;
+  --code-function: #8250df;
+  --code-type: #953800;
+  --code-property: #0550ae;
+  --code-meta: #116329;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --line: #30363d;
+  --fg: #e6edf3;
+  --muted: #8d96a0;
+  --accent: #4493f8;
+  --selected: #1f3a5f;
+  --added: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-comment: #8b949e;
+  --code-function: #d2a8ff;
+  --code-type: #ffa657;
+  --code-property: #79c0ff;
+  --code-meta: #7ee787;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --line: #30363d;
+    --fg: #e6edf3;
+    --muted: #8d96a0;
+    --accent: #4493f8;
+    --selected: #1f3a5f;
+    --added: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --code-keyword: #ff7b72;
+    --code-string: #a5d6ff;
+    --code-number: #79c0ff;
+    --code-comment: #8b949e;
+    --code-function: #d2a8ff;
+    --code-type: #ffa657;
+    --code-property: #79c0ff;
+    --code-meta: #7ee787;
+  }
 }
 * {
   box-sizing: border-box;
@@ -39,6 +96,11 @@ select {
 }
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* Where the keyboard is, in both palettes; a component draws its own ring only where this one would be clipped. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 /* Text roles every screen shares. */
 .muted {

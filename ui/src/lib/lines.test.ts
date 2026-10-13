@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { SYNTAX_LINE_LIMIT, hasLongLine } from './lines'
+import { hasLongLine } from './lines'
 
 describe('hasLongLine', () => {
-  it('defaults to 20,000 characters, the documented syntax_line_limit', () => {
-    expect(SYNTAX_LINE_LIMIT).toBe(20_000)
-  })
-
   it('allows a line exactly at the limit', () => {
     expect(hasLongLine('x'.repeat(10), 10)).toBe(false)
   })

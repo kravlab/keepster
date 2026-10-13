@@ -28,11 +28,16 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   Root-relative paths (`paths.ts`), the changed-file list (`files.ts`), a
   Snapshot's changes in words and what counts as routine (`summary.ts`), the selection carried across view
   modes (`selection.ts`), the lazy file tree (`tree.ts`), Snapshot ids as moments (`ids.ts`), Restore's
-  questions and request (`restore.ts`), the long-line threshold (`lines.ts`), and every user-facing text
+  questions and request (`restore.ts`), the long-line threshold (`lines.ts`), the preferences and their
+  paint cache (`preferences.ts`, and the page's copy kept with the daemon in `preferences.svelte.ts`),
+  newline-delimited JSON off a stream (`ndjson.ts`), search results and a content search's stream folded
+  (`search.ts`, and one search run at a time in `searching.svelte.ts`), and every user-facing text
   (`strings.ts`).
-- `src/editor/`: the CodeMirror adapter and the curated grammars, loaded lazily.
-- `src/history/`: the History screen. `History.svelte` holds the three view modes and the selection they
-  share: the rail (`RailMode.svelte`), file first (`FileMode.svelte`) and the activity feed
+- `src/editor/`: the CodeMirror adapter, its colors read from the theme's variables (`palette.ts`), and the
+  curated grammars, loaded lazily.
+- `src/search/`: the search overlay the header's field opens (`SearchOverlay.svelte`).
+- `src/history/`: the History screen. `History.svelte` holds the three view modes, which share a selection
+  the shell (`App.svelte`) keeps so that a search result can set it: the rail (`RailMode.svelte`), file first (`FileMode.svelte`) and the activity feed
   (`FeedMode.svelte`). The diff pane
   (`DiffPane.svelte`) is common to all three, and so is the Restore dialog it opens
   (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show.
