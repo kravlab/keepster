@@ -84,11 +84,9 @@ async fn a_job_that_fails_raises_an_alarm_naming_it() {
     .expect("the store's configuration, broken");
     let mut stream = daemon.events(None).await;
 
-    let job = json(
-        &daemon
-            .post(&format!("/v1/roots/{root}/maintenance"), &json!({}))
-            .await,
-    )["job_id"]
+    let job = daemon
+        .post_json(&format!("/v1/roots/{root}/maintenance"), &json!({}))
+        .await["job_id"]
         .as_str()
         .expect("a job id")
         .to_owned();
