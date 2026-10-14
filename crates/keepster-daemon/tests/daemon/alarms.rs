@@ -45,6 +45,16 @@ async fn a_root_that_stops_being_watched_raises_an_alarm_that_status_lists_and_r
     })
     .await
     .expect("the Root is watched");
+    // Until its first Reconciliation the Root is `degraded`; when that outlasts the alarms' window its
+    // alarm is announced, and its clearing only a window after the Root is `watching`. Wait for that, so
+    // the removal replaces no alarm and raises its own alone.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while daemon_row(&daemon).await["alarms"] != json!([]) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("no alarm is in force");
     let mut stream = daemon.events(None).await;
 
     std::fs::remove_dir_all(&project).expect("the directory goes away");
