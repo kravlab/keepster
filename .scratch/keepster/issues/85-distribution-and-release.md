@@ -49,3 +49,15 @@ to distribute (split from ticket 68).
   same archives and publishes nothing. It is hand-written, not `dist`, for the two `dist` facts above. Still open
   here: the shell and PowerShell installers, the Homebrew tap, deb and rpm, the uninstall hint, the release-time
   smoke test and bench tripwire, and the version documentation.
+- **The install scripts (2026-10-14):** `scripts/install.sh` (Linux x86_64 and aarch64, macOS arm64) and
+  `scripts/install.ps1` (Windows x64) are served from the repository (`raw.githubusercontent.com/…/main/scripts/`),
+  not from a release, so they carry no version: with no `KEEPSTER_VERSION` they install the latest release, whose
+  version they read from the archive names in `releases/latest/download/SHA256SUMS`. That makes every release
+  already published, 0.1.0 included, installable; a first attempt that baked the version into a copy published with
+  the next release left the README's command answering 404, because 0.1.0 holds no such copy. They download the
+  archive, check it against `SHA256SUMS`, put both binaries side by side in `~/.local/bin` or
+  `%LOCALAPPDATA%\Programs\Keepster` and run `keepster install` from there, passing their arguments and exiting with
+  its code; PATH is left alone. `merge-gate.yml` runs their tests against a faked release (`scripts/test-install.sh`,
+  `scripts/test-install.ps1`). The first checkbox stays open: the release itself carries no installer. The
+  repository is public now, so the release's files download without authentication; the fact above about a private
+  repository no longer holds.
