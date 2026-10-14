@@ -88,9 +88,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Every failing test binary is reported, not only the first: a platform's failures are read in
-      # one run rather than one per push. No `--all-targets`: the workspace has no benches or examples,
-      # and without it the doc tests run in this one invocation, under the same features, rather than in
-      # a second one that rebuilds crates for a feature set of its own.
+      # one run rather than one per push. No `--all-targets`: the workspace has no examples, and its one
+      # bench, the tripwire (ticket 69), measures rather than tests: `make bench` runs it, and the lints
+      # job checks it, on Linux. Without it the doc tests run in this one invocation, under the same
+      # features, rather than in a second one that rebuilds crates for a feature set of its own.
       - run: cargo test --workspace --all-features --locked --no-fail-fast
 
   contract:

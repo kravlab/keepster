@@ -45,7 +45,10 @@ otherwise read this as an oversight, which is why it is written down.
   work to do.
 - **"Swappable" is redefined.** The storage model is *locally replaceable* — no crate outside `keepster-store`
   names a git concept, so a rewrite is confined to one crate — rather than *trait-substitutable*. The weaker claim
-  is the true one and must not be restated as the stronger one.
+  is the true one and must not be restated as the stronger one. One crate outside it names git on purpose:
+  `keepster-testkit`, whose performance tripwire (ticket 69) times reading a Snapshot's tree into a git index,
+  which no store operation exposes on its own, and names each fixture profile by a git blob id. It is a
+  dev-only crate, so the product stays confined; a store rewrite rewrites those lines too.
 - **One stand-in exists, and it is not a store: which volume a path is on** (ticket 56, ADR 0011). The daemon
   asks it through `trait Volumes`, and the harness answers with `FakeVolumes`. The reasoning above runs the other
   way here: what must be proved is the daemon's behaviour when a disk is unplugged or remounted elsewhere, which no

@@ -4,8 +4,24 @@
 //! under test is the daemon that ships, and the client is the CLI's own; the one stand-in is which
 //! volume a path is on, [`FakeVolumes`], since no test can unplug a disk from the machine it runs on.
 //! Dev-only, never published, and allowed to depend on anything.
+//!
+//! Beside the harness sits [`bulk`], the seeded generator whose frozen profiles the performance
+//! tripwire is calibrated to (ticket 30); it shares nothing with correctness fixtures, whose cases must
+//! be free to grow (ticket 31). [`thresholds`] reads the limits that tripwire is held to and the profile
+//! digests they were calibrated against, [`environment`] describes the machine a run measures on, and
+//! [`verdict`] and [`report`] judge a run's measurements and write them down. [`lines`] names what the
+//! tripwire measures and why, and [`tripwire`] runs it. Apart from all of it, [`degenerate`] catalogues
+//! the small edge-case trees ordinary fixtures never hold.
 
+pub mod bulk;
+pub mod degenerate;
+pub mod environment;
+pub mod lines;
 mod loopback;
+pub mod report;
+pub mod thresholds;
+pub mod tripwire;
+pub mod verdict;
 mod volumes;
 
 use std::path::{Path, PathBuf};

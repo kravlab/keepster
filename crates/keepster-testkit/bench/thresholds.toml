@@ -1,0 +1,30 @@
+# The operation tripwire's committed thresholds (ticket 30). `make bench` fails when a gated line
+# measures above its limit here.
+#
+# The threshold is committed, never the measurement. Each limit is twice what the reference machine
+# measured when it was calibrated (`make bench-calibrate`), a headroom sized to the failures this design
+# has — every one of them a multiple — rather than to run-to-run noise. Changing a limit is a commit of
+# its own that says why. No machine is named here: what a run measured, and on what, is in its report.
+#
+# `digests` holds each profile's digest at calibration. A test compares them with the profiles as they
+# are, so a fixture's shape cannot move without this file moving in the same commit (ticket 31).
+
+[digests]
+ceiling = "70f409478161923c7553032d45026348f54c228d"
+exclusion = "8d241ee4e28ff961ba93c77cf25d5e3e02ab864a"
+flat = "9d0933b54d7f66bc995196160e19caedc15764d4"
+small = "7cbcacec22afbc2e269e4c7795226fd995830d2e"
+
+# Line name to the most a run may measure, in the line's unit: milliseconds for a duration, the ratio
+# itself for a ratio.
+[limits]
+"capture.step" = 410.0
+"preview.first_row" = 0.07
+"preview.walk" = 78.0
+"read.chronology" = 19.0
+"read.diff" = 140.0
+"read.version" = 5.7
+"reconcile.excluded_subtree" = 3.9
+"reconcile.unchanged" = 370.0
+"store.growth" = 1.3
+"watch.excluded_subtree" = 5.4

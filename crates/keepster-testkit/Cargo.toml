@@ -11,11 +11,36 @@ publish = false
 workspace = true
 
 [dependencies]
+# The tripwire's profile digest is a git blob id, and the same build of libgit2 the store links.
+git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["client", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 keepster-cli.workspace = true
+keepster-core.workspace = true
 keepster-daemon.workspace = true
+keepster-service.workspace = true
+keepster-store.workspace = true
+keepster-watch.workspace = true
+# The bulk generator's source. ChaCha8's stream is documented as portable and value-stable, so a seed
+# names one fixture on every platform; only `next_u64` is used, never a distribution whose algorithm a
+# release may change.
+rand = { version = "0.10.3", default-features = false, features = ["chacha"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
+thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "time", "process"] }
+toml = "1.1.6"
+
+[dev-dependencies]
+# Measures the bulk generator's compressibility as ticket 30 measured the figure it targets: zlib at
+# level 6. The `zlib` backend is the `libz-sys` libgit2 already links, so no second deflate implementation
+# enters the build.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib"] }
+
+# The operation tripwire (ticket 30): `make bench`, `make bench-calibrate` and `make bench-ceiling`. Its own
+# runner rather than the test harness, because a breach must exit non-zero against a committed threshold.
+[[bench]]
+name = "tripwire"
+harness = false

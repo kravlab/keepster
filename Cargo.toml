@@ -32,3 +32,13 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 disallowed_methods = "deny"
+
+# The bench profiles' generator is run by tests, and unoptimized it spends seconds writing the small
+# profile's fifty mebibytes of content where an optimized build spends a fraction of one. Optimizing the
+# generator and the random number generator under it keeps those tests fast everywhere they run, while
+# everything else stays a plain debug build.
+[profile.dev.package.keepster-testkit]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3

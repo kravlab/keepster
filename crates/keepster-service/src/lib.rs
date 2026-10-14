@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod autostart;
+pub mod mountinfo;
 mod pid;
 pub mod rotating;
 mod volume;

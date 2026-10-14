@@ -1,4 +1,4 @@
-.PHONY: issues issues-all openapi check-api ui check-ui check-ui-size
+.PHONY: issues issues-all openapi check-api ui check-ui check-ui-size bench bench-calibrate bench-ceiling
 
 # Issue tracker (.scratch/), see docs/agents/issue-tracker.md
 issues:
@@ -28,3 +28,20 @@ check-ui:
 # The bundle's weight against its budget (ticket 28), measured on a fresh build.
 check-ui-size: ui
 	@cd ui && pnpm measure
+
+# The operation tripwire (ticket 30), on Linux and never on tmpfs: the fixture goes beneath
+# KEEPSTER_BENCH_DIR, or target/tmp. Each run prints its report and writes it to target/bench/. A breach
+# and a refusal both fail the target; the run's last line says which.
+#
+# The small fixture, held to the committed thresholds in crates/keepster-testkit/bench/thresholds.toml.
+bench:
+	@cargo bench --locked -p keepster-testkit --bench tripwire -- gate
+
+# Rewrites the thresholds as twice each gated line's median, on the reference machine only; commit the
+# result with why it moved.
+bench-calibrate:
+	@cargo bench --locked -p keepster-testkit --bench tripwire -- calibrate
+
+# The ceiling fixture, ten gibibytes, compared with the outcome budget's p95; gates nothing.
+bench-ceiling:
+	@cargo bench --locked -p keepster-testkit --bench tripwire -- ceiling
