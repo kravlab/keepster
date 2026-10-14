@@ -223,11 +223,9 @@ async fn a_pass_that_fails_ends_its_job_failed_with_what_git_said() {
     let root = captured(&daemon).await;
     let mut stream = daemon.events(None).await;
 
-    let job = json(
-        &daemon
-            .post(&format!("/v1/roots/{root}/maintenance"), &json!({}))
-            .await,
-    )["job_id"]
+    let job = daemon
+        .post_json(&format!("/v1/roots/{root}/maintenance"), &json!({}))
+        .await["job_id"]
         .as_str()
         .expect("a job id")
         .to_owned();
