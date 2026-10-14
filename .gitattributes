@@ -9,3 +9,8 @@
 # The committed thresholds are compared byte for byte with what calibration writes (ticket 69), so a
 # checkout must never rewrite their line endings — a Windows clone would otherwise fail that test.
 /crates/keepster-testkit/bench/thresholds.toml text eol=lf
+
+# The install scripts run under `sh` and bash, which read a carriage return as part of each line, so a
+# Windows checkout must never give them CRLF.
+/scripts/install.sh text eol=lf
+/scripts/test-install.sh text eol=lf

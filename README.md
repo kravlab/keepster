@@ -29,6 +29,32 @@ can be recovered — without relying on the directory's own version control.
 
 ## Install
 
+### With the install script
+
+Linux and macOS:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/kravlab/keepster/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/kravlab/keepster/main/scripts/install.ps1 | iex
+```
+
+The script installs the latest release: it downloads the archive for your platform, checks it against
+`SHA256SUMS`, puts `keepster` and `keepster-tray` in `~/.local/bin` (Windows:
+`%LOCALAPPDATA%\Programs\Keepster`) and runs `keepster install` from there. It leaves `PATH` alone and
+says when that directory is not on it. Running it again upgrades in place.
+
+- `KEEPSTER_VERSION` picks another release and `KEEPSTER_INSTALL_DIR` another directory:
+  `curl -LsSf … | KEEPSTER_VERSION=0.1.0 sh`, or on Windows `$env:KEEPSTER_VERSION = '0.1.0'` first.
+- Arguments go to `keepster install`: `curl -LsSf … | sh -s -- --no-tray`, or on Windows
+  `.\install.ps1 --no-tray` for a downloaded copy.
+
+### By hand
+
 1. Download the archive for your platform from [Releases](https://github.com/kravlab/keepster/releases)
    and check it against `SHA256SUMS`.
 2. Put `keepster` and `keepster-tray` side by side in a permanent location, for example a directory on

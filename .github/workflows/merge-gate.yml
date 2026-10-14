@@ -54,6 +54,8 @@ jobs:
       # its default features, which would switch the web UI back on.
       - name: The daemon builds without the web UI
         run: cargo clippy -p keepster-daemon --no-default-features --locked -- -D warnings
+      - name: shellcheck on the install scripts
+        run: shellcheck scripts/install.sh scripts/test-install.sh
       - name: The CLI must link no store dependency and no server stack
         # Ticket 08 turns "the UI must not own persistence contracts" into a build fact; this is the
         # check for it, and it is cheap enough to run on every change. Ticket 40 adds the schema
@@ -94,6 +96,34 @@ jobs:
       # job checks it, on Linux. Without it the doc tests run in this one invocation, under the same
       # features, rather than in a second one that rebuilds crates for a feature set of its own.
       - run: cargo test --workspace --all-features --locked --no-fail-fast
+
+  # The install scripts (ticket 85) against a faked release, each on the platforms it serves.
+  installers:
+    name: the install scripts on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # The tests take seconds; a run far past that is an installer waiting on something it started.
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        exclude:
+          - os: ${{ github.event_name != 'pull_request' && 'macos-latest' || 'none' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: scripts/test-install.sh
+      # macOS runs `sh` as bash, which reads a piped script differently from Ubuntu's dash; this leg
+      # runs on every change, macOS's on pull requests only.
+      - name: install.sh under bash
+        if: runner.os == 'Linux'
+        run: INSTALLER_SHELL=bash scripts/test-install.sh
+      # Windows PowerShell 5.1, the one every Windows has: the tests compile their stub with its Add-Type.
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-install.ps1
 
   contract:
     name: the /v1 contract is additive
