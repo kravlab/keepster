@@ -42,3 +42,10 @@ to distribute (split from ticket 68).
   - Neither the smoke browser test (ticket 31) nor `make bench` (ticket 69) exists yet.
   - The full build hash is already recorded (`crates/keepster-daemon/build.rs`) and checked by
     `crates/keepster-daemon/tests/daemon/version.rs`; what is missing is the user-facing documentation.
+- **Release 0.1.0 (2026-10-14), by the owner's decision ahead of the blockers above, the workflow only:**
+  `.github/workflows/release.yml` builds on a `v*` tag an archive per target from ticket 27 (Linux x86_64 and
+  aarch64 static musl, macOS aarch64, Windows x86_64; `.tar.xz`, `.zip` on Windows), each holding `keepster`,
+  `keepster-tray` and `LICENSE`, and publishes them with `SHA256SUMS` as a GitHub release; run by hand it builds the
+  same archives and publishes nothing. It is hand-written, not `dist`, for the two `dist` facts above. Still open
+  here: the shell and PowerShell installers, the Homebrew tap, deb and rpm, the uninstall hint, the release-time
+  smoke test and bench tripwire, and the version documentation.
