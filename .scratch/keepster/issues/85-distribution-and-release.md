@@ -16,7 +16,7 @@ Packaging is tiered over **one** universal mechanism — an archive plus `keepst
 package format a wrapper over it rather than a separate install path. Distribution comes last, once there is something
 to distribute (split from ticket 68).
 
-- [ ] A tag produces archives for the documented targets with shell and PowerShell installers, checksums and a
+- [x] A tag produces archives for the documented targets with shell and PowerShell installers, checksums and a
       release containing them
 - [ ] A Homebrew formula in our own tap installs both binaries, ad-hoc signed on macOS
 - [ ] deb and rpm packages declare the external `git` prerequisite with each distribution's correct package name, and
@@ -49,3 +49,11 @@ to distribute (split from ticket 68).
   same archives and publishes nothing. It is hand-written, not `dist`, for the two `dist` facts above. Still open
   here: the shell and PowerShell installers, the Homebrew tap, deb and rpm, the uninstall hint, the release-time
   smoke test and bench tripwire, and the version documentation.
+- **The install scripts (2026-10-14):** `scripts/install.sh` (Linux x86_64 and aarch64, macOS arm64) and
+  `scripts/install.ps1` (Windows x64) download their release's archive, check it against `SHA256SUMS`, put both
+  binaries side by side in `~/.local/bin` or `%LOCALAPPDATA%\Programs\Keepster` and run `keepster install` from there,
+  passing their arguments and exiting with its code; PATH is left alone. `release.yml` writes the version into them,
+  publishes them beside the archives and first runs them against the archives just built; `merge-gate.yml` runs
+  their tests against a faked release (`scripts/test-install.sh`, `scripts/test-install.ps1`). The repository is
+  public now, so the release's files download without authentication; the fact above about a private repository no
+  longer holds.
