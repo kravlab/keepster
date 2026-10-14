@@ -5,3 +5,7 @@
 # The built web UI is embedded byte for byte and checked against a fresh build in CI, so a checkout must
 # never rewrite it either.
 /ui/dist/** -text
+
+# The committed thresholds are compared byte for byte with what calibration writes (ticket 69), so a
+# checkout must never rewrite their line endings — a Windows clone would otherwise fail that test.
+/crates/keepster-testkit/bench/thresholds.toml text eol=lf
