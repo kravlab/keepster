@@ -2,7 +2,8 @@
 //!
 //! What a machine answers depends on its disks — a container's overlay has no UUID, a laptop's disk has
 //! one — so these assert what must hold everywhere: the answer is the same every time it is asked, a
-//! path is beneath the mount point named for it, and a volume that is named is found mounted there.
+//! path is beneath the mount point named for it, a volume names its filesystem, and a volume that is
+//! named is found mounted there.
 
 use std::path::{Path, PathBuf};
 
@@ -95,6 +96,17 @@ fn a_volume_that_is_named_is_found_where_it_is_mounted() {
         "{} among {mounted:?}",
         found.mount_point.display()
     );
+}
+
+#[test]
+fn a_volume_names_its_filesystem() {
+    // Every platform says what a local disk is formatted as; a report of what ran where carries it
+    // (ticket 70).
+    let directory = tempfile::tempdir().expect("a temporary directory");
+
+    let found = volume_of(directory.path()).expect("its volume");
+
+    assert!(!found.filesystem.trim().is_empty(), "{found:?}");
 }
 
 #[test]

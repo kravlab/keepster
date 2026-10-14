@@ -1,7 +1,8 @@
 # The merge gate: every check here has a verdict that is a property of the diff rather than of the
 # machine (ticket 32). Anything whose verdict depends on a machine, a browser or a place — the
 # performance tripwire, the browser smoke test, the platform table, the outcome-budget review — runs at
-# release time instead, and the advisory database check runs on a schedule.
+# release time instead, and the advisory database check runs on a schedule. The platform table, the
+# watcher conformance report and the coverage report run in `reports.yml`.
 #
 # The copy is private, so minutes are budgeted: macOS bills ten times Linux, and its leg runs on pull
 # requests only, with `nightly.yml` covering whatever reaches `main` without one. A change that touches

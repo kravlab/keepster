@@ -22,6 +22,9 @@ keepster-daemon.workspace = true
 keepster-service.workspace = true
 keepster-store.workspace = true
 keepster-watch.workspace = true
+# The watcher conformance report records what the operating system delivered, before `keepster-watch`
+# filters it; the version `keepster-watch` uses, so no second copy enters the build.
+notify = "8.2.0"
 # The bulk generator's source. ChaCha8's stream is documented as portable and value-stable, so a seed
 # names one fixture on every platform; only `next_u64` is used, never a distribution whose algorithm a
 # release may change.

@@ -1,5 +1,5 @@
-//! Windows: the volume a path is on, from `GetVolumePathNameW`, and its persistent identity, the volume
-//! GUID path `GetVolumeNameForVolumeMountPointW` gives.
+//! Windows: the volume a path is on, from `GetVolumePathNameW`, its persistent identity, the volume
+//! GUID path `GetVolumeNameForVolumeMountPointW` gives, and its filesystem, from `GetVolumeInformationW`.
 //!
 //! One hazard is guarded explicitly (ADR 0011): `GetVolumePathNameW` silently answers the boot volume
 //! for a relative or NT-namespace path, so a Root on a vanished volume could resolve to `C:\` with no
@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, GetLastError};
 use windows_sys::Win32::Storage::FileSystem::{
-    GetDriveTypeW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+    GetDriveTypeW, GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
     GetVolumePathNamesForVolumeNameW,
 };
 
@@ -65,9 +65,9 @@ pub(super) fn volume_of(path: &Path) -> io::Result<Volume> {
 
     Ok(Volume {
         identity: identity(&mount_point, remote),
+        filesystem: filesystem(&mount_point),
         mount_point,
         within,
-        filesystem: String::new(),
         remote,
     })
 }
@@ -137,6 +137,34 @@ fn identity(mount_point: &Path, remote: bool) -> Option<String> {
     };
 
     (ok != 0).then(|| format!("volume:{}", text_of(&name)))
+}
+
+/// The type of the filesystem mounted at `mount_point` as Windows names it — `NTFS`, `ReFS`, `FAT32` —
+/// or empty when Windows will not say, as for some network shares.
+fn filesystem(mount_point: &Path) -> String {
+    let mount = wide(mount_point.as_os_str());
+    let mut name = vec![0u16; MAX_PATH + 1];
+    // SAFETY: `mount` is NUL-terminated and ends in a backslash, as `GetVolumePathNameW` gave it; the
+    // buffers and out-values not wanted are null, which the call accepts, and `name` holds the length
+    // passed.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            mount.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            name.as_mut_ptr(),
+            length(&name),
+        )
+    };
+
+    if ok == 0 {
+        String::new()
+    } else {
+        text_of(&name)
+    }
 }
 
 /// The identity a mount point's own text gives: a volume GUID path is one, and so is a share's name —

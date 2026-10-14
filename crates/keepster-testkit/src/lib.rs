@@ -11,14 +11,23 @@
 //! digests they were calibrated against, [`environment`] describes the machine a run measures on, and
 //! [`verdict`] and [`report`] judge a run's measurements and write them down. [`lines`] names what the
 //! tripwire measures and why, and [`tripwire`] runs it. Apart from all of it, [`degenerate`] catalogues
-//! the small edge-case trees ordinary fixtures never hold.
+//! the small edge-case trees ordinary fixtures never hold, [`platform`] records what each came to on
+//! each platform, and [`host`] names the machine any report was made on, while [`skips`] finds a test
+//! that prints a skip instead (ticket 70). [`conformance`] records what the operating system's watcher
+//! delivers for each documented class of change, and [`coverage`] which crate no test reaches, both
+//! gating nothing.
 
 pub mod bulk;
+pub mod conformance;
+pub mod coverage;
 pub mod degenerate;
 pub mod environment;
+pub mod host;
 pub mod lines;
 mod loopback;
+pub mod platform;
 pub mod report;
+pub mod skips;
 pub mod thresholds;
 pub mod tripwire;
 pub mod verdict;

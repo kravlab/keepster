@@ -1,4 +1,4 @@
-.PHONY: issues issues-all openapi check-api ui check-ui check-ui-size bench bench-calibrate bench-ceiling
+.PHONY: issues issues-all openapi check-api ui check-ui check-ui-size bench bench-calibrate bench-ceiling platform-table conformance coverage
 
 # Issue tracker (.scratch/), see docs/agents/issue-tracker.md
 issues:
@@ -45,3 +45,31 @@ bench-calibrate:
 # The ceiling fixture, ten gibibytes, compared with the outcome budget's p95; gates nothing.
 bench-ceiling:
 	@cargo bench --locked -p keepster-testkit --bench tripwire -- ceiling
+
+# The report layer (ticket 70): each report gates nothing and is written to target/reports, which CI's
+# reports workflow also uploads per platform. KEEPSTER_REPORT_DIR must be absolute: tests run in their own
+# crate's directory.
+REPORTS := $(CURDIR)/target/reports
+
+# This platform's column of the degenerate catalogue's table, written by the catalogue's own test, then
+# the table of every column in target/reports; a platform with no column there reads `untested`.
+platform-table:
+	@KEEPSTER_REPORT_DIR=$(REPORTS) cargo test --locked -q -p keepster-testkit --test degenerate every_case_makes_exactly_the_entries_it_declares
+	@cargo run --locked -q -p keepster-testkit --bin keepster-report -- table $(REPORTS)
+
+# What this platform's watcher delivers for each documented class of change, into target/reports. It gates
+# nothing.
+conformance:
+	@cargo run --locked -q -p keepster-testkit --bin keepster-report -- conformance $(REPORTS)
+
+# Which crate no test reaches, into target/reports; no threshold. Needs the llvm-tools-preview component
+# and cargo-llvm-cov 0.9.1 (`cargo install cargo-llvm-cov --version 0.9.1 --locked`). The report is made
+# from whatever the tests reached even when some failed, and the target then fails as they did.
+coverage:
+	@mkdir -p $(REPORTS)
+	@cargo llvm-cov clean --workspace
+	@status=0; \
+	cargo llvm-cov --workspace --all-features --locked --no-fail-fast --no-report || status=$$?; \
+	cargo llvm-cov report --json --summary-only --output-path $(REPORTS)/coverage.json && \
+	cargo run --locked -q -p keepster-testkit --bin keepster-report -- coverage $(REPORTS)/coverage.json $(REPORTS) && \
+	exit $$status

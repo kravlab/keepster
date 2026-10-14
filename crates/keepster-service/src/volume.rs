@@ -26,8 +26,8 @@ pub struct Volume {
     pub mount_point: PathBuf,
     /// The path relative to the mount point, `/`-separated, empty for the mount point itself.
     pub within: String,
-    /// The filesystem's type as the platform names it: `ext4`, `nfs4`, `fuse.sshfs`, `apfs`, `smbfs`.
-    /// Empty where the platform does not say.
+    /// The filesystem's type as the platform names it: `ext4`, `nfs4`, `fuse.sshfs`, `apfs`, `smbfs`,
+    /// `NTFS`. Empty where the platform does not say.
     pub filesystem: String,
     /// Whether the platform reports the volume as remote.
     pub remote: bool,

@@ -110,8 +110,8 @@ pub enum EnvironmentError {
 const CPUINFO: &str = "/proc/cpuinfo";
 /// Where [`detect`] reads the memory.
 const MEMINFO: &str = "/proc/meminfo";
-/// Where [`detect`] reads the kernel release.
-const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
+/// Where [`detect`], and [`host::detect`](crate::host::detect) on Linux, read the kernel release.
+pub(crate) const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
 
 /// What [`detect`] reads, for [`describe`] to make an [`Environment`] of.
 #[derive(Debug, Clone, Copy)]
@@ -223,8 +223,8 @@ pub fn describe(readings: &Readings) -> Result<Environment, EnvironmentError> {
     }
     let memory_bytes =
         memory(readings.meminfo).ok_or_else(|| malformed(MEMINFO, "the memory total"))?;
-    let kernel =
-        kernel(readings.osrelease).ok_or_else(|| malformed(OSRELEASE, "the kernel release"))?;
+    let kernel = crate::host::version_line(readings.osrelease)
+        .ok_or_else(|| malformed(OSRELEASE, "the kernel release"))?;
 
     Ok(Environment {
         cpu,
@@ -310,10 +310,4 @@ pub fn memory(meminfo: &str) -> Option<u64> {
         .find_map(|line| line.strip_prefix("MemTotal:"))?;
     let kibibytes = total.trim().strip_suffix(" kB")?.trim();
     kibibytes.parse::<u64>().ok()?.checked_mul(1024)
-}
-
-/// The kernel release `/proc/sys/kernel/osrelease`'s text names, without its line break.
-pub fn kernel(osrelease: &str) -> Option<String> {
-    let release = osrelease.trim();
-    (!release.is_empty()).then(|| release.to_owned())
 }

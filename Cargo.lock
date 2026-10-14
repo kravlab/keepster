@@ -1033,6 +1033,7 @@ dependencies = [
  "keepster-service",
  "keepster-store",
  "keepster-watch",
+ "notify",
  "rand",
  "serde",
  "serde_json",

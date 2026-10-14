@@ -4,16 +4,18 @@
 //!
 //! Each case is data: what it is, which decision it exercises, the entries it makes, and whether the
 //! platform can hold it at all. A case the platform cannot hold is compiled out with its reason, so that
-//! "impossible here" is decided when the code is built and never confused with "skipped" (ticket 70,
-//! whose per-platform table is generated from this metadata). A case the platform can hold but this
-//! machine cannot make — a capability it lacks — says so when made. The performance tripwire never
-//! measures these: they are about correctness, and they are small.
+//! "impossible here" is decided when the code is built and never confused with "skipped". A case the
+//! platform can hold but this machine cannot make — a capability it lacks — says so when made. Each comes
+//! to one [`Outcome`], and the platform table (ticket 70, [`crate::platform`], `docs/reports.md`) is
+//! generated from this metadata and those outcomes. The performance tripwire never measures these: they
+//! are about correctness, and they are small.
 
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
 use keepster_core::DEFAULT_MAX_SIZE;
+use serde::{Deserialize, Serialize};
 
 /// One degenerate case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,48 @@ pub enum Unmade {
     /// names as a capability, such as space.
     #[error("could not be made")]
     Failed(#[source] io::Error),
+}
+
+/// What a case came to on one machine: one of the three declared outcomes of ticket 31, so that
+/// "impossible here" and "never run here" stay apart.
+///
+/// A platform table's row carries it as `"outcome"`, with the reason as `"reason"` where there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", content = "reason", rename_all = "snake_case")]
+pub enum Outcome {
+    /// The case was made and its every entry checked.
+    Ran,
+    /// The platform cannot hold it, for the reason given, decided when the code was built.
+    Impossible(String),
+    /// The platform can, but this machine lacks the capability, for the reason given.
+    Unavailable(String),
+}
+
+/// An outcome as a report prints it: `ran`, or the outcome and its reason.
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ran => write!(formatter, "ran"),
+            Self::Impossible(reason) => write!(formatter, "impossible: {reason}"),
+            Self::Unavailable(reason) => write!(formatter, "unavailable: {reason}"),
+        }
+    }
+}
+
+impl Unmade {
+    /// What a case that was not made comes to on this machine: the outcome its row of the platform table
+    /// carries (ticket 70), or, when it failed, the error, which is the test's to report and never a row.
+    ///
+    /// # Errors
+    ///
+    /// The error that kept a case from being made, for [`Unmade::Failed`].
+    pub fn outcome(self) -> Result<Outcome, io::Error> {
+        match self {
+            Self::Impossible(reason) => Ok(Outcome::Impossible(reason.to_owned())),
+            Self::Unavailable(reason) => Ok(Outcome::Unavailable(reason)),
+            Self::Failed(error) => Err(error),
+        }
+    }
 }
 
 /// A name of 255 ASCII bytes: at ext4's and btrfs's limit of 255 bytes, and APFS's and NTFS's of 255

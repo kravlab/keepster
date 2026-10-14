@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use keepster_service::mountinfo::makedev;
 use keepster_testkit::environment::{
-    Cpu, Environment, EnvironmentError, Filesystem, Readings, cpu, describe, kernel, memory,
+    Cpu, Environment, EnvironmentError, Filesystem, Readings, cpu, describe, memory,
 };
 
 /// A mount table: the root filesystem, a data volume with a scratch disk beneath it, and a tmpfs.
@@ -106,15 +106,6 @@ fn a_memory_table_without_a_total_it_can_hold_says_nothing() {
     assert_eq!(memory(""), None);
     // As many kibibytes as a u64 holds is more bytes than one does.
     assert_eq!(memory("MemTotal:       18446744073709551615 kB\n"), None);
-}
-
-#[test]
-fn the_kernel_is_its_release_string() {
-    assert_eq!(
-        kernel("6.1.0-example-amd64\n"),
-        Some("6.1.0-example-amd64".to_owned())
-    );
-    assert_eq!(kernel("  \n"), None);
 }
 
 #[test]

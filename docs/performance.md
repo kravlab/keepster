@@ -107,6 +107,9 @@ A threshold changes only in a commit of its own that says why it moved.
 
 ## At release
 
+The platform table, watcher conformance and coverage reports have their own checklist in
+[reports.md](reports.md#at-release).
+
 - [ ] `make bench` passes on the reference machine
 - [ ] `make bench-ceiling` runs on the reference machine; every outcome line within its budget, or the breach
       reported, and whether `capture.read_tree`'s estimate held

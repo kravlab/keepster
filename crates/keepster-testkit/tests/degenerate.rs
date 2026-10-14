@@ -6,18 +6,23 @@ use std::fs;
 use std::path::Path;
 
 use keepster_core::DEFAULT_MAX_SIZE;
-use keepster_testkit::degenerate::{CATALOGUE, Case, Here, Kind, Unmade, make, native};
+use keepster_testkit::degenerate::{CATALOGUE, Case, Here, Kind, Outcome, Unmade, make, native};
+use keepster_testkit::host;
+use keepster_testkit::platform::{Column, REPORT_DIR, Row, report_dir};
 
 mod common;
 
 use common::scratch;
 
+/// The test the platform table records (ticket 70): each case's outcome on this machine is written as
+/// this platform's column when [`REPORT_DIR`] names a directory, and nothing is written otherwise.
 #[test]
 fn every_case_makes_exactly_the_entries_it_declares() {
+    let mut rows = Vec::new();
     for case in CATALOGUE {
         let directory = scratch();
 
-        match make(case, directory.path()) {
+        let outcome = match make(case, directory.path()) {
             Ok(()) => {
                 let declared: BTreeSet<Vec<u8>> = case
                     .entries
@@ -56,19 +61,43 @@ fn every_case_makes_exactly_the_entries_it_declares() {
                         }
                     }
                 }
+                Outcome::Ran
             }
-            Err(Unmade::Impossible(reason)) => {
-                assert!(matches!(case.here, Here::Impossible(_)), "{}", case.name);
-                assert!(!reason.trim().is_empty(), "{}", case.name);
+            Err(unmade) => {
+                match &unmade {
+                    Unmade::Impossible(reason) => {
+                        assert!(matches!(case.here, Here::Impossible(_)), "{}", case.name);
+                        assert!(!reason.trim().is_empty(), "{}", case.name);
+                    }
+                    Unmade::Unavailable(reason) => {
+                        // A capability this machine lacks, which only a case that names one may:
+                        // reported with its reason, never a failure.
+                        assert!(case.capability.is_some(), "{}: {reason}", case.name);
+                        assert!(!reason.trim().is_empty(), "{}", case.name);
+                    }
+                    Unmade::Failed(_) => {}
+                }
+                unmade
+                    .outcome()
+                    .unwrap_or_else(|error| panic!("{}: {error}", case.name))
             }
-            Err(Unmade::Unavailable(reason)) => {
-                // A capability this machine lacks, which only a case that names one may: reported with
-                // its reason, never a failure.
-                assert!(case.capability.is_some(), "{}: {reason}", case.name);
-                assert!(!reason.trim().is_empty(), "{}", case.name);
-            }
-            Err(Unmade::Failed(error)) => panic!("{}: {error}", case.name),
-        }
+        };
+        rows.push(Row {
+            case: case.name.to_owned(),
+            outcome,
+        });
+    }
+
+    let reports =
+        report_dir(std::env::var_os(REPORT_DIR)).unwrap_or_else(|error| panic!("{error}"));
+    if let Some(reports) = reports {
+        let column = Column {
+            host: host::detect(scratch().path()),
+            rows,
+        };
+        column
+            .write(&reports)
+            .unwrap_or_else(|error| panic!("the column cannot be written: {error}"));
     }
 }
 
@@ -232,6 +261,37 @@ fn a_case_made_twice_is_refused_rather_than_merged() {
             Err(Unmade::Failed(error)) => panic!("{}: {error}", case.name),
         }
     }
+}
+
+#[test]
+fn a_case_impossible_here_comes_to_impossible_with_its_reason() {
+    let outcome = Unmade::Impossible("names here are UTF-16").outcome();
+
+    assert_eq!(
+        outcome.expect("an outcome"),
+        Outcome::Impossible("names here are UTF-16".to_owned())
+    );
+}
+
+#[test]
+fn a_case_this_machine_cannot_make_comes_to_unavailable_with_its_reason() {
+    let outcome = Unmade::Unavailable("no Developer Mode".to_owned()).outcome();
+
+    assert_eq!(
+        outcome.expect("an outcome"),
+        Outcome::Unavailable("no Developer Mode".to_owned())
+    );
+}
+
+#[test]
+fn a_case_that_failed_to_be_made_comes_to_no_outcome_but_its_error() {
+    // A failure is the test's to report, never a row of the table.
+    let outcome = Unmade::Failed(std::io::Error::from(std::io::ErrorKind::StorageFull)).outcome();
+
+    // The error that kept the case from being made, itself rather than one wrapping it.
+    let error = outcome.expect_err("a failure");
+    assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+    assert!(error.get_ref().is_none(), "{error:?}");
 }
 
 /// The catalogued case `name`.

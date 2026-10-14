@@ -1,0 +1,101 @@
+# The report layer (ticket 70): on each of the three platforms, the degenerate catalogue's column of the
+# platform table, the watcher conformance report and the coverage report, then the table of all three.
+# Every report is a run artifact and gates nothing: a step here fails only when tests fail. What each
+# report is and how to read it is in docs/reports.md.
+#
+# Run by hand and for a release tag, never on a pull request: the platform table belongs to the release
+# checklist (ticket 32), and the copy is private, so macOS minutes count ten times.
+
+name: reports
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  reports:
+    name: reports on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # Absolute: the catalogue's test runs in its own crate's directory and refuses a relative one.
+      KEEPSTER_REPORT_DIR: ${{ github.workspace }}/target/reports
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain's coverage tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov*
+          key: cargo-llvm-cov-0.9.1-${{ runner.os }}
+      - name: Install cargo-llvm-cov if it is not cached
+        run: command -v cargo-llvm-cov || cargo install --locked cargo-llvm-cov --version 0.9.1
+      - name: This platform's column of the platform table
+        run: cargo test --locked -p keepster-testkit --test degenerate every_case_makes_exactly_the_entries_it_declares
+      # Each report runs whatever the one before came to, so that one failure hides no other report.
+      - name: Watcher conformance
+        if: ${{ !cancelled() }}
+        run: cargo run --locked -q -p keepster-testkit --bin keepster-report -- conformance "$KEEPSTER_REPORT_DIR"
+      - name: Every test, measured for coverage
+        if: ${{ !cancelled() }}
+        run: cargo llvm-cov --workspace --all-features --locked --no-fail-fast --no-report
+      # Made from whatever the tests reached, even when some failed.
+      - name: Coverage
+        if: ${{ !cancelled() }}
+        run: |
+          cargo llvm-cov report --json --summary-only --output-path "$KEEPSTER_REPORT_DIR/coverage.json"
+          cargo run --locked -q -p keepster-testkit --bin keepster-report -- \
+            coverage "$KEEPSTER_REPORT_DIR/coverage.json" "$KEEPSTER_REPORT_DIR"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: reports-${{ runner.os }}
+          path: target/reports/
+          if-no-files-found: warn
+
+  table:
+    name: the platform table
+    needs: reports
+    # A platform whose leg failed has no column, and the table says it is untested.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reports-*
+          path: target/legs
+      - name: Assemble the table from every column
+        run: |
+          shopt -s nullglob
+          mkdir -p target/reports
+          for column in target/legs/reports-*/platform-*.json; do
+            cp "$column" target/reports/
+          done
+          cargo run --locked -q -p keepster-testkit --bin keepster-report -- table target/reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-table
+          path: target/reports/
