@@ -6,10 +6,6 @@
 
 use std::io;
 
-/// What a name that cannot be held as text is recorded as until ticket 74 holds names as bytes: the
-/// errno for an illegal byte sequence, which is what the name is to a UTF-8 path.
-pub(super) const UNREPRESENTABLE: &str = "eilseq";
-
 /// The symbolic name of `error`.
 pub(super) fn of(error: &io::Error) -> String {
     match error.raw_os_error() {
@@ -58,7 +54,7 @@ fn os_error(code: i32) -> String {
         libc::ENFILE => "enfile",
         libc::EDEADLK => "edeadlk",
         libc::ENOLCK => "enolck",
-        libc::EILSEQ => UNREPRESENTABLE,
+        libc::EILSEQ => "eilseq",
         libc::ETIMEDOUT => "etimedout",
         _ => return format!("errno_{code}"),
     };

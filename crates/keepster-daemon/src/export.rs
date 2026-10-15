@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use keepster_api::{
@@ -26,11 +26,12 @@ use keepster_store::{Selected, Selection, StoreError};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::DaemonState;
+use crate::path_parameter::PathParameter;
 use crate::problem::ProblemResponse;
 use crate::restore::{confirmed_by, mode_choice, resolutions_of, wire};
 use crate::roots::RootAddress;
 use crate::snapshots::{
-    SnapshotAddress, located, parse_path, parse_snapshot, prepare, store_problem, withheld_reason,
+    SnapshotAddress, located, parse_snapshot, prepare, store_problem, withheld_reason,
 };
 
 /// What an Export job is called.
@@ -112,11 +113,7 @@ pub(crate) async fn export(
 /// The request in the domain's terms, or the problem with it.
 fn parsed(request: ExportRequest) -> Result<export::ExportRequest, ProblemResponse> {
     let from = parse_snapshot(&request.from)?;
-    let paths = request
-        .paths
-        .iter()
-        .map(|path| parse_path(path))
-        .collect::<Result<Vec<_>, _>>()?;
+    let paths = crate::wire::requested(&request.paths, &request.paths_bytes)?;
     // Rid of `.` and `..` by name before anything compares it: a destination spelt to climb back into a
     // History Store or a Root is checked as where it leads.
     let dest = crate::places::lexical(&PathBuf::from(&request.dest));
@@ -139,7 +136,7 @@ fn parsed(request: ExportRequest) -> Result<export::ExportRequest, ProblemRespon
         paths,
         dest,
         confirmed,
-        resolutions: resolutions_of(request.resolutions)?,
+        resolutions: resolutions_of(&request.resolutions, &request.resolutions_bytes)?,
         skip_unresolvable: request.skip_unresolvable,
         beneath: Vec::new(),
     })
@@ -302,25 +299,9 @@ fn joined(error: tokio::task::JoinError) -> ProblemResponse {
     )
 }
 
-/// Which part of a Snapshot.
-#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub(crate) struct SelectionParameters {
-    /// A file or a directory, Root-relative; the whole Snapshot when absent.
-    path: Option<String>,
-}
-
-impl SelectionParameters {
-    /// The paths asked for: none for the whole Snapshot.
-    fn paths(&self) -> Result<Vec<RootPath>, ProblemResponse> {
-        let path = parse_path(self.path.as_deref().unwrap_or_default())?;
-
-        Ok(if path.is_root() {
-            Vec::new()
-        } else {
-            vec![path]
-        })
-    }
+/// The paths a selection's `path=` asks for: none for the whole Snapshot.
+fn selected(path: Option<RootPath>) -> Vec<RootPath> {
+    path.filter(|path| !path.is_root()).into_iter().collect()
 }
 
 /// How much a selection of a Snapshot holds, so its size is shown before an Export or a download.
@@ -329,7 +310,10 @@ impl SelectionParameters {
     path = "/v1/roots/{id}/snapshots/{snapshot}/stat",
     operation_id = "stat_selection",
     tag = "snapshots",
-    params(SnapshotAddress, SelectionParameters),
+    params(
+        SnapshotAddress,
+        ("path" = Option<String>, Query, description = "A file or a directory, Root-relative, its bytes percent-encoded; the whole Snapshot when absent."),
+    ),
     responses(
         (status = 200, description = "Its files and bytes, the exact size of its archive, and what it withholds.", body = SelectionSize),
         (status = 400, description = "The path is malformed.", body = Problem, content_type = "application/problem+json"),
@@ -340,11 +324,11 @@ impl SelectionParameters {
 pub(crate) async fn stat(
     State(state): State<DaemonState>,
     Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
-    Query(parameters): Query<SelectionParameters>,
+    PathParameter(path): PathParameter,
 ) -> Result<Json<SelectionSize>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
     let snapshot = parse_snapshot(&snapshot)?;
-    let paths = parameters.paths()?;
+    let paths = selected(path);
     let selection =
         crate::snapshots::blocking(move || selection(&location, snapshot, &paths)).await?;
 
@@ -359,7 +343,8 @@ pub(crate) async fn stat(
             .withheld
             .iter()
             .map(|(path, reason)| Withheld {
-                path: path.as_str().to_owned(),
+                path: crate::wire::text(path),
+                path_bytes: crate::wire::companion(path),
                 why: withheld_reason(*reason),
             })
             .collect(),
@@ -385,7 +370,7 @@ fn entries(files: &[Selected]) -> Vec<ArchiveEntry> {
 /// One file as the archive holds it.
 fn entry(file: &Selected) -> ArchiveEntry {
     ArchiveEntry {
-        name: file.path.as_str().to_owned(),
+        name: file.path.as_bytes().to_vec(),
         size: file.size,
         mode: file.mode,
         executable: file.executable,
@@ -400,7 +385,10 @@ fn entry(file: &Selected) -> ArchiveEntry {
     path = "/v1/roots/{id}/snapshots/{snapshot}/archive",
     operation_id = "download_archive",
     tag = "snapshots",
-    params(SnapshotAddress, SelectionParameters),
+    params(
+        SnapshotAddress,
+        ("path" = Option<String>, Query, description = "A file or a directory, Root-relative, its bytes percent-encoded; the whole Snapshot when absent."),
+    ),
     responses(
         (status = 200, description = "A zip64 archive, streamed, every file stored uncompressed with its permission bits, so its size is known first: `Content-Length` is what `stat` said. A Withheld path is absent, as from any export; `stat` names them. Generated as it is sent, so it cannot be resumed — an interrupted download starts again.", content_type = "application/zip", headers(
             ("Content-Length" = u64, description = "The archive's exact size."),
@@ -414,13 +402,13 @@ fn entry(file: &Selected) -> ArchiveEntry {
 pub(crate) async fn archive(
     State(state): State<DaemonState>,
     Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
-    Query(parameters): Query<SelectionParameters>,
+    PathParameter(path): PathParameter,
 ) -> Result<Response, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
     let snapshot = parse_snapshot(&snapshot)?;
-    let paths = parameters.paths()?;
+    let paths = selected(path);
     let name = match paths.first() {
-        Some(path) => format!("{}-{snapshot}.zip", path.name()),
+        Some(path) => format!("{}-{snapshot}.zip", String::from_utf8_lossy(path.name())),
         None => format!("{snapshot}.zip"),
     };
 

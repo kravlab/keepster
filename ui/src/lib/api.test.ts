@@ -16,6 +16,7 @@ import {
   timeline,
   writePreferences,
 } from './api'
+import { exactPath } from './paths'
 
 /** Answers every request with `response`, recording the URLs asked for. */
 const answer = (response: () => Response) => {
@@ -76,7 +77,7 @@ describe('the /v1 client', () => {
 
     await timeline('r', undefined, 'src/a b.rs')
 
-    expect(asked).toEqual(['/v1/roots/r/snapshots?limit=100&path=src%2Fa+b.rs'])
+    expect(asked).toEqual(['/v1/roots/r/snapshots?limit=100&path=src/a%20b.rs'])
   })
 
   it('finds the newest Snapshot that changed a path, or none', async () => {
@@ -134,7 +135,7 @@ describe('the /v1 client', () => {
     const asked = answer(() => json({ from: 'f', to: 't', files: [file] }))
 
     await expect(fileDiff('r', 'f', 't', 'dir/x.txt')).resolves.toEqual(file)
-    expect(asked).toEqual(['/v1/roots/r/diff?from=f&to=t&path=dir%2Fx.txt'])
+    expect(asked).toEqual(['/v1/roots/r/diff?from=f&to=t&path=dir/x.txt'])
   })
 
   it('reads content as UTF-8 the way the daemon renders hunks: BOM kept, bad bytes replaced', async () => {
@@ -194,6 +195,92 @@ describe('the /v1 client', () => {
       )
 
       await expect(restore('r', request)).rejects.toMatchObject({ status: 409, code: 'root_unavailable' })
+    })
+  })
+
+  // Names that are not UTF-8 (ticket 74): `\xff.txt` and `\xfe.txt`, the same text on the wire.
+  describe('a path that is not UTF-8', () => {
+    const odd = exactPath('\uFFFD.txt', '_y50eHQ')
+    const other = exactPath('\uFFFD.txt', '_i50eHQ')
+
+    it('asks for it by its bytes', async () => {
+      const asked = answer(() => json({ snapshots: [] }))
+
+      await timeline('r', undefined, odd)
+
+      expect(asked).toEqual(['/v1/roots/r/snapshots?limit=100&path=%FF.txt'])
+    })
+
+    it('finds its entry by its bytes, apart from one with the same text', async () => {
+      answer(() =>
+        json({
+          entries: [
+            { path: '\uFFFD.txt', path_bytes: '_i50eHQ', kind: 'file', size: 2 },
+            { path: '\uFFFD.txt', path_bytes: '_y50eHQ', kind: 'file', size: 1 },
+          ],
+        }),
+      )
+
+      await expect(entryAt('r', 'S1', odd)).resolves.toMatchObject({ path: odd, size: 1 })
+      await expect(entryAt('r', 'S1', other)).resolves.toMatchObject({ path: other, size: 2 })
+    })
+
+    it('holds a diff file by its bytes', async () => {
+      answer(() =>
+        json({
+          files: [{ path: '\uFFFD.txt', path_bytes: '_y50eHQ', binary: false, too_large: false, hunks: [] }],
+        }),
+      )
+
+      await expect(fileDiff('r', 'f', 't', odd)).resolves.toMatchObject({ path: odd })
+    })
+
+    it('restores it by its bytes, its answer keyed by them, and holds what comes back by them', async () => {
+      const sent: unknown[] = []
+      const plan = {
+        dry_run: true,
+        paths: [{ path: '\uFFFD.txt', path_bytes: '_y50eHQ', outcome: 'blocked', issues: [] }],
+      }
+      vi.stubGlobal('fetch', (_: string, init?: RequestInit) => {
+        sent.push(JSON.parse(String(init?.body)))
+        return Promise.resolve(json(plan))
+      })
+
+      const answered = await restore('r', {
+        from: 'S1',
+        paths: ['a.txt', odd],
+        dry_run: true,
+        confirm: [],
+        resolutions: { 'a.txt': { write: true }, [odd]: { modes: 'keep' } },
+        skip_unresolvable: false,
+      })
+
+      expect(sent).toEqual([
+        {
+          from: 'S1',
+          paths: ['a.txt', '\uFFFD.txt'],
+          paths_bytes: [null, '_y50eHQ'],
+          dry_run: true,
+          confirm: [],
+          resolutions: { 'a.txt': { write: true } },
+          resolutions_bytes: { _y50eHQ: { modes: 'keep' } },
+          skip_unresolvable: false,
+        },
+      ])
+      expect(answered).toMatchObject({ kind: 'done', restored: { paths: [{ path: odd }] } })
+    })
+
+    it('holds a path search hit by its bytes', async () => {
+      answer(() =>
+        json({
+          hits: [
+            { root: 'r', path: '\uFFFD.txt', path_bytes: '_y50eHQ', snapshots: 1, first: 'a', last: 'a', exists: true },
+          ],
+          truncated: false,
+        }),
+      )
+
+      await expect(searchPaths('txt')).resolves.toMatchObject({ hits: [{ path: odd }] })
     })
   })
 

@@ -113,7 +113,7 @@ fn a_path_is_found_with_its_span_and_whether_it_is_still_there() {
         .iter()
         .map(|hit| {
             (
-                hit.path.as_str(),
+                hit.path.to_str().expect("a text path"),
                 hit.snapshots,
                 hit.first,
                 hit.last,
@@ -136,7 +136,7 @@ fn a_path_is_found_with_its_span_and_whether_it_is_still_there() {
         .find_paths(&PathQuery::new("src/*.rs", true).expect("a pattern"), 100)
         .expect("a search");
     assert_eq!(pattern.len(), 1);
-    assert_eq!(pattern[0].path, "src/main.rs");
+    assert_eq!(pattern[0].path.to_lossy(), "src/main.rs");
 
     let (limited, more) = fixture
         .store
@@ -160,7 +160,12 @@ fn matches(
     let mut found = Vec::new();
     let counts = fixture.store.search_content(&plan, &query, &mut |hit| {
         if let ContentFound::Match { version, line, .. } = hit {
-            found.push((version.path.clone(), version.first, version.last, line.line));
+            found.push((
+                version.path.to_lossy().into_owned(),
+                version.first,
+                version.last,
+                line.line,
+            ));
         }
         ControlFlow::Continue(())
     });
@@ -207,7 +212,13 @@ fn the_plan_knows_its_cost_and_names_what_it_cannot_search() {
     let withheld: Vec<(&str, WithheldReason, SnapshotId)> = plan
         .withheld
         .iter()
-        .map(|met| (met.path.as_str(), met.reason, met.snapshot))
+        .map(|met| {
+            (
+                met.path.to_str().expect("a text path"),
+                met.reason,
+                met.snapshot,
+            )
+        })
         .collect();
     assert_eq!(withheld, [("big.bin", WithheldReason::TooLarge, first)]);
 

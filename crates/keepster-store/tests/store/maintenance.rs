@@ -188,7 +188,7 @@ fn a_packed_store_reads_back_as_it_did_loose() {
         packed
             .entries
             .iter()
-            .find(|entry| entry.path.as_str() == path)
+            .find(|entry| entry.path.to_lossy() == path)
             .map(|entry| entry.binary)
             .expect("listed")
     };

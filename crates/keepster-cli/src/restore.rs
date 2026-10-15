@@ -12,13 +12,15 @@ use std::time::SystemTime;
 
 use keepster_api::{
     Confirm, ConfirmAll, Confirmation, ErrorCode, ModesChoice, NameCaseChoice, PathResolution,
-    Problem, RestoreIssue, RestoreOutcome, RestoreRequest, Restored, RestoredPath, Root,
+    Problem, RestoreIssue, RestoreOutcome, RestoreRequest, Restored, RestoredPath, Root, path_text,
+    paths_bytes, resolutions_to_wire,
 };
 
 use crate::client::DaemonClient;
 use crate::command::{ResolutionArgs, RestoreArgs};
 use crate::exit;
 use crate::history::{inside, located, selected};
+use crate::names::{exact, joined, printed, printed_all, split_assignment, write_path};
 use crate::roots::{answered, body_of};
 
 /// Put a Snapshot's versions of files back.
@@ -61,12 +63,15 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
     let url = format!("/v1/roots/{}/restore", root.id);
     let interactive = !args.resolving.no_input && !args.json && io::stdin().is_terminal();
     loop {
+        let (resolutions, resolutions_bytes) = resolutions_to_wire(&answers.resolutions);
         let request = RestoreRequest {
             from: from.clone(),
-            paths: paths.clone(),
+            paths: paths.iter().map(|path| path_text(path)).collect(),
+            paths_bytes: paths_bytes(&paths),
             dry_run: args.dry_run,
             confirm: answers.confirm.clone(),
-            resolutions: answers.resolutions.clone(),
+            resolutions,
+            resolutions_bytes,
             skip_unresolvable: answers.skip_unresolvable,
             modes: answers.modes,
         };
@@ -116,8 +121,9 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
     }
 }
 
-/// `path` relative to the Root, as every endpoint takes it — or the exit code of a path outside it.
-pub(crate) fn within_root(root: &Root, path: &Path) -> Result<String, u8> {
+/// `path` relative to the Root, as every endpoint takes it, as its bytes — or the exit code of a path
+/// outside it.
+pub(crate) fn within_root(root: &Root, path: &Path) -> Result<Vec<u8>, u8> {
     match inside(Path::new(&root.path), path) {
         Ok(Some(relative)) => Ok(relative),
         Ok(None) => {
@@ -140,12 +146,12 @@ pub(crate) fn within_root(root: &Root, path: &Path) -> Result<String, u8> {
 
 /// The paths typed, relative to the Root — none when one is the Root itself, which is every file and
 /// what no path means to the daemon.
-pub(crate) fn paths_within(root: &Root, typed: &[PathBuf]) -> Result<Vec<String>, u8> {
+pub(crate) fn paths_within(root: &Root, typed: &[PathBuf]) -> Result<Vec<Vec<u8>>, u8> {
     let mut paths = typed
         .iter()
         .map(|path| within_root(root, path))
         .collect::<Result<Vec<_>, _>>()?;
-    if paths.iter().any(String::is_empty) {
+    if paths.iter().any(Vec::is_empty) {
         paths.clear();
     }
 
@@ -173,8 +179,8 @@ pub(crate) struct Operation {
 pub(crate) struct Answers {
     /// The changes agreed to.
     pub(crate) confirm: Confirm,
-    /// Each path's answer.
-    pub(crate) resolutions: BTreeMap<String, PathResolution>,
+    /// Each path's answer, by the path's bytes.
+    pub(crate) resolutions: BTreeMap<Vec<u8>, PathResolution>,
     /// Whether what is still in the way is passed over.
     pub(crate) skip_unresolvable: bool,
     /// The answer about diverging modes for every file without its own.
@@ -187,7 +193,7 @@ impl Answers {
     pub(crate) fn from_flags(
         flags: &ResolutionArgs,
         confirm: Confirm,
-        within: &dyn Fn(&Path) -> Result<String, u8>,
+        within: &dyn Fn(&Path) -> Result<Vec<u8>, u8>,
     ) -> Result<Self, u8> {
         let mut answers = Self {
             confirm,
@@ -199,43 +205,49 @@ impl Answers {
             let relative = within(path)?;
             answers.resolutions.entry(relative).or_default().write = Some(true);
         }
+        // Each `PATH=` names a path as it was typed, which on Unix need not be UTF-8 (ticket 74).
         for given in &flags.rename {
-            let Some((path, name)) = given.rsplit_once('=') else {
-                eprintln!("keepster: --rename takes PATH=NAME, not `{given}`");
+            let Some((path, name)) = split_assignment(given) else {
+                eprintln!(
+                    "keepster: --rename takes PATH=NAME, not `{}`",
+                    given.to_string_lossy()
+                );
                 return Err(exit::USAGE);
             };
-            let relative = within(Path::new(path))?;
-            answers.resolutions.entry(relative).or_default().rename_to = Some(name.to_owned());
+            let relative = within(&path)?;
+            answers.resolutions.entry(relative).or_default().rename_to = Some(name);
         }
         for given in &flags.name_case {
-            let (path, choice) = match given.rsplit_once('=') {
-                Some((path, "keep")) => (path, NameCaseChoice::KeepExisting),
-                Some((path, "snapshot")) => (path, NameCaseChoice::UseSnapshot),
+            let (path, choice) = match split_assignment(given) {
+                Some((path, answer)) if answer == "keep" => (path, NameCaseChoice::KeepExisting),
+                Some((path, answer)) if answer == "snapshot" => (path, NameCaseChoice::UseSnapshot),
                 _ => {
                     eprintln!(
-                        "keepster: --name-case takes PATH=keep or PATH=snapshot, not `{given}`"
+                        "keepster: --name-case takes PATH=keep or PATH=snapshot, not `{}`",
+                        given.to_string_lossy()
                     );
                     return Err(exit::USAGE);
                 }
             };
-            let relative = within(Path::new(path))?;
+            let relative = within(&path)?;
             answers.resolutions.entry(relative).or_default().name_case = Some(choice);
         }
         for given in &flags.modes {
-            let (path, answer) = match given.rsplit_once('=') {
+            let (path, answer) = match split_assignment(given) {
                 Some((path, answer)) => (Some(path), answer),
-                None => (None, given.as_str()),
+                None => (None, given.to_string_lossy().into_owned()),
             };
-            let Some(choice) = modes_choice(answer) else {
+            let Some(choice) = modes_choice(&answer) else {
                 eprintln!(
-                    "keepster: --modes takes snapshot, keep, PATH=snapshot or PATH=keep, not `{given}`"
+                    "keepster: --modes takes snapshot, keep, PATH=snapshot or PATH=keep, not `{}`",
+                    given.to_string_lossy()
                 );
                 return Err(exit::USAGE);
             };
             match path {
                 None => answers.modes = Some(choice),
                 Some(path) => {
-                    let relative = within(Path::new(path))?;
+                    let relative = within(&path)?;
                     answers.resolutions.entry(relative).or_default().modes = Some(choice);
                 }
             }
@@ -298,9 +310,11 @@ fn report(restored: &Restored, typed: &[PathBuf]) -> u8 {
             (_, RestoreOutcome::Failed) => "failed",
             (_, RestoreOutcome::Blocked) => "blocked",
         };
-        let _ = write!(out, "{verb}  {}", path.path);
+        let _ = write!(out, "{verb}  ");
+        let _ = write_path(&mut out, &path.path, path.path_bytes.as_deref());
         if let Some(target) = &path.target {
-            let _ = write!(out, " -> {target}");
+            let _ = write!(out, " -> ");
+            let _ = write_path(&mut out, target, path.target_bytes.as_deref());
         }
         if let Some(error) = &path.error {
             let _ = write!(out, "  ({error})");
@@ -349,9 +363,12 @@ fn report(restored: &Restored, typed: &[PathBuf]) -> u8 {
     }
 }
 
-/// Every file that stopped the request, with what would let it through.
+/// Every file that stopped the request, with what would let it through. Each path is printed as
+/// [`printed`] spells it, so the hint can be typed back as it stands (ticket 74).
 pub(crate) fn report_blocked(paths: &[RestoredPath], operation: Operation) {
-    eprintln!(
+    let mut err = io::stderr().lock();
+    let _ = writeln!(
+        err,
         "keepster: nothing was {}; these need an answer first:",
         operation.past
     );
@@ -359,52 +376,74 @@ pub(crate) fn report_blocked(paths: &[RestoredPath], operation: Operation) {
         .iter()
         .filter(|path| path.outcome == RestoreOutcome::Blocked)
     {
+        let name = printed(&path.path, path.path_bytes.as_deref());
         for issue in &path.issues {
             let hint = match (issue.confirm.as_deref(), issue.resolution.as_deref()) {
-                (Some(confirm), _) => format!("pass --{} (or --force)", confirm.replace('_', "-")),
-                (_, Some("write")) => {
-                    format!("pass --pick {} to write it and skip the others", path.path)
+                (Some(confirm), _) => {
+                    format!("pass --{} (or --force)", confirm.replace('_', "-")).into_bytes()
                 }
-                (_, Some("rename_to")) => format!("pass --rename {}=<name>", path.path),
-                (_, Some("name_case")) => format!("pass --name-case {}=keep|snapshot", path.path),
-                (_, Some("modes")) => format!(
-                    "{}; pass --modes {}=snapshot|keep, or --modes snapshot|keep for every file",
-                    modes_of(issue).unwrap_or_default(),
-                    path.path
-                ),
+                (_, Some("write")) => [
+                    &b"pass --pick "[..],
+                    &name,
+                    b" to write it and skip the others",
+                ]
+                .concat(),
+                (_, Some("rename_to")) => [&b"pass --rename "[..], &name, b"=<name>"].concat(),
+                (_, Some("name_case")) => {
+                    [&b"pass --name-case "[..], &name, b"=keep|snapshot"].concat()
+                }
+                (_, Some("modes")) => [
+                    modes_of(issue).unwrap_or_default().as_bytes(),
+                    b"; pass --modes ",
+                    &name,
+                    b"=snapshot|keep, or --modes snapshot|keep for every file",
+                ]
+                .concat(),
                 _ => format!(
                     "it cannot be {}; pass --skip-unresolvable to {} the rest",
                     operation.past, operation.verb
-                ),
+                )
+                .into_bytes(),
             };
-            eprintln!("  {}: {} — {hint}", path.path, issue.reason);
+            let _ = err.write_all(
+                &[
+                    &b"  "[..],
+                    &name,
+                    format!(": {} — ", issue.reason).as_bytes(),
+                    &hint,
+                    b"\n",
+                ]
+                .concat(),
+            );
         }
     }
 }
 
 /// Ask about everything that stopped the request, and amend its answers; `false` when the person
-/// declined.
+/// declined. Each answer is keyed by the exact bytes of its path, and each question names the path as
+/// [`printed`] spells it.
 pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Operation) -> bool {
     let asked = request.clone();
-    let blocked: Vec<&RestoredPath> = paths
+    let blocked: Vec<(&RestoredPath, Vec<u8>)> = paths
         .iter()
         .filter(|path| path.outcome == RestoreOutcome::Blocked)
+        .map(|path| (path, printed(&path.path, path.path_bytes.as_deref())))
         .collect();
 
     let wanted: BTreeSet<String> = blocked
         .iter()
-        .flat_map(|path| path.issues.iter())
+        .flat_map(|(path, _)| path.issues.iter())
         .filter_map(|issue| issue.confirm.clone())
         .collect();
     for confirm in wanted {
-        let affected: Vec<&str> = blocked
+        let affected: Vec<Vec<u8>> = blocked
             .iter()
-            .filter(|path| {
+            .filter(|(path, _)| {
                 path.issues
                     .iter()
                     .any(|issue| issue.confirm.as_deref() == Some(confirm.as_str()))
             })
-            .map(|path| path.path.as_str())
+            .map(|(_, name)| name.clone())
             .collect();
         let question = match confirm.as_str() {
             "create_parents" => "Create the missing directories for",
@@ -414,7 +453,7 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
             "dest_in_root" => "Write into a Watched Root, which will capture it,",
             _ => "Overwrite what the Safety Snapshot cannot hold, at",
         };
-        if !yes(&format!("{question} {}?", affected.join(", "))) {
+        if !yes([question.as_bytes(), b" ", &joined(&affected), b"?"].concat()) {
             return false;
         }
         let Some(confirmation) = parse_confirmation(&confirm) else {
@@ -427,22 +466,25 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
     }
 
     // Modes first, and for every file at once where there are several: a `chmod -R` diverges everywhere.
-    let diverging: Vec<(&str, &RestoreIssue)> = blocked
+    let diverging: Vec<&[u8]> = blocked
         .iter()
-        .flat_map(|path| {
+        .flat_map(|(path, name)| {
             path.issues
                 .iter()
                 .filter(|issue| issue.resolution.as_deref() == Some("modes"))
-                .map(|issue| (path.path.as_str(), issue))
+                .map(move |_| name.as_slice())
         })
         .collect();
     if diverging.len() > 1 {
-        let names: Vec<&str> = diverging.iter().map(|(path, _)| *path).collect();
-        let answer = line(&format!(
-            "The permission bits of {} differ from the Snapshot's. Take the Snapshot's, keep those \
-             on disk, or answer for each? [s/k/e] ",
-            names.join(", ")
-        ));
+        let answer = line(
+            [
+                &b"The permission bits of "[..],
+                &joined(&diverging),
+                b" differ from the Snapshot's. Take the Snapshot's, keep those on disk, or answer \
+                  for each? [s/k/e] ",
+            ]
+            .concat(),
+        );
         match answer.as_str() {
             "e" | "each" => {}
             answer => match modes_choice(answer) {
@@ -453,35 +495,55 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
     }
 
     let mut refused = Vec::new();
-    for path in &blocked {
+    for (path, name) in &blocked {
         for issue in &path.issues {
-            let resolution = request.resolutions.entry(path.path.clone()).or_default();
+            let resolution = request
+                .resolutions
+                .entry(exact(&path.path, path.path_bytes.as_deref()))
+                .or_default();
             match issue.resolution.as_deref() {
                 Some("write") => {
-                    let others = issue.paths.join(", ");
-                    if yes(&format!(
-                        "{} and {others} are one file here. Write {}?",
-                        path.path, path.path
-                    )) {
+                    let others = printed_all(&issue.paths, &issue.paths_bytes);
+                    if yes([
+                        &name[..],
+                        b" and ",
+                        &joined(&others),
+                        b" are one file here. Write ",
+                        name,
+                        b"?",
+                    ]
+                    .concat())
+                    {
                         resolution.write = Some(true);
                     }
                 }
                 Some("rename_to") => {
-                    let name = line(&format!(
-                        "{} cannot be named so here. New name (empty to stop): ",
-                        path.path
-                    ));
+                    let name = line(
+                        [
+                            &name[..],
+                            b" cannot be named so here. New name (empty to stop): ",
+                        ]
+                        .concat(),
+                    );
                     if name.is_empty() {
                         return false;
                     }
                     resolution.rename_to = Some(name);
                 }
                 Some("name_case") => {
-                    let existing = issue.existing.as_deref().unwrap_or("another name");
-                    let answer = line(&format!(
-                        "{existing} is already there. Keep that name, or use the Snapshot's {}? [k/s] ",
-                        path.path
-                    ));
+                    let existing = match &issue.existing {
+                        Some(existing) => printed(existing, issue.existing_bytes.as_deref()),
+                        None => b"another name".to_vec(),
+                    };
+                    let answer = line(
+                        [
+                            &existing[..],
+                            b" is already there. Keep that name, or use the Snapshot's ",
+                            name,
+                            b"? [k/s] ",
+                        ]
+                        .concat(),
+                    );
                     resolution.name_case = match answer.as_str() {
                         "k" | "keep" => Some(NameCaseChoice::KeepExisting),
                         "s" | "snapshot" => Some(NameCaseChoice::UseSnapshot),
@@ -489,11 +551,15 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
                     };
                 }
                 Some("modes") if request.modes.is_none() => {
-                    let answer = line(&format!(
-                        "{}: permission bits {}. Take the Snapshot's, or keep those on disk? [s/k] ",
-                        path.path,
-                        modes_of(issue).unwrap_or_default()
-                    ));
+                    let answer = line(
+                        [
+                            &name[..],
+                            b": permission bits ",
+                            modes_of(issue).unwrap_or_default().as_bytes(),
+                            b". Take the Snapshot's, or keep those on disk? [s/k] ",
+                        ]
+                        .concat(),
+                    );
                     match modes_choice(&answer) {
                         Some(choice) => resolution.modes = Some(choice),
                         None => return false,
@@ -501,7 +567,7 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
                 }
                 Some(_) => {}
                 None if issue.confirm.is_none() => {
-                    refused.push(format!("{}: {}", path.path, issue.reason))
+                    refused.push([&name[..], b": ", issue.reason.as_bytes()].concat())
                 }
                 None => {}
             }
@@ -512,8 +578,17 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
         .retain(|_, resolution| *resolution != PathResolution::default());
 
     if !refused.is_empty() {
-        eprintln!("These cannot be {}: {}", operation.past, refused.join("; "));
-        if !yes(&format!("Skip them and {} the rest?", operation.verb)) {
+        let mut err = io::stderr().lock();
+        let _ = err.write_all(
+            &[
+                format!("These cannot be {}: ", operation.past).as_bytes(),
+                &refused.join(&b"; "[..]),
+                b"\n",
+            ]
+            .concat(),
+        );
+        drop(err);
+        if !yes(format!("Skip them and {} the rest?", operation.verb)) {
             return false;
         }
         request.skip_unresolvable = true;
@@ -527,15 +602,21 @@ fn parse_confirmation(name: &str) -> Option<Confirmation> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-/// A yes-or-no answer from the terminal, no unless said.
-pub(crate) fn yes(question: &str) -> bool {
-    matches!(line(&format!("{question} [y/N] ")).as_str(), "y" | "yes")
+/// A yes-or-no answer from the terminal, no unless said. The question is bytes: it may name a path
+/// that is not UTF-8.
+pub(crate) fn yes(question: impl AsRef<[u8]>) -> bool {
+    matches!(
+        line([question.as_ref(), b" [y/N] "].concat()).as_str(),
+        "y" | "yes"
+    )
 }
 
-/// One line typed at the terminal, trimmed.
-pub(crate) fn line(prompt: &str) -> String {
-    eprint!("{prompt}");
-    let _ = io::stderr().flush();
+/// One line typed at the terminal, trimmed. The prompt is bytes: it may name a path that is not UTF-8.
+pub(crate) fn line(prompt: impl AsRef<[u8]>) -> String {
+    let mut err = io::stderr().lock();
+    let _ = err.write_all(prompt.as_ref());
+    let _ = err.flush();
+    drop(err);
     let mut answer = String::new();
     let _ = io::stdin().lock().read_line(&mut answer);
 

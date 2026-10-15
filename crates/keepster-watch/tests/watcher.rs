@@ -51,19 +51,25 @@ fn watching(root: &Path, policy: &CapturePolicy) -> (Watcher, mpsc::Receiver<Wat
     (watcher, receiver)
 }
 
-/// Wait until an event names `path`.
-fn eventually_names(receiver: &mpsc::Receiver<WatchEvent>, path: &str) {
+/// Wait until an event names `path`, given as its exact bytes.
+fn eventually_names(receiver: &mpsc::Receiver<WatchEvent>, path: impl AsRef<[u8]>) {
+    let path = path.as_ref();
     let deadline = std::time::Instant::now() + PATIENCE;
     while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
         match receiver.recv_timeout(left) {
-            Ok(WatchEvent::Changed(paths)) if paths.iter().any(|named| named.as_str() == path) => {
+            Ok(WatchEvent::Changed(paths))
+                if paths.iter().any(|named| named.as_bytes() == path) =>
+            {
                 return;
             }
             Ok(_) => {}
             Err(_) => break,
         }
     }
-    panic!("no event named `{path}` within {PATIENCE:?}");
+    panic!(
+        "no event named `{}` within {PATIENCE:?}",
+        String::from_utf8_lossy(path)
+    );
 }
 
 #[test]
@@ -116,7 +122,7 @@ fn an_excluded_directory_is_never_watched() {
     let watched: Vec<String> = watcher
         .watched()
         .into_iter()
-        .map(|path| path.as_str().to_owned())
+        .map(|path| path.to_lossy().into_owned())
         .collect();
     assert_eq!(watched, ["", "src", "src/deep"]);
 }
@@ -135,7 +141,7 @@ fn a_directory_ignored_by_a_gitignore_is_not_watched_when_ignore_files_are_honou
     let watched: Vec<String> = watcher
         .watched()
         .into_iter()
-        .map(|path| path.as_str().to_owned())
+        .map(|path| path.to_lossy().into_owned())
         .collect();
     assert_eq!(watched, ["", "src"]);
 }
@@ -154,4 +160,30 @@ fn a_directory_removed_and_created_again_is_watched_again() {
     std::fs::write(root.join("build/out.txt"), b"rebuilt").expect("a file in it");
 
     eventually_names(&events, "build/out.txt");
+}
+
+/// A name that is not UTF-8 is a name like any other (ticket 74): the directory holding it is watched,
+/// and a change beneath it arrives under its exact bytes rather than being dropped.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_change_beneath_a_name_that_is_not_utf8_arrives_under_its_exact_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path().canonicalize().expect("the root");
+    let odd = root.join(std::ffi::OsStr::from_bytes(b"\xfe"));
+    std::fs::create_dir_all(&odd).expect("a directory with a name that is not UTF-8");
+    let (watcher, events) = watching(&root, &CapturePolicy::default());
+
+    assert!(
+        watcher
+            .watched()
+            .iter()
+            .any(|path| path.as_bytes() == b"\xfe"),
+        "{:?}",
+        watcher.watched()
+    );
+    std::fs::write(odd.join(std::ffi::OsStr::from_bytes(b"\xff.bin")), b"new").expect("a file");
+
+    eventually_names(&events, b"\xfe/\xff.bin");
 }

@@ -2,6 +2,10 @@
  * The `/v1` shapes the SPA reads, written by hand and kept narrow: only the fields the UI uses. Each type
  * names its counterpart in the `keepster-api` crate, which is the contract (`openapi.json` is generated
  * from it).
+ *
+ * A path that is not UTF-8 comes as its lossy text plus a `_bytes` companion in base64url (ticket 74).
+ * `api.ts` folds each companion into its path as `paths.ts` holds one, both ways, so past it a `path` is
+ * the exact path and its companion is never read.
  */
 
 /** Which side of a diff a line is on (`keepster_api::LineKind`). */
@@ -72,8 +76,10 @@ export type FileChange = 'added' | 'modified' | 'deleted' | 'renamed'
 /** One file's part of a diff (`keepster_api::DiffFile`). */
 export interface DiffFile {
   path: string
+  path_bytes?: string | null
   /** The path on the older side, for a rename. */
   old_path?: string | null
+  old_path_bytes?: string | null
   /** Absent for a path asked about that did not change. */
   change?: FileChange | null
   /** Either version is binary: no hunks. */
@@ -97,6 +103,7 @@ export type EntryKind = 'file' | 'dir' | 'symlink' | 'withheld' | 'omitted'
 /** One path a Snapshot holds (`keepster_api::Entry`). */
 export interface Entry {
   path: string
+  path_bytes?: string | null
   kind: EntryKind
   binary?: boolean | null
   size?: number | null
@@ -130,10 +137,14 @@ export interface RestoreRequest {
   from: string
   /** Root-relative paths; a directory means everything beneath it. */
   paths: string[]
+  /** One per path, `null` for each that is UTF-8; absent when every one is. */
+  paths_bytes?: (string | null)[]
   dry_run: boolean
   confirm: Confirmation[]
   /** Keyed by the Snapshot path each answer is for. */
   resolutions: Record<string, PathResolution>
+  /** The answers for paths that are not UTF-8, keyed by their bytes in base64url. */
+  resolutions_bytes?: Record<string, PathResolution>
   skip_unresolvable: boolean
 }
 
@@ -150,12 +161,15 @@ export interface RestoreIssue {
   resolution?: 'write' | 'rename_to' | 'name_case' | 'modes' | null
   /** For `type_change` and `link_check_failed`: where, Root-relative. */
   at?: string | null
+  at_bytes?: string | null
   /** For `overwrite_unrecoverable`: why the current content could not be got back. */
   why?: string | null
   /** For `name_case`: the name on disk. */
   existing?: string | null
+  existing_bytes?: string | null
   /** For `hardlinked`, the file's other names in the Root; for `name_collision`, the other paths. */
   paths?: string[]
+  paths_bytes?: (string | null)[]
   /** For `hardlinked`: how many more names it has outside the Root. */
   links_outside?: number | null
   /** For `modes_differ`: the bits on disk and in the Snapshot. */
@@ -166,9 +180,11 @@ export interface RestoreIssue {
 /** One file of a Restore (`keepster_api::RestoredPath`). */
 export interface RestoredPath {
   path: string
+  path_bytes?: string | null
   outcome: RestoreOutcome
   /** Where it is written, when that is not `path`. */
   target?: string | null
+  target_bytes?: string | null
   /** For a `blocked` or `skipped` path, every reason. */
   issues?: RestoreIssue[]
   /** For a `failed` path, why. */
@@ -209,6 +225,7 @@ export interface Preferences {
 export interface PathHit {
   root: string
   path: string
+  path_bytes?: string | null
   /** How many Snapshots changed it. */
   snapshots: number
   /** The first Snapshot that changed it. */
@@ -246,6 +263,7 @@ export interface ContentMatch {
   type: 'match'
   root: string
   path: string
+  path_bytes?: string | null
   /** The version's content identity, opaque. */
   content: string
   /** The first Snapshot that held this content at this path. */
@@ -277,7 +295,15 @@ export interface SearchSummary {
 export type ContentRecord =
   | { type: 'plan'; roots: SearchCost[] }
   | ContentMatch
-  | { type: 'withheld'; root: string; path: string; reason: string; snapshot: string; kind?: string | null }
+  | {
+      type: 'withheld'
+      root: string
+      path: string
+      path_bytes?: string | null
+      reason: string
+      snapshot: string
+      kind?: string | null
+    }
   | SearchProgress
   | { type: 'error'; root: string; detail: string }
   | SearchSummary

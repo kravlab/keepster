@@ -935,18 +935,18 @@
             }
           },
           {
-            "name": "path",
+            "name": "format",
             "in": "query",
-            "description": "One file, Root-relative, by either name if it was renamed: its hunks rather than the summary.",
+            "description": "`json` (the default) for the structured answer, or `unified` for the patch text git prints.",
             "required": false,
             "schema": {
               "type": "string"
             }
           },
           {
-            "name": "format",
+            "name": "path",
             "in": "query",
-            "description": "`json` (the default) for the structured answer, or `unified` for the patch text git prints.",
+            "description": "One file, Root-relative, its bytes percent-encoded, by either name if it was renamed: its hunks rather than the summary.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1033,7 +1033,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "The path, relative to the Root and `/`-separated. It need not exist.",
+            "description": "The path, relative to the Root and `/`-separated, its bytes percent-encoded. It need not exist.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1784,7 +1784,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "Only the Snapshots that changed this Root-relative path.",
+            "description": "Only the Snapshots that changed this Root-relative path, its bytes percent-encoded.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1975,7 +1975,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "A file or a directory, Root-relative; the whole Snapshot when absent.",
+            "description": "A file or a directory, Root-relative, its bytes percent-encoded; the whole Snapshot when absent.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2067,7 +2067,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "The file, Root-relative.",
+            "description": "The file, Root-relative, its bytes percent-encoded.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2271,7 +2271,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "The directory to list, Root-relative; the Root itself when absent.",
+            "description": "The directory to list, Root-relative, its bytes percent-encoded; the Root itself when absent.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2370,7 +2370,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "A file or a directory, Root-relative; the whole Snapshot when absent.",
+            "description": "A file or a directory, Root-relative, its bytes percent-encoded; the whole Snapshot when absent.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2468,7 +2468,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "A file or directory, Root-relative: only what is at or beneath it is read.",
+            "description": "A file or directory, Root-relative, its bytes percent-encoded: only what is at or beneath it is read.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3082,6 +3082,13 @@
                 "type": "string",
                 "description": "The path, Root-relative."
               },
+              "path_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+              },
               "root": {
                 "type": "string",
                 "description": "The Root, by identity."
@@ -3119,6 +3126,13 @@
               "path": {
                 "type": "string",
                 "description": "The path, Root-relative."
+              },
+              "path_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
               },
               "reason": {
                 "type": "string",
@@ -3479,6 +3493,16 @@
             },
             "description": "Working Tree files that could not be read. Each keeps its last captured content, as a capture\nkeeps it, so the comparison is not whole there."
           },
+          "omitted_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`omitted` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "to": {
             "type": "string",
             "description": "The newer side: a Snapshot's identity, or `working` for the Working Tree as the next Snapshot\nwould hold it."
@@ -3541,9 +3565,23 @@
             ],
             "description": "Where a renamed file was on the older side."
           },
+          "old_path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`old_path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "path": {
             "type": "string",
             "description": "Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root. A\ndirectory is named only when its permission bits are all that changed there."
+          },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
           },
           "too_large": {
             "type": "boolean",
@@ -3713,6 +3751,13 @@
           "path": {
             "type": "string",
             "description": "Where it is, relative to the Root, `/`-separated."
+          },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
           },
           "permissions": {
             "type": [
@@ -4366,12 +4411,26 @@
             "type": "string",
             "description": "The path asked about, relative to the Root."
           },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "pruned_by": {
             "type": [
               "string",
               "null"
             ],
             "description": "With `pruned`, the excluded ancestor directory that is never entered."
+          },
+          "pruned_by_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`pruned_by` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
           },
           "reason": {
             "type": [
@@ -4486,9 +4545,29 @@
             },
             "description": "Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot."
           },
+          "paths_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "resolutions": {
             "type": "object",
             "description": "Answers to what only the user can settle, keyed by the Snapshot path they are for.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PathResolution"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "resolutions_bytes": {
+            "type": "object",
+            "description": "Answers for paths that are not UTF-8, keyed by their exact bytes in base64url; an entry here wins\nover one in `resolutions` naming the same bytes (ticket 74).",
             "additionalProperties": {
               "$ref": "#/components/schemas/PathResolution"
             },
@@ -4831,6 +4910,16 @@
             },
             "description": "Forget: every Root-relative path it removed."
           },
+          "removed_paths_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`removed_paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "safety_snapshot": {
             "type": [
               "string",
@@ -4853,6 +4942,16 @@
               "type": "string"
             },
             "description": "Forget: the removed paths whose file in the Working Tree still holds what was removed. Forget\nnever touches the Working Tree, so the secret there still needs rotating — and, unless `excluded`,\nthe next Snapshot captures it again."
+          },
+          "still_on_disk_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`still_on_disk` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
           }
         }
       },
@@ -5177,6 +5276,13 @@
             "type": "string",
             "description": "The path, Root-relative."
           },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "root": {
             "type": "string",
             "description": "The Root it is in, by identity."
@@ -5402,6 +5508,16 @@
             },
             "description": "The directories it pruned, named and unmeasured."
           },
+          "pruned_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`pruned` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "reason": {
             "type": [
               "string",
@@ -5473,6 +5589,13 @@
                   "null"
                 ],
                 "description": "Where it lies inside that Root, `/`-separated, when it is not the Root itself: classified by the\nRoot's rules, as a capture of the Root would classify it."
+              },
+              "within_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`within` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
               }
             }
           },
@@ -5504,6 +5627,13 @@
               "path": {
                 "type": "string",
                 "description": "Where, relative to the directory previewed."
+              },
+              "path_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
               },
               "pruned": {
                 "type": "boolean",
@@ -5690,6 +5820,13 @@
           "path": {
             "type": "string",
             "description": "Where, relative to the directory previewed."
+          },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
           }
         }
       },
@@ -5748,7 +5885,7 @@
           },
           "details": {
             "type": "object",
-            "description": "Machine-readable particulars — which path, which id, which limit — so a client composes its own\nmessage instead of parsing ours.",
+            "description": "Machine-readable particulars — which path, which id, which limit — so a client composes its own\nmessage instead of parsing ours. A `path` that is not UTF-8 is joined by `path_bytes`, its exact\nbytes in base64url (ticket 74).",
             "additionalProperties": {
               "type": "string"
             },
@@ -5912,6 +6049,13 @@
             ],
             "description": "For `type_change` and `link_check_failed`: where, Root-relative."
           },
+          "at_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`at` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "confirm": {
             "type": [
               "string",
@@ -5935,6 +6079,13 @@
             ],
             "description": "For `name_case`: the name on disk."
           },
+          "existing_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`existing` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "links_outside": {
             "type": [
               "integer",
@@ -5950,6 +6101,16 @@
               "type": "string"
             },
             "description": "For `hardlinked`: the file's other names inside the Root. For `name_collision`: the other\nSnapshot paths that are one file with it."
+          },
+          "paths_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
           },
           "reason": {
             "type": "string",
@@ -6029,9 +6190,29 @@
             },
             "description": "Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot."
           },
+          "paths_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "resolutions": {
             "type": "object",
             "description": "Answers to what only the user can settle, keyed by the Snapshot path they are for.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PathResolution"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "resolutions_bytes": {
+            "type": "object",
+            "description": "Answers for paths that are not UTF-8, keyed by their exact bytes in base64url; an entry here wins\nover one in `resolutions` naming the same bytes (ticket 74).",
             "additionalProperties": {
               "$ref": "#/components/schemas/PathResolution"
             },
@@ -6103,12 +6284,26 @@
             "type": "string",
             "description": "The file's path in the Snapshot."
           },
+          "path_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
+          },
           "target": {
             "type": [
               "string",
               "null"
             ],
             "description": "Where it is written, when that is not `path`: a rename, or a name in another case kept."
+          },
+          "target_bytes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`target` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
           }
         }
       },
@@ -6596,6 +6791,16 @@
             },
             "description": "The Root-relative paths that were meant to be captured and are not held as they are, each one\nthe reason this Snapshot is incomplete.\n\nNamed by the answer to a capture. The timeline carries the flag but not the list: each is a\nrecord of the Snapshot itself, which `entries` lists with why."
           },
+          "omitted_bytes": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "`omitted` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent\nwhen every one is (ticket 74)."
+          },
           "pinned": {
             "type": "boolean",
             "description": "Whether it is pinned, and so survives Retention unconditionally until it is unpinned (ADR 0002)."
@@ -7004,6 +7209,13 @@
               "path": {
                 "type": "string",
                 "description": "Where it is, relative to the Root."
+              },
+              "path_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74)."
               }
             }
           }

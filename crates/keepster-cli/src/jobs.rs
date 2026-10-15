@@ -12,6 +12,7 @@ use crate::client::DaemonClient;
 use crate::command::{ForgetArgs, JobArgs, MaintainArgs};
 use crate::events::EventStream;
 use crate::exit;
+use crate::names::{joined, printed_all};
 use crate::roots::{answered, exit_code_for};
 
 /// How often a job is asked about once the event stream is gone.
@@ -79,7 +80,7 @@ pub async fn forget(args: &ForgetArgs, control_path: &Path) -> u8 {
     };
     let confirmed = args.yes
         || (can_ask
-            && crate::restore::yes(&format!(
+            && crate::restore::yes(format!(
                 "Remove every version of `{}` from the history of {}? This cannot be undone.",
                 args.glob, root.path
             )));
@@ -259,24 +260,30 @@ fn ended(job: &Job) -> u8 {
                     println!("nothing in the history matched");
                 } else {
                     let plural = if touched == 1 { "" } else { "s" };
-                    println!(
-                        "forgot {} from {touched} Snapshot{plural}: {} versions removed",
-                        result.removed_paths.join(", "),
+                    let removed = printed_all(&result.removed_paths, &result.removed_paths_bytes);
+                    let mut out = io::stdout().lock();
+                    let _ = out.write_all(&[&b"forgot "[..], &joined(&removed)].concat());
+                    let _ = writeln!(
+                        out,
+                        " from {touched} Snapshot{plural}: {} versions removed",
                         result.blobs_removed.unwrap_or(0)
                     );
                 }
-                for path in &result.still_on_disk {
-                    if result.excluded == Some(true) {
-                        eprintln!(
-                            "keepster: {path} is still on disk holding what was removed; it is kept out of \
-                             history from now on"
-                        );
+                for path in printed_all(&result.still_on_disk, &result.still_on_disk_bytes) {
+                    let (opening, said): (&[u8], &[u8]) = if result.excluded == Some(true) {
+                        (
+                            b"keepster: ",
+                            b" is still on disk holding what was removed; it is kept out of \
+                              history from now on\n",
+                        )
                     } else {
-                        eprintln!(
-                            "keepster: warning: {path} is still on disk holding what was removed, and still \
-                             watched: the next Snapshot captures it again"
-                        );
-                    }
+                        (
+                            b"keepster: warning: ",
+                            b" is still on disk holding what was removed, and still watched: \
+                              the next Snapshot captures it again\n",
+                        )
+                    };
+                    let _ = io::stderr().write_all(&[opening, &path, said].concat());
                 }
                 for reference in &result.left_alone {
                     eprintln!(

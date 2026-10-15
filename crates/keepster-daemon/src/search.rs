@@ -21,8 +21,9 @@ use keepster_store::{ContentFound, ContentPlan, HistoryStore, SearchCounts};
 use tokio::sync::mpsc;
 
 use crate::DaemonState;
+use crate::path_parameter::PathParameter;
 use crate::problem::ProblemResponse;
-use crate::snapshots::{located, parse_path};
+use crate::snapshots::located;
 
 /// How many paths a path search answers with unless asked for another number.
 const PATHS: usize = 100;
@@ -112,7 +113,8 @@ fn find(roots: &[(RootId, StoreLocation)], query: &PathQuery, limit: usize) -> P
                 search.truncated |= more;
                 search.hits.extend(hits.into_iter().map(|hit| PathHit {
                     root: root.to_string(),
-                    path: hit.path,
+                    path: crate::wire::text(&hit.path),
+                    path_bytes: crate::wire::companion(&hit.path),
                     snapshots: hit.snapshots,
                     first: hit.first.to_string(),
                     last: hit.last.to_string(),
@@ -148,8 +150,6 @@ pub(crate) struct ContentParameters {
     roots: Option<String>,
     /// `true` to search every Root — those no longer watched whose history is kept included.
     all: Option<bool>,
-    /// A file or directory, Root-relative: only what is at or beneath it is read.
-    path: Option<String>,
 }
 
 /// Find text in every version a Root's history holds, streamed as it is found.
@@ -158,7 +158,10 @@ pub(crate) struct ContentParameters {
     path = "/v1/search/content",
     operation_id = "search_content",
     tag = "snapshots",
-    params(ContentParameters),
+    params(
+        ContentParameters,
+        ("path" = Option<String>, Query, description = "A file or directory, Root-relative, its bytes percent-encoded: only what is at or beneath it is read."),
+    ),
     responses(
         (status = 200, description = "An `application/x-ndjson` stream: a `plan` record first, saying how many distinct versions and bytes each Root will have read; then `match` records — one per content version, a path and the range of Snapshots its content was current for, never one per Snapshot — and `withheld` records for paths with no content to search, with `progress` now and then; and a `summary` last, counting versions scanned, binaries skipped and Withheld paths met. A version is read once however many Snapshots held it; a binary one is skipped and counted; the metadata sidecar is never searched. Outside the read budget: no time is promised, and closing the connection stops the walk.", body = ContentRecord, content_type = "application/x-ndjson"),
         (status = 400, description = "`q` is missing or empty, or not a regular expression that compiles, or the query string cannot be read (`query_invalid`); no Root named and `all` not asked (`search_invalid`); or `path` is malformed.", body = Problem, content_type = "application/problem+json"),
@@ -168,6 +171,7 @@ pub(crate) struct ContentParameters {
 )]
 pub(crate) async fn content(
     State(state): State<DaemonState>,
+    PathParameter(under): PathParameter,
     parameters: Result<Query<ContentParameters>, QueryRejection>,
 ) -> Result<Response, ProblemResponse> {
     let Query(parameters) = parameters.map_err(invalid_query)?;
@@ -188,7 +192,7 @@ pub(crate) async fn content(
             ));
         }
     };
-    let under = parse_path(parameters.path.as_deref().unwrap_or_default())?;
+    let under = under.unwrap_or_else(RootPath::root);
 
     let (lines, response) = crate::ndjson::stream();
     tokio::task::spawn_blocking(move || {
@@ -255,7 +259,8 @@ fn search(
             withheld += 1;
             let record = ContentRecord::Withheld {
                 root: root.clone(),
-                path: met.path.clone(),
+                path: crate::wire::text(&met.path),
+                path_bytes: crate::wire::companion(&met.path),
                 reason: met.reason.as_str().to_owned(),
                 kind: met.reason.kind().map(|kind| kind.as_str().to_owned()),
                 snapshot: met.snapshot.to_string(),
@@ -276,7 +281,8 @@ fn search(
                     line,
                 } => send(&ContentRecord::Match {
                     root: root.clone(),
-                    path: version.path.clone(),
+                    path: crate::wire::text(&version.path),
+                    path_bytes: crate::wire::companion(&version.path),
                     content: blob,
                     first: version.first.to_string(),
                     last: version.last.to_string(),

@@ -11,6 +11,8 @@ mod history;
 mod links;
 mod maintenance;
 mod modes;
+#[cfg(any(target_os = "linux", windows))]
+mod names;
 mod pins;
 mod preferences;
 mod preview;

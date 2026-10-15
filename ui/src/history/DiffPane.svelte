@@ -16,7 +16,7 @@
   import { failureText } from '../lib/failures'
   import type { DiffTarget } from '../lib/files'
   import { hasLongLine } from '../lib/lines'
-  import { baseName } from '../lib/paths'
+  import { baseName, shownPath } from '../lib/paths'
   import { SYNTAX_LINE_LIMITS } from '../lib/preferences'
   import { usePreferences } from '../lib/preferences.svelte'
   import { strings } from '../lib/strings'
@@ -122,8 +122,8 @@
 <section class="pane">
   <div class="bar">
     {#if file}
-      <code class="path">{file.path}</code>
-      {#if file.oldPath}<span class="muted">{strings.renamedFrom(file.oldPath)}</span>{/if}
+      <code class="path">{shownPath(file.path)}</code>
+      {#if file.oldPath}<span class="muted">{strings.renamedFrom(shownPath(file.oldPath))}</span>{/if}
     {/if}
     <span class="spacer"></span>
     {#if file && file.card !== 'absent'}
@@ -140,7 +140,7 @@
   </div>
 
   {#if file?.change === 'unchanged' && file.card !== 'absent'}
-    <p class="note muted">{strings.unchangedHere(baseName(file.path))}</p>
+    <p class="note muted">{strings.unchangedHere(shownPath(baseName(file.path)))}</p>
   {/if}
   {#if status === 'ready' && plain}
     <p class="note">

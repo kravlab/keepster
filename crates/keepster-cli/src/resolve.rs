@@ -154,7 +154,7 @@ pub(crate) async fn by_path(client: &DaemonClient, path: &str) -> Result<Root, u
         client
             .get(&format!(
                 "/v1/roots?path={}",
-                encode_path_query(&absolute.to_string_lossy())
+                encode_path_query(absolute.to_string_lossy().as_bytes())
             ))
             .await,
     )?;

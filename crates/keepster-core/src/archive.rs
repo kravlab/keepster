@@ -4,16 +4,17 @@
 //!
 //! Every entry carries zip64 sizes whatever its size, so that a file past 4 GiB needs nothing special, and
 //! a data descriptor after its bytes, since the CRC is known only once they have streamed past. Names are
-//! UTF-8 and `/`-separated, and permission bits travel in the external attributes, as `unzip` reads them on
-//! Unix; Explorer ignores them. Only the byte layout is here: the bytes of each file are the caller's.
+//! `/`-separated bytes, declared UTF-8 where they are and written as they are where they are not (ticket
+//! 74), and permission bits travel in the external attributes, as `unzip` reads them on Unix; Explorer
+//! ignores them. Only the byte layout is here: the bytes of each file are the caller's.
 
 use std::time::SystemTime;
 
 /// One file of an archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntry {
-    /// Its path inside the archive, `/`-separated.
-    pub name: String,
+    /// Its path inside the archive, `/`-separated, as the bytes the Snapshot holds.
+    pub name: Vec<u8>,
     /// How many bytes it holds — for a link, its target's text.
     pub size: u64,
     /// Its permission bits, where the Snapshot observed them.
@@ -42,8 +43,10 @@ const END: u64 = 56 + 20 + 22;
 const VERSION: u16 = 45;
 /// Made on Unix, so the external attributes hold permission bits.
 const MADE_BY: u16 = (3 << 8) | VERSION;
-/// The CRC and sizes follow the bytes (bit 3), and the name is UTF-8 (bit 11).
-const FLAGS: u16 = 0x0808;
+/// The CRC and sizes follow the bytes (bit 3).
+const DESCRIPTOR_FOLLOWS: u16 = 0x0008;
+/// The name is UTF-8 (bit 11).
+const UTF8_NAME: u16 = 0x0800;
 /// What a 32-bit field holds when its value is in the zip64 field.
 const IN_ZIP64: u32 = u32::MAX;
 
@@ -101,7 +104,7 @@ impl ArchiveWriter {
             Vec::with_capacity((LOCAL_HEADER + LOCAL_ZIP64) as usize + entry.name.len());
         put32(&mut header, 0x0403_4b50);
         put16(&mut header, VERSION);
-        put16(&mut header, FLAGS);
+        put16(&mut header, flags(entry));
         put16(&mut header, 0);
         put16(&mut header, self.time);
         put16(&mut header, self.date);
@@ -110,7 +113,7 @@ impl ArchiveWriter {
         put32(&mut header, IN_ZIP64);
         put16(&mut header, name_length(entry));
         put16(&mut header, LOCAL_ZIP64 as u16);
-        header.extend_from_slice(entry.name.as_bytes());
+        header.extend_from_slice(&entry.name);
         put16(&mut header, 0x0001);
         put16(&mut header, (LOCAL_ZIP64 - 4) as u16);
         put64(&mut header, entry.size);
@@ -179,7 +182,7 @@ impl ArchiveWriter {
         put32(central, 0x0201_4b50);
         put16(central, MADE_BY);
         put16(central, VERSION);
-        put16(central, FLAGS);
+        put16(central, flags(entry));
         put16(central, 0);
         put16(central, self.time);
         put16(central, self.date);
@@ -193,7 +196,7 @@ impl ArchiveWriter {
         put16(central, 0);
         put32(central, unix_mode(entry) << 16);
         put32(central, IN_ZIP64);
-        central.extend_from_slice(entry.name.as_bytes());
+        central.extend_from_slice(&entry.name);
         put16(central, 0x0001);
         put16(central, (CENTRAL_ZIP64 - 4) as u16);
         put64(central, entry.size);
@@ -201,6 +204,16 @@ impl ArchiveWriter {
         put64(central, offset);
 
         self.entries += 1;
+    }
+}
+
+/// An entry's general-purpose flags. A name that is not UTF-8 is not declared so: an unzip honouring
+/// bit 11 would decode its bytes as UTF-8, and one that does not reads them as they are.
+fn flags(entry: &ArchiveEntry) -> u16 {
+    if std::str::from_utf8(&entry.name).is_ok() {
+        DESCRIPTOR_FOLLOWS | UTF8_NAME
+    } else {
+        DESCRIPTOR_FOLLOWS
     }
 }
 

@@ -17,8 +17,10 @@ use keepster_store::{
 };
 
 use crate::DaemonState;
+use crate::path_parameter::PathParameter;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
+use crate::wire;
 
 /// The `{id}` and `{snapshot}` segments a Snapshot is addressed by.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -292,8 +294,6 @@ pub(crate) fn prepare(
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct TimelineParameters {
-    /// Only the Snapshots that changed this Root-relative path.
-    path: Option<String>,
     /// Only Snapshots taken at or before this RFC 3339 moment.
     #[param(format = DateTime)]
     before: Option<String>,
@@ -316,7 +316,11 @@ pub(crate) struct TimelineParameters {
     path = "/v1/roots/{id}/snapshots",
     operation_id = "list_snapshots",
     tag = "snapshots",
-    params(RootAddress, TimelineParameters),
+    params(
+        RootAddress,
+        ("path" = Option<String>, Query, description = "Only the Snapshots that changed this Root-relative path, its bytes percent-encoded."),
+        TimelineParameters,
+    ),
     responses(
         (status = 200, description = "One page of the chronology, newest first. A Root never captured has an empty one.", body = Timeline),
         (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
@@ -328,11 +332,11 @@ pub(crate) struct TimelineParameters {
 pub(crate) async fn list(
     State(state): State<DaemonState>,
     Path(RootAddress { id }): Path<RootAddress>,
+    PathParameter(path): PathParameter,
     Query(parameters): Query<TimelineParameters>,
 ) -> Result<Json<Timeline>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
 
-    let path = parameters.path.as_deref().map(parse_path).transpose()?;
     let limit = match parameters.limit.as_deref() {
         None => DEFAULT_LIMIT,
         Some(text) => match text.parse::<usize>() {
@@ -407,8 +411,6 @@ pub(crate) async fn list(
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct EntriesParameters {
-    /// The directory to list, Root-relative; the Root itself when absent.
-    path: Option<String>,
     /// `1` for the directory's own children (the default), `infinity` for everything beneath it.
     depth: Option<String>,
 }
@@ -422,7 +424,11 @@ pub(crate) struct EntriesParameters {
     path = "/v1/roots/{id}/snapshots/{snapshot}/entries",
     operation_id = "list_entries",
     tag = "snapshots",
-    params(SnapshotAddress, EntriesParameters),
+    params(
+        SnapshotAddress,
+        ("path" = Option<String>, Query, description = "The directory to list, Root-relative, its bytes percent-encoded; the Root itself when absent."),
+        EntriesParameters,
+    ),
     responses(
         (status = 200, description = "The paths the Snapshot holds under the directory, in byte order — with those it names without holding them: Withheld, or omitted from an incomplete Snapshot.", body = Entries),
         (status = 400, description = "A parameter is malformed.", body = Problem, content_type = "application/problem+json"),
@@ -434,11 +440,12 @@ pub(crate) struct EntriesParameters {
 pub(crate) async fn entries(
     State(state): State<DaemonState>,
     Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
+    PathParameter(directory): PathParameter,
     Query(parameters): Query<EntriesParameters>,
 ) -> Result<Json<Entries>, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
     let snapshot = parse_snapshot(&snapshot)?;
-    let directory = parse_path(parameters.path.as_deref().unwrap_or_default())?;
+    let directory = directory.unwrap_or_else(RootPath::root);
     let depth = match parameters.depth.as_deref() {
         None | Some("1") => Depth::One,
         Some("infinity") => Depth::Infinity,
@@ -468,7 +475,8 @@ pub(crate) async fn entries(
             .entries
             .into_iter()
             .map(|entry| Entry {
-                path: entry.path.as_str().to_owned(),
+                path: wire::text(&entry.path),
+                path_bytes: wire::companion(&entry.path),
                 kind: match entry.kind {
                     keepster_store::EntryKind::File => EntryKind::File,
                     keepster_store::EntryKind::Directory => EntryKind::Dir,
@@ -492,8 +500,6 @@ pub(crate) async fn entries(
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct ContentParameters {
-    /// The file, Root-relative.
-    path: Option<String>,
     /// `1` (or `true`) to have a browser save it rather than show it: `Content-Disposition: attachment`,
     /// named as the file is — the whole of downloading one file (ticket 58).
     download: Option<String>,
@@ -507,6 +513,7 @@ pub(crate) struct ContentParameters {
     tag = "snapshots",
     params(
         SnapshotAddress,
+        ("path" = Option<String>, Query, description = "The file, Root-relative, its bytes percent-encoded."),
         ContentParameters,
         ("Range" = Option<String>, Header, description = "One byte range, as `bytes=first-last`, `bytes=first-` or `bytes=-suffix`. Several ranges, or one that cannot be parsed, are answered with the whole content."),
         ("If-None-Match" = Option<String>, Header, description = "An `ETag` this API returned for the same version; a match is answered with `304`."),
@@ -539,13 +546,15 @@ pub(crate) struct ContentParameters {
 pub(crate) async fn content(
     State(state): State<DaemonState>,
     Path(SnapshotAddress { id, snapshot }): Path<SnapshotAddress>,
+    PathParameter(path): PathParameter,
     Query(parameters): Query<ContentParameters>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, ProblemResponse> {
     let (_, location) = located(&state, &id)?;
     let snapshot = parse_snapshot(&snapshot)?;
-    let path = parse_path(parameters.path.as_deref().unwrap_or_default())?;
-    let name = path.name().to_owned();
+    let path = path.unwrap_or_else(RootPath::root);
+    // A header carries text, so a download is named by the lossy name (ticket 74).
+    let name = String::from_utf8_lossy(path.name()).into_owned();
 
     let mut response = crate::content::serve(location, snapshot, path, &headers).await?;
     let download = matches!(parameters.download.as_deref(), Some("1" | "true"));
@@ -602,15 +611,16 @@ pub(crate) fn parse_snapshot(segment: &str) -> Result<SnapshotId, ProblemRespons
     segment.parse().map_err(|_| snapshot_not_found(segment))
 }
 
-/// A `path=` parameter in the one form every endpoint takes (ticket 07).
-pub(crate) fn parse_path(text: &str) -> Result<RootPath, ProblemResponse> {
-    RootPath::parse(text).map_err(|reason| {
+/// A path a request names, in the one form every endpoint takes (ticket 07), from its bytes (ticket
+/// 74): a `path=` parameter's, or a request body's once its `_bytes` companion is read.
+pub(crate) fn parse_path(bytes: &[u8]) -> Result<RootPath, ProblemResponse> {
+    RootPath::parse_bytes(bytes).map_err(|reason| {
         ProblemResponse::new(
             StatusCode::BAD_REQUEST,
             ErrorCode::PathInvalid,
             reason.to_string(),
         )
-        .with_detail("path", text)
+        .with_path(bytes)
     })
 }
 
@@ -646,16 +656,24 @@ fn describe_captured(captured: &CapturedSnapshot) -> Snapshot {
         taken_at: taken_at(captured.id),
         trigger: captured.trigger.as_str().to_owned(),
         incomplete: !captured.incomplete.is_empty(),
-        omitted: captured
-            .incomplete
-            .iter()
-            .map(|incomplete| incomplete.path.as_str().to_owned())
-            .collect(),
+        omitted: wire::texts(
+            captured
+                .incomplete
+                .iter()
+                .map(|incomplete| &incomplete.path),
+        ),
+        omitted_bytes: wire::companions(
+            captured
+                .incomplete
+                .iter()
+                .map(|incomplete| &incomplete.path),
+        ),
         withheld: captured
             .withheld
             .iter()
             .map(|withheld| Withheld {
-                path: withheld.path.as_str().to_owned(),
+                path: wire::text(&withheld.path),
+                path_bytes: wire::companion(&withheld.path),
                 why: withheld_reason(withheld.reason),
             })
             .collect(),
@@ -677,6 +695,7 @@ pub(crate) fn describe_summary(summary: &SnapshotSummary) -> Snapshot {
         trigger: summary.trigger.clone(),
         incomplete: summary.omitted > 0,
         omitted: Vec::new(),
+        omitted_bytes: Vec::new(),
         withheld: Vec::new(),
         changed_paths: Some(summary.changed_paths),
         added_paths: Some(summary.added_paths),
@@ -717,24 +736,24 @@ pub(crate) fn store_problem(error: StoreError) -> ProblemResponse {
             ErrorCode::PathNotFound,
             error.to_string(),
         )
-        .with_detail("path", path.as_str()),
+        .with_path(path.as_bytes()),
         StoreError::NotAFile(ref path) => {
             ProblemResponse::new(StatusCode::CONFLICT, ErrorCode::NotAFile, error.to_string())
-                .with_detail("path", path.as_str())
+                .with_path(path.as_bytes())
         }
         StoreError::NotADirectory(ref path) => ProblemResponse::new(
             StatusCode::CONFLICT,
             ErrorCode::NotADirectory,
             error.to_string(),
         )
-        .with_detail("path", path.as_str()),
+        .with_path(path.as_bytes()),
         StoreError::Withheld { ref path, reason } => {
             let problem = ProblemResponse::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::Withheld,
                 error.to_string(),
             )
-            .with_detail("path", path.as_str());
+            .with_path(path.as_bytes());
             let WithheldReason { reason, kind } = withheld_reason(reason);
             let problem = problem.with_detail("reason", reason);
             match kind {

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use keepster_core::{
-    CapturePolicy, IGNORE_FILE, Kind, RootPath, Verdict, ignore_file_rules, is_reserved,
+    CapturePolicy, IGNORE_FILE, Kind, RootPath, Verdict, ignore_file_rules, is_reserved, name_bytes,
 };
 use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -178,7 +178,7 @@ impl Context {
                 continue;
             };
             inside = true;
-            let Some(relative) = root_path(relative) else {
+            let Some(relative) = RootPath::from_native(relative) else {
                 continue;
             };
             let is_directory = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
@@ -222,9 +222,10 @@ impl Context {
 
     /// Drop `directory` and everything beneath it from the watched set, once it is gone.
     fn forget(&self, directory: &RootPath) {
-        let prefix = format!("{}/", directory.as_str());
+        let prefix = [directory.as_bytes(), b"/"].concat();
         lock(&self.shared).watched.retain(|watched| {
-            watched != directory && (directory.is_root() || !watched.as_str().starts_with(&prefix))
+            watched != directory
+                && (directory.is_root() || !watched.as_bytes().starts_with(&prefix))
         });
     }
 
@@ -252,9 +253,12 @@ impl Context {
             return policy.clone();
         }
         let file = directory.child(IGNORE_FILE);
-        match fs::read_to_string(self.root.join(file.as_str())) {
+        let Some(on_disk) = file.native(&self.root) else {
+            return policy.clone();
+        };
+        match fs::read_to_string(on_disk) {
             Ok(text) => {
-                let rules = ignore_file_rules(directory, &text, file.as_str());
+                let rules = ignore_file_rules(directory, &text, &file.to_lossy());
                 if rules.is_empty() {
                     policy.clone()
                 } else {
@@ -265,10 +269,12 @@ impl Context {
         }
     }
 
+    /// Whether `path`, under the Root, names nothing a path can hold: a Windows name with an unpaired
+    /// surrogate, which the capture Withholds under its lossy name.
     fn unnameable(&self, path: &Path) -> bool {
         path.strip_prefix(&self.root)
             .ok()
-            .is_some_and(|relative| root_path(relative).is_none())
+            .is_some_and(|relative| RootPath::from_native(relative).is_none())
     }
 
     /// Watch `directory` and every directory beneath it that `policy` — the rules in force inside it —
@@ -287,14 +293,17 @@ impl Context {
         }
         self.watch(directory, RecursiveMode::NonRecursive)?;
 
-        let Ok(entries) = fs::read_dir(self.root.join(directory.as_str())) else {
+        let Some(Ok(entries)) = directory.native(&self.root).map(fs::read_dir) else {
             return Ok(());
         };
         for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            // Every Unix name has its bytes (ticket 74). A Windows name holding an unpaired surrogate
+            // has none: the capture Withholds it without entering it, so there is nothing to watch.
+            let file_name = entry.file_name();
+            let Some(name) = name_bytes(&file_name) else {
                 continue;
             };
-            let child = directory.child(&name);
+            let child = directory.child(name);
             let is_directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
             if !self.admits(policy, &child, is_directory) {
                 continue;
@@ -315,7 +324,10 @@ impl Context {
     }
 
     fn watch(&self, directory: &RootPath, mode: RecursiveMode) -> Result<(), WatchError> {
-        let path = self.root.join(directory.as_str());
+        // A directory armed is one read from disk, so it always has a spelling here.
+        let Some(path) = directory.native(&self.root) else {
+            return Ok(());
+        };
         let mut shared = lock(&self.shared);
         let Some(watcher) = shared.watcher.as_mut() else {
             return Ok(());
@@ -362,16 +374,6 @@ fn resolved(root: &Path) -> PathBuf {
 /// The directory holding `path`, the Root for a path at its top.
 fn parent_of(path: &RootPath) -> RootPath {
     path.ancestors().last().unwrap_or_else(RootPath::root)
-}
-
-/// `relative` as a path in the Root, if it is one this build can name.
-fn root_path(relative: &Path) -> Option<RootPath> {
-    let mut components = Vec::new();
-    for component in relative.components() {
-        components.push(component.as_os_str().to_str()?);
-    }
-
-    RootPath::parse(&components.join("/")).ok()
 }
 
 fn lock(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {

@@ -375,7 +375,7 @@ impl Sidecar {
             text.push(' ');
             text.push_str(&record.field());
             text.push(' ');
-            text.push_str(&quote(record.path().as_str()));
+            text.push_str(&quote(record.path().as_bytes()));
             text.push('\n');
         }
 
@@ -422,9 +422,8 @@ impl Sidecar {
 fn sort(records: &mut [Record]) {
     records.sort_by(|a, b| {
         a.path()
-            .as_str()
             .as_bytes()
-            .cmp(b.path().as_str().as_bytes())
+            .cmp(b.path().as_bytes())
             .then(a.letter().cmp(&b.letter()))
     });
 }
@@ -464,7 +463,7 @@ fn parse_header(line: &str) -> Result<Header, SidecarError> {
 fn parse_record(line: &str) -> Option<Record> {
     let (letter, rest) = line.split_once(' ')?;
     let (field, path) = rest.split_once(' ')?;
-    let path = RootPath::parse(&unquote(path)?).ok()?;
+    let path = RootPath::parse_bytes(&unquote(path)?).ok()?;
 
     match letter {
         "w" => Some(Record::Withheld {
@@ -490,30 +489,43 @@ fn parse_record(line: &str) -> Option<Record> {
 }
 
 /// A path as one line holds it: as it is, or quoted as git quotes a name it cannot print plainly.
-fn quote(path: &str) -> String {
-    let plain = !path.starts_with([' ', '"'])
-        && !path
-            .chars()
-            .any(|character| character == '"' || character == '\\' || character.is_control());
+///
+/// A byte that is not part of UTF-8 is written as its octal escape, as git writes it, so the sidecar
+/// stays text whatever bytes its names hold, and [`unquote`] gives the exact bytes back (ticket 74).
+fn quote(path: &[u8]) -> String {
+    let plain = match std::str::from_utf8(path) {
+        Ok(text) => {
+            !text.starts_with([' ', '"'])
+                && !text.chars().any(|character| {
+                    character == '"' || character == '\\' || character.is_control()
+                })
+        }
+        Err(_) => false,
+    };
     if plain {
-        return path.to_owned();
+        return String::from_utf8_lossy(path).into_owned();
     }
 
     let mut quoted = String::from("\"");
-    for character in path.chars() {
-        match character {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            '\n' => quoted.push_str("\\n"),
-            '\t' => quoted.push_str("\\t"),
-            '\r' => quoted.push_str("\\r"),
-            // Each byte of its UTF-8 in octal, as git escapes a byte it will not print.
-            control if control.is_control() => {
-                for byte in control.encode_utf8(&mut [0; 4]).bytes() {
-                    quoted.push_str(&format!("\\{byte:03o}"));
+    for chunk in path.utf8_chunks() {
+        for character in chunk.valid().chars() {
+            match character {
+                '"' => quoted.push_str("\\\""),
+                '\\' => quoted.push_str("\\\\"),
+                '\n' => quoted.push_str("\\n"),
+                '\t' => quoted.push_str("\\t"),
+                '\r' => quoted.push_str("\\r"),
+                // Each byte of its UTF-8 in octal, as git escapes a byte it will not print.
+                control if control.is_control() => {
+                    for byte in control.encode_utf8(&mut [0; 4]).bytes() {
+                        quoted.push_str(&format!("\\{byte:03o}"));
+                    }
                 }
+                other => quoted.push(other),
             }
-            other => quoted.push(other),
+        }
+        for byte in chunk.invalid() {
+            quoted.push_str(&format!("\\{byte:03o}"));
         }
     }
     quoted.push('"');
@@ -521,10 +533,11 @@ fn quote(path: &str) -> String {
     quoted
 }
 
-/// The path a field holds, unquoting a quoted one; `None` for a quoted one that is malformed.
-fn unquote(field: &str) -> Option<String> {
+/// The exact bytes of the path a field holds, unquoting a quoted one; `None` for a quoted one that is
+/// malformed.
+fn unquote(field: &str) -> Option<Vec<u8>> {
     let Some(inner) = field.strip_prefix('"') else {
-        return Some(field.to_owned());
+        return Some(field.as_bytes().to_vec());
     };
     let inner = inner.strip_suffix('"')?;
 
@@ -552,5 +565,5 @@ fn unquote(field: &str) -> Option<String> {
         }
     }
 
-    String::from_utf8(path).ok()
+    Some(path)
 }

@@ -17,6 +17,7 @@ pub mod jobs;
 pub mod lines;
 pub mod log_level;
 pub mod mute;
+mod names;
 pub mod pins;
 pub mod preview;
 pub mod reconcile;

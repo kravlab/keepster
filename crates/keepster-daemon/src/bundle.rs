@@ -341,7 +341,7 @@ impl Bundle {
         );
         for (name, content) in entries {
             let entry = ArchiveEntry {
-                name: name.to_owned(),
+                name: name.as_bytes().to_vec(),
                 size: content.len() as u64,
                 mode: Some(0o600),
                 executable: false,

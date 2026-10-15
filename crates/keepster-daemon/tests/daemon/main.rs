@@ -30,6 +30,8 @@ mod links;
 mod listener;
 mod logging;
 mod modes;
+#[cfg(target_os = "linux")]
+mod names;
 mod openapi;
 mod pins;
 mod preferences;

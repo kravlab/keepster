@@ -16,7 +16,7 @@
   import { failureText } from '../lib/failures'
   import type { DiffTarget } from '../lib/files'
   import { TimelinePages } from '../lib/pages.svelte'
-  import { baseName, dirName } from '../lib/paths'
+  import { baseName, dirName, shownPath } from '../lib/paths'
   import { railRows, timeOfDay } from '../lib/rail'
   import { arrivingSnapshot, keptSelection } from '../lib/selection'
   import { currentFor, snapshotChanges, untouchedAt, type SnapshotChanges, type UntouchedFile } from '../lib/shown'
@@ -188,9 +188,9 @@
   <nav class="rail" aria-label={strings.railLabel}>
     <label class="filter"><input type="checkbox" bind:checked={hideRoutine} /> {strings.hideRoutine}</label>
     {#if path}
-      <label class="filter" title={path}>
+      <label class="filter" title={shownPath(path)}>
         <input type="checkbox" bind:checked={onlyFile} />
-        <span class="only">{strings.onlyFile(baseName(path))}</span>
+        <span class="only">{strings.onlyFile(shownPath(baseName(path)))}</span>
       </label>
     {/if}
     {#if error || pages.error}
@@ -255,21 +255,26 @@
       <ul>
         {#if notChangedHere && path}
           <li>
-            <button class="file" aria-current="true" title={path}>
+            <button class="file" aria-current="true" title={shownPath(path)}>
               <span class="mark unchanged" aria-hidden="true">{strings.changes.unchanged.mark}</span>
-              <span class="name">{baseName(path)}</span>
+              <span class="name">{shownPath(baseName(path))}</span>
               <span class="dir">{strings.changes.unchanged.label}</span>
             </button>
           </li>
         {/if}
         {#each files ?? [] as f (f.path)}
           <li>
-            <button class="file" aria-current={f.path === path} onclick={() => (path = f.path)} title={f.path}>
+            <button
+              class="file"
+              aria-current={f.path === path}
+              onclick={() => (path = f.path)}
+              title={shownPath(f.path)}
+            >
               <span class="mark {f.change}" aria-label={strings.changes[f.change].label}>
                 {strings.changes[f.change].mark}
               </span>
-              <span class="name">{baseName(f.path)}</span>
-              <span class="dir">{dirName(f.path)}</span>
+              <span class="name">{shownPath(baseName(f.path))}</span>
+              <span class="dir">{shownPath(dirName(f.path))}</span>
             </button>
           </li>
         {/each}

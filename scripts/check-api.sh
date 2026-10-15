@@ -18,6 +18,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCUMENT="openapi.json"
+# The false positives oasdiff reports for an additive change, each one said why there.
+IGNORED="scripts/check-api-ignore.txt"
 OASDIFF_VERSION="v1.31.0"
 
 # Release tags are `v` followed by a version, as the release pipeline writes them.
@@ -57,5 +59,5 @@ if ! git show "$tag:$DOCUMENT" >"$workdir/released.json" 2>/dev/null; then
 fi
 
 echo "check-api: comparing $DOCUMENT with release $tag" >&2
-oasdiff breaking --fail-on WARN "$workdir/released.json" "$DOCUMENT"
+oasdiff breaking --fail-on WARN --err-ignore "$IGNORED" "$workdir/released.json" "$DOCUMENT"
 echo "check-api: $DOCUMENT is compatible with release $tag" >&2

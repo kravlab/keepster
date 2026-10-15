@@ -313,7 +313,7 @@ fn entries_carry_each_path_s_full_mode() {
         listing
             .entries
             .iter()
-            .map(|entry| (entry.path.as_str().to_owned(), entry.permissions))
+            .map(|entry| (entry.path.to_lossy().into_owned(), entry.permissions))
             .collect::<Vec<_>>(),
         [
             ("key".to_owned(), Some(0o600)),
@@ -366,7 +366,11 @@ fn diverging_modes_are_asked_about_and_applied_as_answered() {
         asked
             .paths
             .iter()
-            .map(|path| (path.path.as_str(), path.step, path.issues.clone()))
+            .map(|path| (
+                path.path.to_str().expect("a text path"),
+                path.step,
+                path.issues.clone()
+            ))
             .collect::<Vec<_>>(),
         [
             (

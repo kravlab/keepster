@@ -33,6 +33,7 @@ pub mod tripwire;
 pub mod verdict;
 mod volumes;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -408,6 +409,13 @@ impl Harness {
             .await
     }
 
+    /// Run the real CLI binary from inside `directory` with arguments that need not be UTF-8 — a name
+    /// on Unix is bytes, and the CLI must take it as it is (ticket 74).
+    pub async fn run_cli_in_os(&self, directory: &Path, binary: &str, args: &[&OsStr]) -> CliRun {
+        self.run_cli_os(binary, self.control_path(), Some(directory), args)
+            .await
+    }
+
     /// Run the real CLI binary against an arbitrary control channel, including one nothing is
     /// listening on.
     pub async fn run_cli_with_control_path(
@@ -425,6 +433,19 @@ impl Harness {
         control_path: &Path,
         directory: Option<&Path>,
         args: &[&str],
+    ) -> CliRun {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        self.run_cli_os(binary, control_path, directory, &args)
+            .await
+    }
+
+    /// Run the real CLI binary, from `directory` when one is given, with `args` as they are.
+    async fn run_cli_os(
+        &self,
+        binary: &str,
+        control_path: &Path,
+        directory: Option<&Path>,
+        args: &[&OsStr],
     ) -> CliRun {
         let mut command = tokio::process::Command::new(binary);
         command.arg("--control-path").arg(control_path).args(args);

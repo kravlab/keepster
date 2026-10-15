@@ -11,6 +11,7 @@ use keepster_api::{ContentRecord, PathSearch, Root, encode_path_query};
 use crate::client::DaemonClient;
 use crate::command::{FindArgs, GrepArgs};
 use crate::exit;
+use crate::names::{exact, native, os_bytes, printed};
 use crate::roots::{answered, body_of};
 
 /// Find a path by its name in the history of every Root, or of those named.
@@ -54,13 +55,12 @@ pub async fn find(args: &FindArgs, control_path: &Path) -> u8 {
     let mut out = io::stdout().lock();
     for hit in &found.hits {
         let plural = if hit.snapshots == 1 { "" } else { "s" };
+        let shown = on_disk(&places, &hit.root, &hit.path, hit.path_bytes.as_deref());
+        let _ = out.write_all(&os_bytes(shown.as_os_str()));
         let _ = write!(
             out,
-            "{}  {} Snapshot{plural}, {} .. {}",
-            on_disk(&places, &hit.root, &hit.path).display(),
-            hit.snapshots,
-            hit.first,
-            hit.last
+            "  {} Snapshot{plural}, {} .. {}",
+            hit.snapshots, hit.first, hit.last
         );
         if !hit.exists {
             let _ = write!(out, "  (gone from the newest Snapshot)");
@@ -178,6 +178,7 @@ fn render(
         ContentRecord::Match {
             root,
             path,
+            path_bytes,
             first,
             last,
             line,
@@ -185,25 +186,37 @@ fn render(
             ..
         } => {
             let shown = if one_root {
-                native(PathBuf::new(), path)
+                native(PathBuf::new(), &exact(path, path_bytes.as_deref()))
             } else {
-                on_disk(places, root, path)
+                on_disk(places, root, path, path_bytes.as_deref())
             };
             let span = if first == last {
                 first.clone()
             } else {
                 format!("{first} .. {last}")
             };
-            let _ = writeln!(out, "{}:{line}: {snippet}  [{span}]", shown.display());
+            let _ = out.write_all(&os_bytes(shown.as_os_str()));
+            let _ = writeln!(out, ":{line}: {snippet}  [{span}]");
         }
         ContentRecord::Withheld {
-            path, reason, kind, ..
+            path,
+            path_bytes,
+            reason,
+            kind,
+            ..
         } => {
             let why = match kind {
                 Some(kind) => format!("{reason}, {kind}"),
                 None => reason.clone(),
             };
-            eprintln!("keepster: {path} was not searched: it is withheld ({why})");
+            let _ = io::stderr().write_all(
+                &[
+                    &b"keepster: "[..],
+                    &printed(path, path_bytes.as_deref()),
+                    format!(" was not searched: it is withheld ({why})\n").as_bytes(),
+                ]
+                .concat(),
+            );
         }
         ContentRecord::Error { root, detail } => {
             eprintln!("keepster: the Root {root} was not searched: {detail}");
@@ -238,17 +251,17 @@ async fn places(client: &DaemonClient) -> BTreeMap<String, String> {
     roots.into_iter().map(|root| (root.id, root.path)).collect()
 }
 
-/// `path` in the Root `root` as a path on this machine — or beside the Root's identity, for one no longer
-/// watched, which is nowhere on disk.
-fn on_disk(places: &BTreeMap<String, String>, root: &str, path: &str) -> PathBuf {
+/// `path`, with its `_bytes` companion, in the Root `root` as a path on this machine — or beside the
+/// Root's identity, for one no longer watched, which is nowhere on disk.
+fn on_disk(
+    places: &BTreeMap<String, String>,
+    root: &str,
+    path: &str,
+    path_bytes: Option<&str>,
+) -> PathBuf {
     let base = places
         .get(root)
         .map_or_else(|| PathBuf::from(root), PathBuf::from);
 
-    native(base, path)
-}
-
-/// The Root-relative `path` beneath `base`, spelled with this machine's separator.
-fn native(base: PathBuf, path: &str) -> PathBuf {
-    path.split('/').fold(base, |joined, name| joined.join(name))
+    native(base, &exact(path, path_bytes))
 }

@@ -426,7 +426,7 @@ async fn a_directory_picker_lists_directories_only() {
     let listing = daemon
         .get_json(&format!(
             "/v1/fs?path={}",
-            keepster_api::encode_path_query(&place.to_string_lossy())
+            keepster_api::encode_path_query(place.to_string_lossy().as_bytes())
         ))
         .await;
 
@@ -452,14 +452,14 @@ async fn a_directory_picker_lists_directories_only() {
     let file = daemon
         .get(&format!(
             "/v1/fs?path={}",
-            keepster_api::encode_path_query(&place.join("notes.txt").to_string_lossy())
+            keepster_api::encode_path_query(place.join("notes.txt").to_string_lossy().as_bytes())
         ))
         .await;
     assert_eq!(file.status.as_u16(), 409);
     let missing = daemon
         .get(&format!(
             "/v1/fs?path={}",
-            keepster_api::encode_path_query(&place.join("nowhere").to_string_lossy())
+            keepster_api::encode_path_query(place.join("nowhere").to_string_lossy().as_bytes())
         ))
         .await;
     assert_eq!(missing.status.as_u16(), 404);

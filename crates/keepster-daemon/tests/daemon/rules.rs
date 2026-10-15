@@ -412,12 +412,14 @@ async fn explain_calls_a_link_captured_now_that_links_are_stored_as_links() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_excluded_directory_is_never_listed_at_all() {
-    use std::os::unix::ffi::OsStrExt;
-
-    // A name that is not UTF-8 is reported as unreadable by any walk that meets it (until ticket 48),
-    // so meeting one here would make the Snapshot incomplete. It sits inside an excluded directory,
-    // and the Snapshot stays whole only if the walk never listed that directory.
-    let daemon = Harness::start().await;
+    // A followed link whose target is gone is reported as unreadable by any walk that meets it, whoever
+    // runs the test, so meeting one here would make the Snapshot incomplete. It sits inside an excluded
+    // directory, and the Snapshot stays whole only if the walk never listed that directory.
+    let daemon = Harness::start_with_global_config(
+        b"[triggers]\nactive = []\n\n[reconcile]\nat_start = false\n\n\
+          [files]\nfollow_symlinks = [\"vendor/link\"]\n",
+    )
+    .await;
     let (root, project) = registered(&daemon).await;
     write(
         &project,
@@ -426,8 +428,8 @@ async fn an_excluded_directory_is_never_listed_at_all() {
     );
     write(&project, "main.rs", b"fn main() {}");
     std::fs::create_dir_all(project.join("vendor")).expect("the excluded directory");
-    let odd = std::ffi::OsStr::from_bytes(b"\xff.bin");
-    std::fs::write(project.join("vendor").join(odd), b"x").expect("an odd name");
+    std::os::unix::fs::symlink(project.join("gone"), project.join("vendor/link"))
+        .expect("a followed link to nothing");
 
     let snapshot = take(&daemon, &root).await;
 

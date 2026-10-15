@@ -438,7 +438,7 @@ fn joined(directory: &RootPath, path: &RootPath) -> RootPath {
         return path.clone();
     }
 
-    path.as_str()
-        .split('/')
+    path.as_bytes()
+        .split(|byte| *byte == b'/')
         .fold(directory.clone(), |joined, name| joined.child(name))
 }

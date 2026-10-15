@@ -49,6 +49,16 @@ impl ProblemResponse {
         self
     }
 
+    /// Name the Root-relative path the problem is about: `path` holds its text, and `path_bytes` its
+    /// exact bytes when the text cannot carry them (ticket 74).
+    pub(crate) fn with_path(self, bytes: &[u8]) -> Self {
+        let named = self.with_detail("path", keepster_api::path_text(bytes));
+        match keepster_api::path_bytes(bytes) {
+            Some(exact) => named.with_detail("path_bytes", exact),
+            None => named,
+        }
+    }
+
     /// Say, for a Restore refused before it wrote anything, what every path of it needs.
     pub(crate) fn with_paths(mut self, paths: Vec<keepster_api::RestoredPath>) -> Self {
         self.problem.paths = paths;

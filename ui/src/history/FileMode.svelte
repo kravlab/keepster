@@ -17,6 +17,7 @@
   import { failureText } from '../lib/failures'
   import type { DiffTarget } from '../lib/files'
   import { momentOf } from '../lib/ids'
+  import { shownPath } from '../lib/paths'
   import { TimelinePages } from '../lib/pages.svelte'
   import { versionAt } from '../lib/selection'
   import { currentFor, fileVersion, type FileVersion } from '../lib/shown'
@@ -161,7 +162,7 @@
       <p class="empty">{strings.chooseFile}</p>
     {:else}
       <div class="head">
-        <code class="path">{path}</code>
+        <code class="path">{shownPath(path)}</code>
         {#if settled}<span class="muted">{strings.versions(versions.length, pages?.cursor !== undefined)}</span>{/if}
       </div>
       <div class="scrubber" role="group" aria-label={strings.scrubberLabel} bind:this={scrubber}>

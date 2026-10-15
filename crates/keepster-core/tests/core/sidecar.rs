@@ -102,6 +102,27 @@ fn a_path_a_line_cannot_hold_as_it_is_is_quoted_as_git_quotes_it() {
 }
 
 #[test]
+fn a_name_that_is_not_utf8_is_written_as_octal_escapes_and_read_back_exactly() {
+    // Ticket 74: the sidecar stays text, and the name's bytes survive the round trip.
+    let sidecar = Sidecar::with_records(vec![
+        Record::Withheld {
+            path: RootPath::parse_bytes(b"src/\xff.bin").expect("valid"),
+            reason: WithheldReason::TooLarge,
+        },
+        Record::Mode {
+            path: RootPath::parse_bytes(b"caf\xe9 \xe2\x82.txt").expect("valid"),
+            mode: 0o600,
+        },
+    ]);
+
+    let bytes = sidecar.to_bytes();
+    let text = String::from_utf8(bytes.clone()).expect("the sidecar is text");
+    assert!(text.contains("w too_large \"src/\\377.bin\"\n"), "{text}");
+    assert!(text.contains("\"caf\\351 \\342\\202.txt\""), "{text}");
+    assert_eq!(Sidecar::parse(&bytes).expect("parses").sidecar, sidecar);
+}
+
+#[test]
 fn a_record_this_build_does_not_know_is_skipped_and_reported() {
     let text = b"keepster-meta 1 file=0644 dir=0755\n\
                  x 0600 .ssh/id_rsa\n\

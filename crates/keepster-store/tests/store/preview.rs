@@ -69,7 +69,7 @@ fn walk(root: &std::path::Path, policy: &CapturePolicy, measure: bool) -> Vec<Pr
 fn by_path(entries: &[PreviewEntry]) -> BTreeMap<String, &PreviewEntry> {
     entries
         .iter()
-        .map(|entry| (entry.path.as_str().to_owned(), entry))
+        .map(|entry| (entry.path.to_lossy().into_owned(), entry))
         .collect()
 }
 
@@ -210,7 +210,7 @@ fn a_subtree_is_previewed_under_the_root_s_own_rules() {
     let src = walk_from(directory.path(), &policy, "src");
     assert_eq!(
         src.iter()
-            .map(|entry| entry.path.as_str())
+            .map(|entry| entry.path.to_lossy())
             .collect::<Vec<_>>(),
         ["src/main.rs"],
         "the Root's own paths, beneath the subtree only"

@@ -35,7 +35,7 @@ pub async fn log(args: &LogArgs, control_path: &Path, now: SystemTime) -> u8 {
         match selector::moment(value, now) {
             Ok(moment) => filters.push_str(&format!(
                 "&{name}={}",
-                encode_path_query(&moment.to_string())
+                encode_path_query(moment.to_string())
             )),
             Err(message) => {
                 eprintln!("keepster: --{name}: {message}");
@@ -424,7 +424,7 @@ async fn resolve_snapshot(
             format!("fewer than {} Snapshots", count.saturating_add(1)),
         ),
         Selector::AsOf(moment) => (
-            format!("&before={}", encode_path_query(&moment.to_string())),
+            format!("&before={}", encode_path_query(moment.to_string())),
             0,
             format!("no Snapshot at or before {moment}"),
         ),
@@ -460,7 +460,8 @@ async fn resolve_snapshot(
     }
 }
 
-/// The Root a command is about and, when it was given a path, that path relative to the Root.
+/// The Root a command is about and, when it was given a path, that path relative to the Root, as its
+/// bytes (ticket 74).
 ///
 /// An explicit `--root` wins; otherwise the path decides, and otherwise the working directory — the
 /// same order every Root-scoped command uses (ticket 07).
@@ -468,7 +469,7 @@ pub(crate) async fn located(
     client: &DaemonClient,
     root: Option<&str>,
     path: Option<&Path>,
-) -> Result<(Root, Option<String>), u8> {
+) -> Result<(Root, Option<Vec<u8>>), u8> {
     // Made absolute and then rid of `.` and `..` by name, as the shell that typed the path reads them:
     // `std::path::absolute` keeps `..` on Unix, so `../notes.md` from a subdirectory would otherwise
     // never be found inside the Root it is in.
@@ -507,8 +508,9 @@ pub(crate) async fn located(
     }
 }
 
-/// `path`, as typed on this machine, relative to the Root at `root` — `None` when it is outside it.
-pub(crate) fn inside(root: &Path, path: &Path) -> std::io::Result<Option<String>> {
+/// `path`, as typed on this machine, relative to the Root at `root` as its bytes — `None` when it is
+/// outside it.
+pub(crate) fn inside(root: &Path, path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     let absolute = lexical(&std::path::absolute(path)?);
 
     Ok(relative_to(&absolute, root))
@@ -540,19 +542,19 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 /// `path` relative to `root`, `/`-separated as every endpoint takes it — the separators of this
-/// platform are the client's to normalise (ticket 07).
-fn relative_to(path: &Path, root: &Path) -> Option<String> {
+/// platform are the client's to normalise (ticket 07) — and each name as its bytes (ticket 74).
+fn relative_to(path: &Path, root: &Path) -> Option<Vec<u8>> {
     let relative = path.strip_prefix(root).ok()?;
     let mut parts = Vec::new();
     for component in relative.components() {
         match component {
-            Component::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
+            Component::Normal(name) => parts.push(crate::names::os_bytes(name)),
             Component::CurDir => {}
             _ => return None,
         }
     }
 
-    Some(parts.join("/"))
+    Some(parts.join(&b'/'))
 }
 
 /// One timeline line: identity, moment, Trigger, what changed — and the words that keep an
@@ -651,7 +653,7 @@ mod tests {
 
         assert_eq!(
             relative_to(&path, Path::new("/proj")),
-            Some("notes.md".to_owned())
+            Some(b"notes.md".to_vec())
         );
         assert_eq!(
             relative_to(&lexical(Path::new("/proj/../other")), Path::new("/proj")),

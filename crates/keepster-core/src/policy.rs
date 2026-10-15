@@ -462,14 +462,16 @@ fn secret_denylist() -> RuleSet {
 /// either — every git command would otherwise churn its index and objects into history (ticket 10).
 /// And the sidecar's own name at the top of the Root, where the Snapshot keeps its records (ticket 48).
 pub fn is_reserved(path: &RootPath) -> bool {
-    if path.as_str() == SIDECAR {
+    if path.as_bytes() == SIDECAR.as_bytes() {
         return true;
     }
-    let Some(name) = path.as_str().rsplit('/').next() else {
-        return false;
-    };
-    let folded = name.to_ascii_lowercase();
-    let trimmed = folded.trim_end_matches(['.', ' ']);
+    // Both names are ASCII, so folding ASCII alone decides it whatever other bytes a name holds.
+    let folded = path.name().to_ascii_lowercase();
+    let end = folded
+        .iter()
+        .rposition(|byte| !matches!(byte, b'.' | b' '))
+        .map_or(0, |last| last + 1);
+    let trimmed = &folded[..end];
 
-    trimmed == ".git" || trimmed == "git~1"
+    trimmed == b".git" || trimmed == b"git~1"
 }
