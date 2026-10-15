@@ -351,7 +351,7 @@ fn an_executable_file_is_recorded_as_one() {
 
 #[test]
 fn a_file_removed_from_the_working_tree_leaves_the_next_snapshot() {
-    // A Snapshot is "the captured state of a Root's included files at one moment" (CONTEXT.md), so a
+    // A Snapshot is "the captured state of a Root's included files at one moment" (GLOSSARY.md), so a
     // file that is gone must be gone from it. Carrying it forward would make history claim content the
     // Working Tree no longer has — the silent disagreement with reality that ADR 0004 refuses.
     let directory = tempfile::tempdir().expect("a temporary directory");

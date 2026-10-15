@@ -343,7 +343,7 @@ pub(crate) fn reported(
 ///
 /// Shared by every endpoint that acts on a Root rather than reporting on one: a Root that is not
 /// registered is not found, and one whose record cannot be read is `Unavailable`, which is what
-/// `CONTEXT.md` calls a Root that cannot be captured at all.
+/// `GLOSSARY.md` calls a Root that cannot be captured at all.
 pub(crate) fn record(
     registry: &keepster_store::Registry,
     id: RootId,
@@ -463,7 +463,7 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 /// How a readable Root appears on the wire.
 ///
 /// The state is the honest one this build can determine, the most serious reason first: a directory
-/// that is gone means nothing can be captured at all, which `CONTEXT.md` calls `Unavailable`, and so
+/// that is gone means nothing can be captured at all, which `GLOSSARY.md` calls `Unavailable`, and so
 /// does a configuration with no version to apply; one whose current version is invalid leaves the last
 /// known-good in force, `Degraded`. Past that, a Root is `Watching` only while the guarantee holds as
 /// promised — Reconciliation at the start, a watcher or a periodic pass, and a `stat` filter worth its
