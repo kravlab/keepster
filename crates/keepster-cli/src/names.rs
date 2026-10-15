@@ -98,7 +98,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::PathBuf;
 
-    use super::{exact, joined, native, split_assignment, write_path};
+    use super::{exact, joined, native, split_assignment};
 
     #[test]
     fn a_wire_path_is_its_companion_s_bytes_or_its_text() {
@@ -135,6 +135,8 @@ mod tests {
     #[test]
     fn on_unix_a_name_is_taken_and_printed_as_its_bytes() {
         use std::os::unix::ffi::OsStrExt;
+
+        use super::write_path;
 
         assert_eq!(
             split_assignment(OsStr::from_bytes(b"\xff.sh=keep")),
