@@ -107,7 +107,7 @@ fn what_a_walk_found_is_counted_by_class_and_grouped_by_the_rule_that_decided() 
 
     let largest = |side: &[(RootPath, u64)]| {
         side.iter()
-            .map(|(path, bytes)| (path.as_str().to_owned(), *bytes))
+            .map(|(path, bytes)| (path.to_lossy().into_owned(), *bytes))
             .collect::<Vec<_>>()
     };
     assert_eq!(

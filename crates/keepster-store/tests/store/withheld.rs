@@ -184,7 +184,7 @@ fn a_reserved_name_is_withheld_once_and_never_entered() {
     let mut withheld: Vec<_> = captured
         .withheld
         .iter()
-        .map(|withheld| (withheld.path.as_str().to_owned(), withheld.reason))
+        .map(|withheld| (withheld.path.to_lossy().into_owned(), withheld.reason))
         .collect();
     withheld.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
@@ -472,7 +472,13 @@ fn withholding() -> (Fixture, CapturePolicy, CapturedSnapshot) {
 fn listed(entries: &[Entry]) -> Vec<(String, EntryKind, Option<WithheldReason>)> {
     entries
         .iter()
-        .map(|entry| (entry.path.as_str().to_owned(), entry.kind, entry.withheld))
+        .map(|entry| {
+            (
+                entry.path.to_lossy().into_owned(),
+                entry.kind,
+                entry.withheld,
+            )
+        })
         .collect()
 }
 
@@ -528,7 +534,7 @@ fn entries_list_withheld_paths_with_their_reasons_and_never_the_sidecar() {
         everything
             .entries
             .iter()
-            .map(|entry| entry.path.as_str())
+            .map(|entry| entry.path.to_lossy())
             .collect::<Vec<_>>(),
         [".git", "a.txt", "big.bin", "run", "run/control"]
     );

@@ -10,6 +10,7 @@
    */
   import { failureText } from '../lib/failures'
   import { momentOf } from '../lib/ids'
+  import { shownPath } from '../lib/paths'
   import {
     SEARCH_PAUSE_MS,
     byRoot,
@@ -65,7 +66,7 @@
         key: `m${i}`,
         root: m.root,
         target: matchTarget(m),
-        title: m.path,
+        title: shownPath(m.path),
         detail: strings.search.match(m.line, momentOf(m.first)),
         code: m.snippet,
       }))
@@ -74,7 +75,7 @@
       key: `p${i}`,
       root: hit.root,
       target: pathTarget(hit),
-      title: hit.path,
+      title: shownPath(hit.path),
       detail: strings.search.pathDetail(hit.snapshots, hit.exists),
     }))
   })

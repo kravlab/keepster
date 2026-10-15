@@ -202,7 +202,7 @@ fn explaining_a_path_under_a_pruned_directory_names_the_ancestor_and_the_rule_it
 
     match explained.verdict {
         Verdict::Pruned { ancestor, rule } => {
-            assert_eq!(ancestor.as_str(), "node_modules");
+            assert_eq!(ancestor.to_str(), Some("node_modules"));
             assert_eq!(rule.origin.level, Level::Global);
         }
         other => panic!("expected pruning, got {other:?}"),

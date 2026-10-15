@@ -502,8 +502,9 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
 
     Root {
         id: record.id.to_string(),
-        // Ticket 48 adds the byte-exact representation for a path that is not UTF-8; until then a path
-        // only reaches the daemon as text, so nothing lossy can be registered in the first place.
+        // Ticket 99 adds the byte-exact representation for an absolute path that is not UTF-8 (ticket 74
+        // made only the paths inside a Root bytes); until then a path only reaches the daemon as text, so
+        // nothing lossy can be registered in the first place.
         path: record.path.to_string_lossy().into_owned(),
         state,
         state_code,

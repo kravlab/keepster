@@ -1,0 +1,9 @@
+# False positives of `oasdiff breaking` that scripts/check-api.sh ignores, one per line, each matched as
+# oasdiff matches an --err-ignore line: the method and path, then the message.
+#
+# Ticket 74 added an optional `path_bytes` to records of the two NDJSON streams below. Their records are
+# untitled `oneOf` variants, which oasdiff cannot pair with the released ones, so it reads each widened
+# variant as a new one: the change only adds an optional field. Once a release after v0.1.0 is the
+# baseline, these lines match nothing and can go.
+GET /v1/preview added `subschema #1, subschema #2, subschema #5` to the response body `oneOf` list for the response status `200`
+GET /v1/search/content added `subschema #2, subschema #3` to the response body `oneOf` list for the response status `200`

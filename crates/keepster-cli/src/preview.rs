@@ -10,6 +10,7 @@ use keepster_api::{PreviewConfig, PreviewGroup, PreviewRecord, PreviewSize, Rule
 use crate::client::{ClientError, DaemonClient};
 use crate::command::PreviewArgs;
 use crate::exit;
+use crate::names::{printed_all, write_path};
 use crate::roots::exit_code_for;
 
 /// What a person is told about the one number a preview never gives.
@@ -82,7 +83,7 @@ pub(crate) async fn run(
 ) -> Result<PreviewRecord, u8> {
     let url = format!(
         "/v1/preview?path={}{query}",
-        keepster_api::encode_path_query(&directory.to_string_lossy())
+        keepster_api::encode_path_query(directory.to_string_lossy().as_bytes())
     );
     let mut lines = match client.lines(&url).await {
         Ok(lines) => lines,
@@ -161,7 +162,7 @@ async fn holding_root(client: &DaemonClient, directory: &Path) -> Option<PathBuf
     let response = client
         .get(&format!(
             "/v1/roots?path={}",
-            keepster_api::encode_path_query(&directory.to_string_lossy())
+            keepster_api::encode_path_query(directory.to_string_lossy().as_bytes())
         ))
         .await
         .ok()?;
@@ -183,15 +184,17 @@ pub(crate) fn render(record: &PreviewRecord, out: &mut impl Write) -> io::Result
             path,
             root,
             within,
+            within_bytes,
             overlaps,
             config,
         } => {
             write!(out, "Capture Preview of {path}")?;
             match (root, within, overlaps) {
-                (Some(root), Some(within), _) => writeln!(
-                    out,
-                    " ({within} in the Root {root}, classified by the Root's rules)"
-                )?,
+                (Some(root), Some(within), _) => {
+                    write!(out, " (")?;
+                    write_path(out, within, within_bytes.as_deref())?;
+                    writeln!(out, " in the Root {root}, classified by the Root's rules)")?
+                }
                 (Some(root), None, _) => writeln!(out, " (the Root {root})")?,
                 (None, _, Some(other)) => writeln!(
                     out,
@@ -206,6 +209,7 @@ pub(crate) fn render(record: &PreviewRecord, out: &mut impl Write) -> io::Result
         }
         PreviewRecord::Entry {
             path,
+            path_bytes,
             class,
             reason,
             bytes,
@@ -222,9 +226,13 @@ pub(crate) fn render(record: &PreviewRecord, out: &mut impl Write) -> io::Result
                 .map(|rule| format!("  — {}", rule_text(rule)))
                 .unwrap_or_default();
             if *pruned {
-                writeln!(out, "  {what:<12} {path}/ not entered{decided}")
+                write!(out, "  {what:<12} ")?;
+                write_path(out, path, path_bytes.as_deref())?;
+                writeln!(out, "/ not entered{decided}")
             } else {
-                writeln!(out, "  {what:<12} {:>10}  {path}{decided}", size(*bytes))
+                write!(out, "  {what:<12} {:>10}  ", size(*bytes))?;
+                write_path(out, path, path_bytes.as_deref())?;
+                writeln!(out, "{decided}")
             }
         }
         // The walk's pulse, for a reader that wants one; a person has the entries.
@@ -324,8 +332,10 @@ fn render_groups(groups: &[PreviewGroup], out: &mut impl Write) -> io::Result<()
                 size(group.bytes)
             )?;
         }
-        for pruned in &group.pruned {
-            writeln!(out, "  {:<9} {pruned}/ not entered — {rule}", group.class)?;
+        for pruned in printed_all(&group.pruned, &group.pruned_bytes) {
+            write!(out, "  {:<9} ", group.class)?;
+            out.write_all(&pruned)?;
+            writeln!(out, "/ not entered — {rule}")?;
         }
     }
     Ok(())
@@ -338,7 +348,9 @@ fn render_largest(title: &str, side: &[PreviewSize], out: &mut impl Write) -> io
     }
     writeln!(out, "{title}:")?;
     for entry in side {
-        writeln!(out, "  {:>10}  {}", size(entry.bytes), entry.path)?;
+        write!(out, "  {:>10}  ", size(entry.bytes))?;
+        write_path(out, &entry.path, entry.path_bytes.as_deref())?;
+        writeln!(out)?;
     }
     Ok(())
 }

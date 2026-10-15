@@ -16,6 +16,7 @@
   import { restore } from '../lib/api'
   import { failureText } from '../lib/failures'
   import { momentOf } from '../lib/ids'
+  import { shownPath } from '../lib/paths'
   import {
     emptyAnswers,
     outcomeCounts,
@@ -138,7 +139,7 @@
 </script>
 
 <dialog bind:this={dialog} onclose={onClose} aria-labelledby="restore-title">
-  <h2 id="restore-title">{strings.restore.title(path)}</h2>
+  <h2 id="restore-title">{strings.restore.title(shownPath(path))}</h2>
   <p>{beforeDeletion ? strings.restore.beforeDeletion(moment) : strings.restore.version(moment)}</p>
 
   {#if error}
@@ -150,9 +151,9 @@
     <ul class="files">
       {#each result.paths as file (file.path)}
         <li>
-          <code>{file.path}</code>
+          <code>{shownPath(file.path)}</code>
           {strings.restore.outcome[file.outcome]}
-          {#if file.target}<span class="muted">{strings.restore.writtenAs(file.target)}</span>{/if}
+          {#if file.target}<span class="muted">{strings.restore.writtenAs(shownPath(file.target))}</span>{/if}
           {#if file.error}<span class="error">{file.error}</span>{/if}
         </li>
       {/each}
@@ -175,9 +176,9 @@
       <ul class="files">
         {#each plan as file (file.path)}
           <li class:blocked={file.outcome === 'blocked'}>
-            <code>{file.path}</code>
+            <code>{shownPath(file.path)}</code>
             {strings.restore.planned[file.outcome]}
-            {#if file.target}<span class="muted">{strings.restore.writtenAs(file.target)}</span>{/if}
+            {#if file.target}<span class="muted">{strings.restore.writtenAs(shownPath(file.target))}</span>{/if}
           </li>
         {/each}
       </ul>
@@ -194,15 +195,15 @@
             />
             {strings.restore.confirm[question.confirm]}
           </label>
-          <p class="muted"><code>{strings.list(question.paths)}</code></p>
+          <p class="muted"><code>{strings.list(question.paths.map(shownPath))}</code></p>
         {:else if question.kind === 'unrestorable'}
-          <p>{strings.restore.unrestorable} <code>{strings.list(question.paths)}</code></p>
+          <p>{strings.restore.unrestorable} <code>{strings.list(question.paths.map(shownPath))}</code></p>
           <label>
             <input type="checkbox" bind:checked={answers.skipUnresolvable} />
             {strings.restore.skip}
           </label>
         {:else if question.resolution === 'name_case'}
-          <p>{strings.restore.nameCase(question.issue.existing ?? question.path)}</p>
+          <p>{strings.restore.nameCase(shownPath(question.issue.existing ?? question.path))}</p>
           {#each Object.entries(strings.restore.nameCaseChoice) as [choice, label] (choice)}
             <label>
               <input
@@ -216,7 +217,7 @@
           {/each}
         {:else if question.resolution === 'modes'}
           <p>
-            <code>{question.path}</code>
+            <code>{shownPath(question.path)}</code>
             {question.issue.current_mode != null && question.issue.snapshot_mode != null
               ? strings.restore.modes(question.issue.current_mode, question.issue.snapshot_mode)
               : strings.restore.modesUnknown}
@@ -234,7 +235,7 @@
           {/each}
         {:else if question.resolution === 'rename_to'}
           <label>
-            <code>{question.path}</code>
+            <code>{shownPath(question.path)}</code>
             {strings.restore.renameTo}
             <input
               type="text"
@@ -249,8 +250,8 @@
               checked={answers.resolutions[question.path]?.write === true}
               onchange={(e) => resolve(question.path, { write: e.currentTarget.checked })}
             />
-            <code>{question.path}</code>
-            {strings.restore.write(question.issue.paths ?? [])}
+            <code>{shownPath(question.path)}</code>
+            {strings.restore.write((question.issue.paths ?? []).map(shownPath))}
           </label>
         {/if}
         {#if question.kind === 'confirm' && question.confirm === 'overwrite_unrecoverable'}

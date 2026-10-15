@@ -450,7 +450,7 @@ fn a_sidecar_record_this_build_does_not_know_is_skipped_and_reported_where_it_is
         listing
             .entries
             .iter()
-            .map(|entry| entry.path.as_str())
+            .map(|entry| entry.path.to_lossy())
             .collect::<Vec<_>>(),
         ["notes.txt"],
         "read as it always was"

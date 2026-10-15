@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 fn url(path: &Path, query: &str) -> String {
     format!(
         "/v1/preview?path={}{query}",
-        encode_path_query(&path.to_string_lossy())
+        encode_path_query(path.to_string_lossy().as_bytes())
     )
 }
 

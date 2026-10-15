@@ -108,24 +108,32 @@ impl PathQuery {
     }
 
     /// Whether `path` is found.
-    pub fn matches(&self, path: &str) -> bool {
+    ///
+    /// A query is text, so it is matched against the path as text, a name that is not UTF-8 read with
+    /// U+FFFD — as [`Rule::matches`] reads it.
+    pub fn matches(&self, path: &RootPath) -> bool {
+        let text = path.to_lossy();
         match self {
-            Self::Fragment { text, folded: true } => path.to_lowercase().contains(text.as_str()),
-            Self::Fragment { text, .. } => path.contains(text.as_str()),
+            Self::Fragment {
+                text: query,
+                folded: true,
+            } => text.to_lowercase().contains(query.as_str()),
+            Self::Fragment { text: query, .. } => text.contains(query.as_str()),
             Self::Pattern { rule, folded } => {
                 let folded_path;
                 let path = if *folded {
-                    folded_path = path.to_lowercase();
-                    folded_path.as_str()
+                    folded_path = RootPath::parse(&text.to_lowercase());
+                    match &folded_path {
+                        Ok(folded) => folded,
+                        Err(_) => return false,
+                    }
                 } else {
                     path
                 };
-                RootPath::parse(path).is_ok_and(|path| {
-                    rule.matches(&path, Kind::File)
-                        || path
-                            .ancestors()
-                            .any(|directory| rule.matches(&directory, Kind::Directory))
-                })
+                rule.matches(path, Kind::File)
+                    || path
+                        .ancestors()
+                        .any(|directory| rule.matches(&directory, Kind::Directory))
             }
         }
     }

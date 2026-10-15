@@ -136,7 +136,7 @@ fn exported(
 
     plan.paths
         .iter()
-        .map(|path| path.path.as_str().to_owned())
+        .map(|path| path.path.to_lossy().into_owned())
         .zip(written)
         .collect()
 }
@@ -335,7 +335,7 @@ fn a_selection_names_its_files_with_their_sizes_and_what_it_withholds() {
     let files: Vec<(String, u64)> = selection
         .files
         .iter()
-        .map(|file| (file.path.as_str().to_owned(), file.size))
+        .map(|file| (file.path.to_lossy().into_owned(), file.size))
         .collect();
     assert_eq!(
         files,

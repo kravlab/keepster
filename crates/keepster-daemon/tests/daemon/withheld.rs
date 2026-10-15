@@ -230,24 +230,24 @@ async fn a_history_store_inside_a_root_is_withheld_as_one() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_incomplete_pass_is_retried_until_it_is_whole() {
-    use std::os::unix::ffi::OsStrExt;
-
     let daemon = Harness::start_with_retry_after(Duration::from_millis(500)).await;
     daemon.write_global_config(
-        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1h\"\nrate_limit = \"1s\"\n",
+        b"[triggers]\nactive = [\"periodic\"]\nperiodic = \"1h\"\nrate_limit = \"1s\"\n\n\
+          [files]\nfollow_symlinks = [\"dangling\"]\n",
     );
     let project = daemon.scratch("project");
     write(&project, "notes.txt", b"kept");
-    // A name that is not UTF-8 cannot be held until ticket 74, so every pass that meets it is
-    // incomplete — whoever runs the test, unlike a file without read permission.
-    let odd = project.join(std::ffi::OsStr::from_bytes(b"\xff.bin"));
-    std::fs::write(&odd, b"x").expect("an odd name");
+    // A followed link whose target is gone cannot be read, so every pass that meets it is incomplete —
+    // whoever runs the test, unlike a file without read permission.
+    let dangling = project.join("dangling");
+    std::os::unix::fs::symlink(project.join("gone"), &dangling)
+        .expect("a followed link to nothing");
     let root = registered(&daemon, &project).await;
 
     let first = wait_for(&daemon, &root, |snapshot| snapshot["incomplete"] == true).await;
     assert_eq!(first["trigger"], "reconcile", "{first}");
 
-    std::fs::remove_file(&odd).expect("removed, with no watcher to say so");
+    std::fs::remove_file(&dangling).expect("removed, with no watcher to say so");
 
     let retried = wait_for(&daemon, &root, |snapshot| snapshot["incomplete"] == false).await;
     assert_eq!(

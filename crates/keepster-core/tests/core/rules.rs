@@ -144,7 +144,7 @@ fn an_excluded_directory_is_never_entered_so_nothing_beneath_it_comes_back() {
 
     assert!(!verdict.captured(), "pruning wins over negation (ADR 0007)");
     let (ancestor, pruner) = verdict.pruned_by.expect("the pruning ancestor is named");
-    assert_eq!(ancestor.as_str(), "node_modules");
+    assert_eq!(ancestor.to_str(), Some("node_modules"));
     assert_eq!(pruner.text, "node_modules/");
     assert_eq!(
         verdict
@@ -238,7 +238,7 @@ fn a_negation_an_excluded_ancestor_makes_unreachable_is_reported() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     let warning = &warnings[0];
     assert_eq!(warning.negation.text, "!node_modules/mylib/**");
-    assert_eq!(warning.ancestor.as_str(), "node_modules");
+    assert_eq!(warning.ancestor.to_str(), Some("node_modules"));
     assert_eq!(warning.excluded_by.text, "node_modules/");
 }
 
@@ -299,9 +299,20 @@ fn an_ignore_file_keeps_an_escaped_trailing_space() {
 fn a_path_lists_its_ancestors_from_the_top() {
     let ancestors: Vec<String> = path("a/b/c.txt")
         .ancestors()
-        .map(|ancestor| ancestor.as_str().to_owned())
+        .map(|ancestor| ancestor.to_lossy().into_owned())
         .collect();
 
     assert_eq!(ancestors, ["a", "a/b"]);
     assert_eq!(path("top").ancestors().count(), 0);
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_matched_by_wildcards_as_any_other_name() {
+    // Ticket 74: a pattern is text and cannot spell the stray bytes, but a wildcard covers them.
+    let rules = set(&["*.bin", "/build/?", "!keep/[!a].txt"]);
+    let odd = |bytes: &[u8]| RootPath::parse_bytes(bytes).expect("valid");
+
+    assert!(!rules.classify(&odd(b"src/\xff.bin"), Kind::File).captured());
+    assert!(!rules.classify(&odd(b"build/\xff"), Kind::File).captured());
+    assert!(rules.classify(&odd(b"src/\xff.rs"), Kind::File).captured());
 }

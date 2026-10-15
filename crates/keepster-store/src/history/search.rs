@@ -18,7 +18,7 @@ use super::{HistoryStore, StoreError, withheld_at};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathFound {
     /// The path, Root-relative.
-    pub path: String,
+    pub path: RootPath,
     /// How many Snapshots changed it.
     pub snapshots: u64,
     /// The first of them.
@@ -33,7 +33,7 @@ pub struct PathFound {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentVersion {
     /// The path, Root-relative.
-    pub path: String,
+    pub path: RootPath,
     /// The first Snapshot it was current in.
     pub first: SnapshotId,
     /// The last Snapshot it was current in.
@@ -44,7 +44,7 @@ pub struct ContentVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithheldMet {
     /// The path, Root-relative.
-    pub path: String,
+    pub path: RootPath,
     /// Why it was withheld.
     pub reason: WithheldReason,
     /// The first Snapshot it was withheld in.
@@ -149,8 +149,8 @@ impl HistoryStore {
         };
 
         let mut by_blob: BTreeMap<git2::Oid, Vec<ContentVersion>> = BTreeMap::new();
-        let mut withheld_candidates: Vec<(String, SnapshotId)> = Vec::new();
-        let mut current: Option<(String, git2::Oid, SnapshotId)> = None;
+        let mut withheld_candidates: Vec<(RootPath, SnapshotId)> = Vec::new();
+        let mut current: Option<(RootPath, git2::Oid, SnapshotId)> = None;
         for change in &changes {
             let same_path = current
                 .as_ref()
@@ -211,21 +211,18 @@ impl HistoryStore {
     /// why: each path once per reason, at the first Snapshot it was met in.
     fn withheld_met(
         &self,
-        candidates: &[(String, SnapshotId)],
+        candidates: &[(RootPath, SnapshotId)],
     ) -> Result<Vec<WithheldMet>, StoreError> {
         let mut sidecars = HashMap::new();
-        let mut met: BTreeMap<(String, WithheldReason), SnapshotId> = BTreeMap::new();
+        let mut met: BTreeMap<(RootPath, WithheldReason), SnapshotId> = BTreeMap::new();
         for (path, snapshot) in candidates {
             if !sidecars.contains_key(snapshot) {
                 let tree = self.snapshot_tree(*snapshot)?;
                 sidecars.insert(*snapshot, self.sidecar(&tree)?.sidecar);
             }
-            let Ok(rooted) = RootPath::parse(path) else {
-                continue;
-            };
             if let Some(reason) = sidecars
                 .get(snapshot)
-                .and_then(|sidecar| withheld_at(sidecar, &rooted))
+                .and_then(|sidecar| withheld_at(sidecar, path))
             {
                 met.entry((path.clone(), reason)).or_insert(*snapshot);
             }

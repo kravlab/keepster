@@ -27,6 +27,7 @@ mod logging;
 mod loopback;
 mod ndjson;
 mod openapi;
+mod path_parameter;
 mod pins;
 mod places;
 mod preferences;
@@ -42,6 +43,7 @@ mod ui;
 mod volumes;
 #[cfg(feature = "embed-ui")]
 mod web;
+mod wire;
 
 use std::collections::HashMap;
 use std::io;

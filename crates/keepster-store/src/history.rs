@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use keepster_core::{
     CapturePolicy, ChangeKind, ContentFormat, Header, IGNORE_FILE, Incomplete, Kind, ModeKind,
     ModeTable, Parsed, Record, RootId, RootPath, SIDECAR, SegmentName, Sidecar, SnapshotId,
-    SpecialKind, Trigger, Verdict, Verify, WithheldReason, ignore_file_rules,
+    SpecialKind, Trigger, Verdict, Verify, WithheldReason, ignore_file_rules, name_bytes,
 };
 
 use crate::format;
@@ -884,7 +884,7 @@ impl HistoryStore {
         baseline_tree: Option<&git2::Tree<'_>>,
         root_path: &Path,
         policy: &CapturePolicy,
-        vouching: &HashMap<String, Observation>,
+        vouching: &HashMap<Vec<u8>, Observation>,
         now: SystemTime,
         reconciling: bool,
     ) -> Result<(git2::Oid, Walked), StoreError> {
@@ -979,7 +979,7 @@ impl HistoryStore {
         if recorded != Some(blob) {
             index
                 .add(&entry_for(
-                    &WirePath(SIDECAR.to_owned()),
+                    &WirePath(SIDECAR.as_bytes().to_vec()),
                     blob,
                     REGULAR_MODE,
                 ))
@@ -1084,52 +1084,35 @@ impl HistoryStore {
         depth: Depth,
         entries: &mut Vec<Entry>,
     ) -> Result<(), StoreError> {
-        let is_sidecar =
-            |prefix: &str, name: &str| directory.is_root() && prefix.is_empty() && name == SIDECAR;
         // One handle for the whole listing, rather than one per size and per probe.
         let odb = self.repository.odb().map_err(self.failed("read"))?;
 
-        match depth {
-            Depth::One => {
-                for entry in tree.iter() {
-                    let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
-                    if is_sidecar("", &name) {
-                        continue;
-                    }
-                    if let Some(entry) = self.describe(&odb, directory.child(&name), &entry)? {
-                        entries.push(entry);
-                    }
-                }
+        self.list_in(&odb, tree, directory, depth, entries)
+    }
+
+    /// What `tree`, the tree of `directory`, holds, and at [`Depth::Infinity`] everything beneath it.
+    ///
+    /// Recursion over the entries rather than git2's `Tree::walk`, whose callback is handed the prefix
+    /// as text and stops at a name that is not UTF-8 (ticket 74): each name is taken as its bytes.
+    fn list_in(
+        &self,
+        odb: &git2::Odb<'_>,
+        tree: &git2::Tree<'_>,
+        directory: &RootPath,
+        depth: Depth,
+        entries: &mut Vec<Entry>,
+    ) -> Result<(), StoreError> {
+        for entry in tree.iter() {
+            if directory.is_root() && entry.name_bytes() == SIDECAR.as_bytes() {
+                continue;
             }
-            Depth::Infinity => {
-                let mut failure = None;
-                tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
-                    let name = String::from_utf8_lossy(entry.name_bytes());
-                    if is_sidecar(prefix, &name) {
-                        return git2::TreeWalkResult::Skip;
-                    }
-                    let mut path = directory.clone();
-                    for component in prefix.split('/').filter(|part| !part.is_empty()) {
-                        path = path.child(component);
-                    }
-                    match self.describe(&odb, path.child(&name), entry) {
-                        Ok(Some(entry)) => entries.push(entry),
-                        Ok(None) => {}
-                        Err(error) => {
-                            failure = Some(error);
-                            return git2::TreeWalkResult::Abort;
-                        }
-                    }
-                    git2::TreeWalkResult::Ok
-                })
-                .map_err(|source| {
-                    failure
-                        .take()
-                        .unwrap_or_else(|| self.failed("read")(source))
-                })?;
-                if let Some(error) = failure {
-                    return Err(error);
-                }
+            let path = directory.child(entry.name_bytes());
+            if let Some(described) = self.describe(odb, path.clone(), &entry)? {
+                entries.push(described);
+            }
+            if depth == Depth::Infinity && entry.kind() == Some(git2::ObjectType::Tree) {
+                let beneath = self.find(entry.id())?;
+                self.list_in(odb, &beneath, &path, depth, entries)?;
             }
         }
 
@@ -1144,7 +1127,10 @@ impl HistoryStore {
     /// Whether a Snapshot's tree holds any path at all: an entry beside its sidecar, or one the sidecar
     /// names without holding — Withheld, or not read.
     fn holds_any(&self, root: &git2::Tree<'_>) -> Result<bool, StoreError> {
-        if root.iter().any(|entry| entry.name() != Ok(SIDECAR)) {
+        if root
+            .iter()
+            .any(|entry| entry.name_bytes() != SIDECAR.as_bytes())
+        {
             return Ok(true);
         }
 
@@ -1198,7 +1184,7 @@ impl HistoryStore {
         }
 
         let root = self.snapshot_tree(snapshot)?;
-        if path.as_str() == SIDECAR {
+        if path.as_bytes() == SIDECAR.as_bytes() {
             return Err(StoreError::PathNotFound(path.clone()));
         }
         let entry = match self.entry_at(&root, path) {
@@ -1246,7 +1232,7 @@ impl HistoryStore {
         root: &git2::Tree<'_>,
         path: &RootPath,
     ) -> Result<git2::TreeEntry<'static>, StoreError> {
-        match root.get_path(Path::new(path.as_str())) {
+        match root.get_path(&filesystem_path(path.as_bytes())) {
             Ok(entry) => Ok(entry),
             Err(error) if error.code() == git2::ErrorCode::NotFound => {
                 Err(StoreError::PathNotFound(path.clone()))
@@ -1355,7 +1341,7 @@ impl HistoryStore {
         baseline: Option<&git2::Tree<'_>>,
         root_path: &Path,
         policy: &CapturePolicy,
-        observations: &HashMap<String, Observation>,
+        observations: &HashMap<Vec<u8>, Observation>,
         now: SystemTime,
     ) -> Result<Walked, StoreError> {
         let mut walked = Walked::default();
@@ -1401,10 +1387,7 @@ impl HistoryStore {
             let mtime = metadata.modified().ok().map(nanos_since_epoch);
             // Beyond a followed link the evidence is keyed by where the file really is, so a link
             // retargeted at a lookalike tree — same sizes, same mtimes — vouches for nothing.
-            let evidence = match walked.real.get(path) {
-                Some(real) => format!("{}\0{}", path.0, real.display()),
-                None => path.0.clone(),
-            };
+            let evidence = evidence_key(path, walked.real.get(path).map(PathBuf::as_path));
             let vouched = match (observations.get(&evidence), mtime, recorded) {
                 (Some(seen), Some(mtime), Some((oid, _)))
                     if seen.size == metadata.len() && seen.mtime == mtime && seen.oid == oid =>
@@ -1447,7 +1430,7 @@ impl HistoryStore {
             // Taken from the `stat` the filter already made, so a permission-only change costs nothing
             // to see: the sidecar's records differ, and with them the tree.
             if let Some(bits) = permissions(&metadata) {
-                walked.modes.insert(path.0.clone(), bits);
+                walked.modes.insert(path.as_bytes().to_vec(), bits);
             }
             let size = metadata.len();
             let mtime = metadata.modified().ok().map(nanos_since_epoch);
@@ -1582,7 +1565,7 @@ impl HistoryStore {
     fn keep_observations(
         &self,
         walked: &Walked,
-        previous: &HashMap<String, Observation>,
+        previous: &HashMap<Vec<u8>, Observation>,
     ) -> Option<String> {
         self.index()
             .and_then(|mut index| index.update_observations(previous, &walked.observed))
@@ -1748,26 +1731,81 @@ impl HistoryStore {
 /// platform's `Path` compares by component — which puts `sub/b.txt` before `sub.txt`, the opposite of
 /// what the index expects, and would cost the out-of-order insertion ticket 12 measured at 22.74 s
 /// against 0.86 s.
+///
+/// The path's exact bytes (ticket 74): a Unix name need not be UTF-8, and the index takes bytes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct WirePath(String);
+struct WirePath(Vec<u8>);
 
 impl WirePath {
-    /// The same path as this platform spells it, for reaching the file itself.
-    fn as_filesystem_path(&self) -> PathBuf {
-        PathBuf::from(self.0.replace('/', std::path::MAIN_SEPARATOR_STR))
+    /// The path the domain names `rooted` by, as the index names it.
+    fn of(rooted: &RootPath) -> Self {
+        Self(rooted.as_bytes().to_vec())
     }
 
-    fn as_str(&self) -> &str {
+    /// The same path as this platform spells it, for reaching the file itself and for git2's path
+    /// arguments.
+    fn as_filesystem_path(&self) -> PathBuf {
+        filesystem_path(&self.0)
+    }
+
+    fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
     /// The same path as the domain names it.
     fn to_root_path(&self) -> RootPath {
-        // Built from components rather than parsed: every one came from the filesystem as one name.
-        self.0
-            .split('/')
-            .filter(|name| !name.is_empty())
-            .fold(RootPath::root(), |path, name| path.child(name))
+        rooted(&self.0)
+    }
+}
+
+/// The path whose `/`-separated bytes the index, a tree or a diff holds.
+///
+/// Built from components rather than parsed: every one came from the filesystem, or from a tree that
+/// holds it, as one name.
+pub(crate) fn rooted(bytes: &[u8]) -> RootPath {
+    bytes
+        .split(|byte| *byte == b'/')
+        .filter(|name| !name.is_empty())
+        .fold(RootPath::root(), |path, name| path.child(name))
+}
+
+/// A `/`-separated relative path's bytes as this platform spells a path: the bytes themselves on Unix,
+/// where `/` is the separator and a name is bytes; text with `\\` elsewhere, where every path a walk or
+/// a tree yields is UTF-8 (a Windows name that is not is Withheld) — and bytes that are not can only
+/// have come from a client, so they are read as the text that names nothing.
+///
+/// git2 takes its path arguments the same way: the bytes on Unix, and text whose `\\` it turns back
+/// into `/` on Windows.
+pub(crate) fn filesystem_path(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).replace('/', std::path::MAIN_SEPARATOR_STR))
+    }
+}
+
+/// The bytes a platform path is held as, for keys that must tell every path apart: exact on Unix, and
+/// the text every Windows path built by a walk already is.
+pub(crate) fn os_bytes(path: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        std::borrow::Cow::Borrowed(path.as_bytes())
+    }
+
+    #[cfg(not(unix))]
+    {
+        match path.to_string_lossy() {
+            std::borrow::Cow::Borrowed(text) => std::borrow::Cow::Borrowed(text.as_bytes()),
+            std::borrow::Cow::Owned(text) => std::borrow::Cow::Owned(text.into_bytes()),
+        }
     }
 }
 
@@ -1790,13 +1828,14 @@ struct Walked {
     real: HashMap<WirePath, PathBuf>,
     /// The permission bits of every file read or vouched for and every directory entered, by the path
     /// the index names it by; empty where the platform keeps none (ticket 50).
-    modes: HashMap<String, u32>,
+    modes: HashMap<Vec<u8>, u32>,
     /// What the baseline's sidecar said that this build does not know, and so did not carry.
     unrecognized: Vec<String>,
     /// How many links the walk followed.
     followed: u64,
-    /// What this pass observed of each file it read or vouched for, for the next pass to compare with.
-    observed: Vec<(String, Observation)>,
+    /// What this pass observed of each file it read or vouched for, for the next pass to compare with,
+    /// keyed by the evidence key [`evidence_key`] makes.
+    observed: Vec<(Vec<u8>, Observation)>,
     /// How many files were read and hashed.
     hashed: u64,
     /// How many files were compared at all.
@@ -1856,7 +1895,7 @@ impl Walked {
     /// Name a directory that leads back to one already on the way to it, and keep what the baseline
     /// holds there, rather than walk it for ever.
     fn loops(&mut self, rooted: &RootPath) {
-        let path = WirePath(rooted.as_str().to_owned());
+        let path = WirePath::of(rooted);
         self.incomplete(&path, Incomplete::Error("eloop".to_owned()));
         self.carried.push(path);
     }
@@ -1865,7 +1904,7 @@ impl Walked {
     /// link's own path.
     fn entered(&mut self, rooted: &RootPath, metadata: &fs::Metadata) {
         if let Some(bits) = permissions(metadata) {
-            self.modes.insert(rooted.as_str().to_owned(), bits);
+            self.modes.insert(rooted.as_bytes().to_vec(), bits);
         }
     }
 
@@ -1895,19 +1934,20 @@ impl Walked {
     /// not be looked at survives because its absence was never observed. The sidecar is written after
     /// this, from this walk's records. Everything else is gone, and a Snapshot that kept it would claim
     /// content the Working Tree no longer has.
-    fn keeps(&self, path: &str) -> bool {
+    fn keeps(&self, path: &[u8]) -> bool {
         // `paths` is sorted by the time the baseline is compared against it.
-        path == SIDECAR
+        path == SIDECAR.as_bytes()
             || self
                 .paths
-                .binary_search_by(|walked| walked.as_str().cmp(path))
+                .binary_search_by(|walked| walked.as_bytes().cmp(path))
                 .is_ok()
             || self
                 .links
-                .binary_search_by(|(walked, _)| walked.as_str().cmp(path))
+                .binary_search_by(|(walked, _)| walked.as_bytes().cmp(path))
                 .is_ok()
             || self.carried.iter().any(|carried| {
-                path == carried.as_str() || path.starts_with(&format!("{}/", carried.as_str()))
+                path.strip_prefix(carried.as_bytes())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
             })
     }
 }
@@ -1997,9 +2037,8 @@ fn open_unfollowed(path: &Path) -> io::Result<fs::File> {
 fn remove_vanished(index: &mut git2::Index, walked: &Walked) -> Result<(), StoreError> {
     let vanished: Vec<PathBuf> = index
         .iter()
-        .filter_map(|entry| String::from_utf8(entry.path).ok())
-        .filter(|path| !walked.keeps(path))
-        .map(|path| WirePath(path).as_filesystem_path())
+        .filter(|entry| !walked.keeps(&entry.path))
+        .map(|entry| WirePath(entry.path).as_filesystem_path())
         .collect();
 
     for path in vanished {
@@ -2011,6 +2050,17 @@ fn remove_vanished(index: &mut git2::Index, walked: &Walked) -> Result<(), Store
     }
 
     Ok(())
+}
+
+/// The key a file's observation is kept under: its path's bytes, and beyond a followed link also where
+/// it really is, after a NUL, which no name holds.
+fn evidence_key(path: &WirePath, real: Option<&Path>) -> Vec<u8> {
+    let mut key = path.as_bytes().to_vec();
+    if let Some(real) = real {
+        key.push(0);
+        key.extend_from_slice(&os_bytes(real.as_os_str()));
+    }
+    key
 }
 
 /// The content and mode the baseline holds for this path, if it holds it.
@@ -2031,9 +2081,9 @@ fn is_beneath(path: &RootPath, directory: &RootPath) -> bool {
         return !path.is_root();
     }
 
-    path.as_str()
-        .strip_prefix(directory.as_str())
-        .is_some_and(|rest| rest.starts_with('/'))
+    path.as_bytes()
+        .strip_prefix(directory.as_bytes())
+        .is_some_and(|rest| rest.starts_with(b"/"))
 }
 
 /// Why `sidecar` says its Snapshot holds no content at `path`, if it says so — of the path itself, or of a
@@ -2155,8 +2205,8 @@ fn collect_files(
     place: &Place,
     walked: &mut Walked,
 ) -> Result<(), StoreError> {
-    let relative = WirePath(here.as_str().to_owned());
-    let directory = if relative.as_str().is_empty() {
+    let relative = WirePath::of(here);
+    let directory = if here.is_root() {
         root.to_path_buf()
     } else {
         root.join(relative.as_filesystem_path())
@@ -2165,7 +2215,7 @@ fn collect_files(
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(source) => {
-            if relative.as_str().is_empty() {
+            if here.is_root() {
                 return Err(StoreError::WorkingTree {
                     path: directory,
                     source,
@@ -2184,7 +2234,7 @@ fn collect_files(
             Ok(text) => {
                 let source = here.child(IGNORE_FILE);
                 extended =
-                    policy.with_ignore_rules(ignore_file_rules(here, &text, source.as_str()));
+                    policy.with_ignore_rules(ignore_file_rules(here, &text, &source.to_lossy()));
                 &extended
             }
             // No ignore file, or one that cannot be read: it belongs to the directory's own tooling, and
@@ -2200,7 +2250,7 @@ fn collect_files(
             Ok(entry) => entry,
             // The listing broke off: what it did not reach was never observed to be gone.
             Err(source) => {
-                if relative.as_str().is_empty() {
+                if here.is_root() {
                     return Err(StoreError::WorkingTree {
                         path: directory,
                         source,
@@ -2212,24 +2262,28 @@ fn collect_files(
         };
 
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            // A name that is not UTF-8 needs the byte-exact representation of ticket 74; until then it
-            // is named, as nearly as text can name it, with the error that says why it cannot be held.
-            let lossy = here.child(&entry.file_name().to_string_lossy());
-            walked.incomplete.push(IncompletePath {
-                path: lossy,
-                why: Incomplete::Error(error_name::UNREPRESENTABLE.to_owned()),
-            });
+        let Some(bytes) = name_bytes(&name) else {
+            // Only on Windows: a name holding an unpaired surrogate, which no UTF-8 spells and so no
+            // tree can hold. It is there, so it is Withheld — named as nearly as text can name it —
+            // unless the rules leave it out (ticket 10).
+            let lossy = here.child(name.to_string_lossy().as_bytes());
+            let judged = match entry.file_type() {
+                Ok(kind) if kind.is_dir() => policy.directory(&lossy),
+                _ => policy.file(&lossy, 0),
+            };
+            if !matches!(Judged::from(judged), Judged::Left) {
+                walked.withhold(lossy, WithheldReason::UnrepresentablePath);
+            }
             continue;
         };
 
         // Built from the walk's own components rather than parsed: a name the filesystem handed over is
-        // one component, whatever characters it holds.
-        let rooted = here.child(name);
+        // one component, whatever bytes it holds.
+        let rooted = here.child(bytes);
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                walked.could_not_look(WirePath(rooted.as_str().to_owned()), &error);
+                walked.could_not_look(WirePath::of(&rooted), &error);
                 continue;
             }
         };
@@ -2237,9 +2291,9 @@ fn collect_files(
         // Present, but without content: no tree entry at all (ADR 0009), and a record in the sidecar.
         // A reserved or fenced directory is one record, and is never entered.
         if metadata.file_type().is_symlink() {
-            walk_link(root, &rooted, &directory.join(name), policy, place, walked)?;
+            walk_link(root, &rooted, &directory.join(&name), policy, place, walked)?;
         } else if metadata.is_dir() {
-            let real = place.real.join(name);
+            let real = place.real.join(&name);
             match Judged::from(policy.directory(&rooted)) {
                 // A fence is named by its real path where a followed link reaches it.
                 Judged::Held => match policy.fenced_at(&real) {
@@ -2264,11 +2318,11 @@ fn collect_files(
         } else if metadata.is_file() {
             match Judged::from(policy.file(&rooted, metadata.len())) {
                 Judged::Held => {
-                    let wire = WirePath(rooted.as_str().to_owned());
+                    let wire = WirePath::of(&rooted);
                     // Beyond a followed link, the evidence of the last pass is keyed by where the file
                     // really is, so a link retargeted at a lookalike tree vouches for nothing.
                     if place.is_followed() {
-                        walked.real.insert(wire.clone(), place.real.join(name));
+                        walked.real.insert(wire.clone(), place.real.join(&name));
                     }
                     walked.paths.push(wire);
                 }
@@ -2374,7 +2428,7 @@ fn walk_link(
     place: &Place,
     walked: &mut Walked,
 ) -> Result<(), StoreError> {
-    let wire = || WirePath(rooted.as_str().to_owned());
+    let wire = || WirePath::of(rooted);
     let target = fs::metadata(absolute);
     // A target that cannot be reached has no kind to read, and an unmounted directory must still be
     // known by a pattern naming it as one, or its subtree would read as deleted.
@@ -2588,17 +2642,15 @@ fn tree_modes(
     walked: &Walked,
     baseline: &ModeTable,
 ) -> Vec<(RootPath, ModeKind, u32)> {
-    let mut held: BTreeMap<String, ModeKind> = BTreeMap::new();
+    let mut held: BTreeMap<Vec<u8>, ModeKind> = BTreeMap::new();
     for entry in index.iter() {
-        let Ok(path) = String::from_utf8(entry.path) else {
-            continue;
-        };
-        if path == SIDECAR {
+        let path = entry.path;
+        if path == SIDECAR.as_bytes() {
             continue;
         }
         // Every directory above a held path is a tree of its own.
-        for (end, _) in path.match_indices('/') {
-            held.insert(path[..end].to_owned(), ModeKind::Directory);
+        for (end, _) in path.iter().enumerate().filter(|(_, byte)| **byte == b'/') {
+            held.insert(path[..end].to_vec(), ModeKind::Directory);
         }
         if let Some(kind) = i32::try_from(entry.mode).ok().and_then(mode_kind) {
             held.insert(path, kind);
@@ -2607,13 +2659,12 @@ fn tree_modes(
 
     held.into_iter()
         .filter_map(|(path, kind)| {
-            let rooted = WirePath(path).to_root_path();
             let mode = walked
                 .modes
-                .get(rooted.as_str())
+                .get(&path)
                 .copied()
-                .or_else(|| baseline.mode_of(&rooted, kind))?;
-            Some((rooted, kind, mode))
+                .or_else(|| baseline.mode_of(&rooted(&path), kind))?;
+            Some((rooted(&path), kind, mode))
         })
         .collect()
 }
@@ -2637,13 +2688,14 @@ pub(crate) struct ModeChange {
 /// Only the paths with a record on either side can differ while the headers agree; a header that
 /// changed can change any path's mode, and then every path of `after` is compared.
 pub(crate) fn mode_changes(
+    repository: &git2::Repository,
     before: &git2::Tree<'_>,
     was: &ModeTable,
     after: &git2::Tree<'_>,
     is: &ModeTable,
 ) -> Vec<ModeChange> {
     let kind_in = |tree: &git2::Tree<'_>, path: &RootPath| {
-        tree.get_path(Path::new(path.as_str()))
+        tree.get_path(&filesystem_path(path.as_bytes()))
             .ok()
             .and_then(|entry| mode_kind(entry.filemode()))
     };
@@ -2671,19 +2723,38 @@ pub(crate) fn mode_changes(
         candidates.into_iter().filter_map(compare).collect()
     } else {
         let mut paths = Vec::new();
-        let _ = after.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
-            let name = String::from_utf8_lossy(entry.name_bytes());
-            if prefix.is_empty() && name == SIDECAR {
-                return git2::TreeWalkResult::Skip;
-            }
-            paths.push(WirePath(format!("{prefix}{name}")).to_root_path());
-            git2::TreeWalkResult::Ok
-        });
+        tree_paths(repository, after, &RootPath::root(), &mut paths);
         paths.into_iter().filter_map(compare).collect()
     };
     changes.sort_by(|a, b| a.path.cmp(&b.path));
 
     changes
+}
+
+/// Every path `tree`, the tree of `directory`, holds beneath it, directories included, the sidecar left
+/// out at the tree root — each name taken as its bytes, where git2's `Tree::walk` hands its callback the
+/// prefix as text and stops at a name that is not UTF-8 (ticket 74). A subtree that cannot be read
+/// contributes only itself, as it would have to a walk.
+fn tree_paths(
+    repository: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    directory: &RootPath,
+    paths: &mut Vec<RootPath>,
+) {
+    for entry in tree.iter() {
+        if directory.is_root() && entry.name_bytes() == SIDECAR.as_bytes() {
+            continue;
+        }
+        let path = directory.child(entry.name_bytes());
+        if entry.kind() == Some(git2::ObjectType::Tree) {
+            if let Ok(beneath) = repository.find_tree(entry.id()) {
+                paths.push(path.clone());
+                tree_paths(repository, &beneath, &path, paths);
+                continue;
+            }
+        }
+        paths.push(path);
+    }
 }
 
 /// One index entry, with a mode this code sets rather than one git probed.
@@ -2703,7 +2774,7 @@ fn entry_for(path: &WirePath, oid: git2::Oid, mode: u32) -> git2::IndexEntry {
         id: oid,
         flags: 0,
         flags_extended: 0,
-        path: path.as_str().as_bytes().to_vec(),
+        path: path.as_bytes().to_vec(),
     }
 }
 

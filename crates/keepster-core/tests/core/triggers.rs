@@ -45,7 +45,10 @@ fn run_with(
                     run.captures.push((
                         now,
                         trigger,
-                        paths.iter().map(|path| path.as_str().to_owned()).collect(),
+                        paths
+                            .iter()
+                            .map(|path| path.to_lossy().into_owned())
+                            .collect(),
                     ));
                     if complete_captures {
                         let (more, next) = decide(state, PolicyEvent::CaptureFinished, now);

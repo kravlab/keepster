@@ -10,6 +10,7 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
   import { directoryEntries } from '../lib/api'
   import { failureText } from '../lib/failures'
+  import { shownPath } from '../lib/paths'
   import type { ShownFile } from '../lib/files'
   import { strings } from '../lib/strings'
   import { children, treeRows, type TreeNode } from '../lib/tree'
@@ -102,10 +103,10 @@
           style:padding-left="{10 + depth * 14}px"
           aria-expanded={expanded.has(node.path)}
           onclick={() => toggle(node.path)}
-          title={node.path}
+          title={shownPath(node.path)}
         >
           <span class="twisty">{expanded.has(node.path) ? '▾' : '▸'}</span>
-          <span class="name" class:changed={node.changed}>{node.name}/</span>
+          <span class="name" class:changed={node.changed}>{shownPath(node.name)}/</span>
           {#if loading}<span class="muted">{strings.loading}</span>{/if}
         </button>
       {:else}
@@ -114,7 +115,7 @@
           style:padding-left="{10 + depth * 14}px"
           aria-current={node.path === path}
           onclick={() => (path = node.path)}
-          title={node.path}
+          title={shownPath(node.path)}
         >
           <span
             class="mark {node.change ?? ''}"
@@ -122,7 +123,7 @@
           >
             {node.change ? strings.changes[node.change].mark : ''}
           </span>
-          <span class="name">{node.name}</span>
+          <span class="name">{shownPath(node.name)}</span>
         </button>
       {/if}
     </li>

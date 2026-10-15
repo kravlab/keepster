@@ -30,18 +30,9 @@ pub(crate) fn real(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// `path` beneath `root`, `/`-separated, if it lies there.
+/// `path` beneath `root`, `/`-separated and byte for byte (ticket 74), if it lies there.
 fn relative(path: &Path, root: &Path) -> Option<RootPath> {
-    let mut parts = Vec::new();
-    for component in path.strip_prefix(root).ok()?.components() {
-        match component {
-            std::path::Component::Normal(name) => parts.push(name.to_str()?.to_owned()),
-            std::path::Component::CurDir => {}
-            _ => return None,
-        }
-    }
-
-    RootPath::parse(&parts.join("/")).ok()
+    RootPath::from_native(path.strip_prefix(root).ok()?)
 }
 
 /// `path` with `.` and `..` resolved by name, as the shell that typed it reads them, without touching the

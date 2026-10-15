@@ -2,6 +2,7 @@
 //! `--json` shapes — because the CLI is one rendering of the API rather than a convenience wrapper
 //! (ticket 07).
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -552,17 +553,17 @@ pub struct ResolutionArgs {
 
     /// Write the file at PATH under NAME, in the same directory, where its own name cannot exist.
     #[arg(long, value_name = "PATH=NAME")]
-    pub rename: Vec<String>,
+    pub rename: Vec<OsString>,
 
     /// Where a name in another case is already there: `keep` it, or use the `snapshot`'s.
     #[arg(long, value_name = "PATH=keep|snapshot")]
-    pub name_case: Vec<String>,
+    pub name_case: Vec<OsString>,
 
     /// Where a file's permission bits on disk are not the Snapshot's: take the `snapshot`'s, or `keep`
     /// those on disk — for every such file, or, as PATH=snapshot|keep, for one. For a Restore, defaults
     /// to the Root's `restore.modes` setting, which asks.
     #[arg(long, value_name = "snapshot|keep|PATH=snapshot|keep")]
-    pub modes: Vec<String>,
+    pub modes: Vec<OsString>,
 
     /// Skip each file still in the way, with its reason, and do the rest.
     #[arg(long)]

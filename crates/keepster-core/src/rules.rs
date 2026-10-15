@@ -187,13 +187,19 @@ impl Rule {
     }
 
     /// Whether the pattern matches `path`, ignoring what the match means.
+    ///
+    /// A pattern is text, so it is matched against the path as text: a name that is not UTF-8 is read
+    /// with U+FFFD for its stray bytes, which only a wildcard or a complemented class can match — exactly
+    /// what a pattern written as text can say about bytes it cannot spell.
     pub fn matches(&self, path: &RootPath, kind: Kind) -> bool {
         if self.directories_only && kind != Kind::Directory {
             return false;
         }
 
         match relative_to(path, &self.base) {
-            Some(relative) if !relative.is_empty() => self.matcher.is_match(relative),
+            Some(relative) if !relative.is_empty() => {
+                self.matcher.is_match(&String::from_utf8_lossy(relative))
+            }
             _ => false,
         }
     }
@@ -308,15 +314,15 @@ impl PathGlob {
     }
 }
 
-/// `path` relative to `base`, or `None` when it is not beneath it.
-fn relative_to<'a>(path: &'a RootPath, base: &RootPath) -> Option<&'a str> {
+/// `path`'s bytes relative to `base`, or `None` when it is not beneath it.
+fn relative_to<'a>(path: &'a RootPath, base: &RootPath) -> Option<&'a [u8]> {
     if base.is_root() {
-        return Some(path.as_str());
+        return Some(path.as_bytes());
     }
 
-    path.as_str()
-        .strip_prefix(base.as_str())
-        .and_then(|rest| rest.strip_prefix('/'))
+    path.as_bytes()
+        .strip_prefix(base.as_bytes())
+        .and_then(|rest| rest.strip_prefix(b"/"))
 }
 
 /// Translate a glob body into a regular expression body.

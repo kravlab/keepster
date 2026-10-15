@@ -12,7 +12,10 @@ use std::path::Path;
 
 use keepster_core::{Kind, Record, RootPath, Rule, SIDECAR, Sidecar, SnapshotId};
 
-use super::{FORGOTTEN_TRAILER, HistoryStore, OMITTED_TRAILER, PIN_REFS, SEGMENT_REFS, StoreError};
+use super::{
+    FORGOTTEN_TRAILER, HistoryStore, OMITTED_TRAILER, PIN_REFS, SEGMENT_REFS, StoreError,
+    filesystem_path,
+};
 use crate::index;
 
 /// What a Forget did.
@@ -345,7 +348,7 @@ struct Filter<'a> {
     store: &'a HistoryStore,
     rule: &'a Rule,
     writes: Writes,
-    done: HashMap<(git2::Oid, String), Filtered>,
+    done: HashMap<(git2::Oid, RootPath), Filtered>,
 }
 
 impl<'a> Filter<'a> {
@@ -361,7 +364,7 @@ impl<'a> Filter<'a> {
     /// The tree `tree`, found at `directory`, without what the rule matches.
     fn filter(&mut self, tree: git2::Oid, directory: &RootPath) -> Result<Filtered, StoreError> {
         // Keyed by where the tree is too: an anchored pattern matches the same tree differently there.
-        let key = (tree, directory.as_str().to_owned());
+        let key = (tree, directory.clone());
         if let Some(done) = self.done.get(&key) {
             return Ok(done.clone());
         }
@@ -377,11 +380,10 @@ impl<'a> Filter<'a> {
         let mut changed = false;
 
         for entry in original.iter() {
-            let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
-            if directory.is_root() && name == SIDECAR {
+            if directory.is_root() && entry.name_bytes() == SIDECAR.as_bytes() {
                 continue;
             }
-            let path = directory.child(&name);
+            let path = directory.child(entry.name_bytes());
             match entry.kind() {
                 Some(git2::ObjectType::Tree) => {
                     if self.rule.matches(&path, Kind::Directory) {
@@ -436,7 +438,7 @@ impl<'a> Filter<'a> {
                             // directories leaves a file's record alone. A path the tree does not hold
                             // — Withheld, or not read — may be either.
                             let kind = original
-                                .get_path(Path::new(record.path().as_str()))
+                                .get_path(&filesystem_path(record.path().as_bytes()))
                                 .ok()
                                 .map(|entry| match entry.kind() {
                                     Some(git2::ObjectType::Tree) => Kind::Directory,
@@ -505,7 +507,7 @@ impl<'a> Filter<'a> {
             .find_tree(tree)
             .map_err(self.store.failed("read"))?;
         for entry in tree.iter() {
-            let path = directory.child(&String::from_utf8_lossy(entry.name_bytes()));
+            let path = directory.child(entry.name_bytes());
             match entry.kind() {
                 Some(git2::ObjectType::Tree) => {
                     self.everything_beneath(entry.id(), &path, removed)?
@@ -567,7 +569,7 @@ fn still_on_disk(root: &Path, held_by: &BTreeMap<RootPath, BTreeSet<git2::Oid>>)
     held_by
         .iter()
         .filter(|(path, contents)| {
-            let file = root.join(path.as_str());
+            let file = root.join(filesystem_path(path.as_bytes()));
             file.is_file()
                 && git2::Oid::hash_file(git2::ObjectType::Blob, &file)
                     .is_ok_and(|content| contents.contains(&content))

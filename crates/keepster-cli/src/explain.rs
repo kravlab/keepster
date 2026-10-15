@@ -11,6 +11,7 @@ use crate::client::DaemonClient;
 use crate::command::ExplainArgs;
 use crate::exit;
 use crate::history::located;
+use crate::names::printed;
 use crate::roots::body_of;
 
 /// Ask the daemon about one path and print its answer.
@@ -60,32 +61,38 @@ pub async fn explain(args: &ExplainArgs, control_path: &Path) -> u8 {
 /// The answer in words: the decision first, then the rule behind it, then anything worth a warning.
 fn write_explanation(explained: &Explanation, out: &mut impl Write) -> io::Result<()> {
     let path = if explained.path.is_empty() {
-        "the Root itself"
+        b"the Root itself".to_vec()
     } else {
-        explained.path.as_str()
+        printed(&explained.path, explained.path_bytes.as_deref())
     };
 
+    // Every decision's line opens with the path, as its exact bytes on Unix (ticket 74).
+    out.write_all(&path)?;
     match explained.decision {
         Decision::Captured => {
-            writeln!(out, "{path}: captured")?;
+            writeln!(out, ": captured")?;
             if let Some(rule) = &explained.rule {
                 writeln!(out, "  re-included by {}", describe(rule))?;
             }
         }
         Decision::Excluded => {
-            writeln!(out, "{path}: not captured, excluded")?;
+            writeln!(out, ": not captured, excluded")?;
             if let Some(rule) = &explained.rule {
                 writeln!(out, "  by {}", describe(rule))?;
             }
         }
         Decision::Pruned => {
-            let ancestor = explained.pruned_by.as_deref().unwrap_or("an ancestor");
-            writeln!(
-                out,
-                "{path}: not captured, because `{ancestor}` is excluded and never entered"
-            )?;
+            let ancestor = match &explained.pruned_by {
+                Some(ancestor) => printed(ancestor, explained.pruned_by_bytes.as_deref()),
+                None => b"an ancestor".to_vec(),
+            };
+            write!(out, ": not captured, because `")?;
+            out.write_all(&ancestor)?;
+            writeln!(out, "` is excluded and never entered")?;
             if let Some(rule) = &explained.rule {
-                writeln!(out, "  `{ancestor}` is excluded by {}", describe(rule))?;
+                write!(out, "  `")?;
+                out.write_all(&ancestor)?;
+                writeln!(out, "` is excluded by {}", describe(rule))?;
             }
             if let Some(own) = explained
                 .own_rule
@@ -100,7 +107,7 @@ fn write_explanation(explained: &Explanation, out: &mut impl Write) -> io::Resul
             }
         }
         Decision::Secret => {
-            writeln!(out, "{path}: not captured, refused as a likely secret")?;
+            writeln!(out, ": not captured, refused as a likely secret")?;
             if let Some(rule) = &explained.rule {
                 writeln!(out, "  by {}", describe(rule))?;
             }
@@ -114,7 +121,7 @@ fn write_explanation(explained: &Explanation, out: &mut impl Write) -> io::Resul
                 let size = explained.size.unwrap_or_default();
                 writeln!(
                     out,
-                    "{path}: withheld, {size} bytes is over the {}-byte cap",
+                    ": withheld, {size} bytes is over the {}-byte cap",
                     explained.max_size
                 )?;
                 match &explained.rule {
@@ -127,10 +134,10 @@ fn write_explanation(explained: &Explanation, out: &mut impl Write) -> io::Resul
                 }
             }
             Some("reserved_name") => {
-                writeln!(out, "{path}: never captured, its name is reserved")?;
+                writeln!(out, ": never captured, its name is reserved")?;
             }
-            Some(reason) => writeln!(out, "{path}: withheld ({reason})")?,
-            None => writeln!(out, "{path}: withheld")?,
+            Some(reason) => writeln!(out, ": withheld ({reason})")?,
+            None => writeln!(out, ": withheld")?,
         },
     }
 

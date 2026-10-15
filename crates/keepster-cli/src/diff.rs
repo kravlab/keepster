@@ -11,6 +11,7 @@ use crate::client::{ClientError, DaemonClient};
 use crate::command::DiffArgs;
 use crate::exit;
 use crate::history::{located, selected};
+use crate::names::{printed_all, write_path};
 use crate::roots::{answered, body_of};
 
 /// Show what changed from a Snapshot to another Snapshot or the Working Tree.
@@ -151,10 +152,12 @@ fn write_summary(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
             Some(FileChange::Renamed) => 'R',
             None => ' ',
         };
-        match &file.old_path {
-            Some(old) => write!(out, "{letter}  {old} -> {}", file.path)?,
-            None => write!(out, "{letter}  {}", file.path)?,
+        write!(out, "{letter}  ")?;
+        if let Some(old) = &file.old_path {
+            write_path(out, old, file.old_path_bytes.as_deref())?;
+            write!(out, " -> ")?;
         }
+        write_path(out, &file.path, file.path_bytes.as_deref())?;
         if file.binary {
             write!(out, "  (binary)")?;
         }
@@ -169,8 +172,15 @@ fn write_summary(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
         }
         writeln!(out)?;
     }
-    for omitted in &diff.omitted {
-        eprintln!("keepster: {omitted} could not be read; its last captured content is compared");
+    for name in printed_all(&diff.omitted, &diff.omitted_bytes) {
+        let _ = io::stderr().write_all(
+            &[
+                &b"keepster: "[..],
+                &name,
+                b" could not be read; its last captured content is compared\n",
+            ]
+            .concat(),
+        );
     }
 
     Ok(())

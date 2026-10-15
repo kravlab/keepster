@@ -13,9 +13,10 @@ use keepster_core::{RootPath, SnapshotId};
 use keepster_store::{Comparison, DiffTarget, FileDiff, StoreError};
 
 use crate::DaemonState;
+use crate::path_parameter::PathParameter;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
-use crate::snapshots::{blocking, located, parse_path, prepare, store_problem};
+use crate::snapshots::{blocking, located, prepare, store_problem};
 
 /// What to compare, and how to answer.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -27,8 +28,6 @@ pub(crate) struct DiffParameters {
     /// The newer side: a Snapshot's identity, or `working` for the Working Tree as the next Snapshot
     /// would hold it — under the Root's Include Rules, so an excluded file is no change.
     to: Option<String>,
-    /// One file, Root-relative, by either name if it was renamed: its hunks rather than the summary.
-    path: Option<String>,
     /// `json` (the default) for the structured answer, or `unified` for the patch text git prints.
     format: Option<String>,
 }
@@ -91,7 +90,11 @@ impl Format {
     path = "/v1/roots/{id}/diff",
     operation_id = "diff_root",
     tag = "snapshots",
-    params(RootAddress, DiffParameters),
+    params(
+        RootAddress,
+        DiffParameters,
+        ("path" = Option<String>, Query, description = "One file, Root-relative, its bytes percent-encoded, by either name if it was renamed: its hunks rather than the summary."),
+    ),
     responses(
         (status = 200, description = "Without `path`, every changed file in path order, without hunks; with it, that file and its hunks. A rename is one change; when a candidate is larger than 8 MiB, renames are found by identical content only. A binary file, and one whose either version is larger than 8 MiB, is flagged and has no hunks. Against the Working Tree, a file the next Snapshot would withhold says why, and files that could not be read are listed in `omitted`. `format=unified` answers with the patch text git prints instead — every changed file's, or the one `path` names — so no client reassembles it from hunks; it is the exact bytes, where the JSON shows text that is not UTF-8 with replacement characters, and carries `Content-Disposition: attachment` so a browser saves it as it is.", content(
             (Diff = "application/json"),
@@ -106,6 +109,7 @@ impl Format {
 pub(crate) async fn diff(
     State(state): State<DaemonState>,
     Path(RootAddress { id }): Path<RootAddress>,
+    PathParameter(path): PathParameter,
     Query(parameters): Query<DiffParameters>,
 ) -> Result<Response, ProblemResponse> {
     let from = parameters
@@ -120,7 +124,6 @@ pub(crate) async fn diff(
             }
         })?;
     let to = Side::parse(parameters.to.as_deref())?;
-    let path = parameters.path.as_deref().map(parse_path).transpose()?;
     let format = Format::parse(parameters.format.as_deref())?;
 
     let answer = match to {
@@ -160,11 +163,18 @@ pub(crate) async fn diff(
             from: from.to_string(),
             to: to.name(),
             files: comparison.files.into_iter().map(wire).collect(),
-            omitted: comparison
-                .incomplete
-                .iter()
-                .map(|incomplete| incomplete.path.as_str().to_owned())
-                .collect(),
+            omitted: crate::wire::texts(
+                comparison
+                    .incomplete
+                    .iter()
+                    .map(|incomplete| &incomplete.path),
+            ),
+            omitted_bytes: crate::wire::companions(
+                comparison
+                    .incomplete
+                    .iter()
+                    .map(|incomplete| &incomplete.path),
+            ),
         })
         .into_response(),
     })
@@ -253,8 +263,10 @@ fn comparison_invalid(message: &'static str) -> ProblemResponse {
 /// One file's part of a diff as the wire carries it.
 fn wire(file: FileDiff) -> DiffFile {
     DiffFile {
-        path: file.path.as_str().to_owned(),
-        old_path: file.old_path.map(|path| path.as_str().to_owned()),
+        path: crate::wire::text(&file.path),
+        path_bytes: crate::wire::companion(&file.path),
+        old_path: file.old_path.as_ref().map(crate::wire::text),
+        old_path_bytes: file.old_path.as_ref().and_then(crate::wire::companion),
         change: file.change.map(|change| match change {
             keepster_store::FileChange::Added => FileChange::Added,
             keepster_store::FileChange::Modified => FileChange::Modified,

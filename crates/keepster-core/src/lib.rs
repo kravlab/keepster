@@ -28,7 +28,7 @@ pub use event::EventId;
 pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
 pub use identity::NotAnIdentity;
 pub use job::{JobId, JobState, JobTransition};
-pub use path::{InvalidPath, RootPath};
+pub use path::{InvalidPath, RootPath, name_bytes};
 pub use policy::{
     CapturePolicy, DEFAULT_MAX_SIZE, Explanation, FollowStop, InvalidSize, SizeRule, Verdict,
     is_reserved, parse_size,

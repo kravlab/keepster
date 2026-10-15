@@ -98,7 +98,7 @@ async fn within_claim(client: &DaemonClient, path: &std::path::Path) -> Result<(
 
     let _ = crate::preview::render(&summary, &mut std::io::stdout().lock());
     let asked = std::io::stdin().is_terminal()
-        && crate::restore::yes(&format!(
+        && crate::restore::yes(format!(
             "{} is past what one Root is claimed to hold. Watch it anyway?",
             path.display()
         ));

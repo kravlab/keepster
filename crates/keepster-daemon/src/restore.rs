@@ -22,7 +22,7 @@ use keepster_store::Written;
 use crate::DaemonState;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
-use crate::snapshots::{announce, capture_problem, parse_path, prepare, store_problem};
+use crate::snapshots::{announce, capture_problem, prepare, store_problem};
 
 /// Put a Snapshot's versions back over the Working Tree.
 #[utoipa::path(
@@ -141,17 +141,13 @@ fn parsed(request: RestoreRequest) -> Result<restore::RestoreRequest, ProblemRes
         .from
         .parse::<SnapshotId>()
         .map_err(|_| crate::snapshots::snapshot_not_found(&request.from))?;
-    let paths = request
-        .paths
-        .iter()
-        .map(|path| parse_path(path))
-        .collect::<Result<Vec<_>, _>>()?;
+    let paths = crate::wire::requested(&request.paths, &request.paths_bytes)?;
 
     Ok(restore::RestoreRequest {
         from,
         paths,
         confirmed: confirmed_by(request.confirm),
-        resolutions: resolutions_of(request.resolutions)?,
+        resolutions: resolutions_of(&request.resolutions, &request.resolutions_bytes)?,
         skip_unresolvable: request.skip_unresolvable,
         dry_run: request.dry_run,
         link_names: link_names(),
@@ -177,18 +173,19 @@ pub(crate) fn confirmed_by(confirm: Confirm) -> Confirmed {
     }
 }
 
-/// A request's answers, by the Snapshot path each is for, or the problem with one.
+/// A request's answers, by the Snapshot path each is for — keyed by text in `text`, by bytes in
+/// `bytes` (ticket 74) — or the problem with one.
 pub(crate) fn resolutions_of(
-    answers: BTreeMap<String, PathResolution>,
+    text: &BTreeMap<String, PathResolution>,
+    bytes: &BTreeMap<String, PathResolution>,
 ) -> Result<BTreeMap<RootPath, Resolution>, ProblemResponse> {
-    let mut resolutions = BTreeMap::new();
-    for (path, answer) in answers {
-        let path = parse_path(&path)?;
-        let resolution = resolution(&path, answer)?;
-        resolutions.insert(path, resolution);
-    }
-
-    Ok(resolutions)
+    crate::wire::resolutions(text, bytes)?
+        .into_iter()
+        .map(|(path, answer)| {
+            let resolution = resolution(&path, answer)?;
+            Ok((path, resolution))
+        })
+        .collect()
 }
 
 /// How this platform lists every name of a file: on Windows through `keepster-service`, which holds the
@@ -257,7 +254,7 @@ pub(crate) fn resolution_invalid(path: &RootPath, message: &str) -> ProblemRespo
         ErrorCode::ResolutionInvalid,
         message.to_owned(),
     )
-    .with_detail("path", path.as_str())
+    .with_path(path.as_bytes())
 }
 
 fn restore_problem(error: RestoreError) -> ProblemResponse {
@@ -290,11 +287,13 @@ pub(crate) fn wire(plan: &Plan, written: Option<&[Written]>) -> Vec<RestoredPath
                 Some(Written::Failed(error)) => (RestoreOutcome::Failed, Some(error.clone())),
                 None => (planned_outcome(planned), None),
             };
+            let moved = (planned.target != planned.path).then_some(&planned.target);
 
             RestoredPath {
-                path: planned.path.as_str().to_owned(),
-                target: (planned.target != planned.path)
-                    .then(|| planned.target.as_str().to_owned()),
+                path: crate::wire::text(&planned.path),
+                path_bytes: crate::wire::companion(&planned.path),
+                target: moved.map(crate::wire::text),
+                target_bytes: moved.and_then(crate::wire::companion),
                 outcome,
                 issues: planned.issues.iter().map(issue).collect(),
                 error,
@@ -322,26 +321,36 @@ fn issue(issue: &Issue) -> RestoreIssue {
             .map(|confirmation| confirmation.as_str().to_owned()),
         resolution: issue.resolution().map(ToOwned::to_owned),
         at: None,
+        at_bytes: None,
         paths: Vec::new(),
+        paths_bytes: Vec::new(),
         links_outside: None,
         existing: None,
+        existing_bytes: None,
         why: None,
         snapshot_mode: None,
         current_mode: None,
     };
-    let names = |paths: &[RootPath]| paths.iter().map(|path| path.as_str().to_owned()).collect();
     match issue {
         Issue::TypeChange { at } | Issue::LinkCheckFailed { at } => {
-            wire.at = Some(at.as_str().to_owned());
+            wire.at = Some(crate::wire::text(at));
+            wire.at_bytes = crate::wire::companion(at);
         }
         Issue::Hardlinked { inside, outside } => {
-            wire.paths = names(inside);
+            wire.paths = crate::wire::texts(inside);
+            wire.paths_bytes = crate::wire::companions(inside);
             wire.links_outside = Some(*outside);
         }
         Issue::OverwriteUnrecoverable { why } => wire.why = Some(why.as_str().to_owned()),
         Issue::Withheld { reason } => wire.why = Some(reason.as_str().to_owned()),
-        Issue::NameCollision { with } => wire.paths = names(with),
-        Issue::NameCase { existing } => wire.existing = Some(existing.clone()),
+        Issue::NameCollision { with } => {
+            wire.paths = crate::wire::texts(with);
+            wire.paths_bytes = crate::wire::companions(with);
+        }
+        Issue::NameCase { existing } => {
+            wire.existing = Some(keepster_api::path_text(existing));
+            wire.existing_bytes = keepster_api::path_bytes(existing);
+        }
         Issue::ModesDiffer { snapshot, current } => {
             wire.snapshot_mode = Some(*snapshot);
             wire.current_mode = Some(*current);

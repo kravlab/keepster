@@ -23,19 +23,22 @@ use std::time::Duration;
 use keepster_core::{ChangeKind, Record, RootPath, SIDECAR, Sidecar, SnapshotId};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-use crate::history::{StoreError, mode_changes};
+use crate::history::{StoreError, filesystem_path, mode_changes, rooted};
 
 /// The index schema's version, kept in SQLite's own `user_version`.
 ///
 /// Every mismatch is a rebuild rather than a migration (ADR 0010), which is why changing the schema is
 /// free: bump this and the next start rebuilds.
-pub const INDEX_SCHEMA_VERSION: u32 = 6;
+pub const INDEX_SCHEMA_VERSION: u32 = 7;
 
 /// The same, as SQLite reads it.
 const SCHEMA_VERSION: i64 = INDEX_SCHEMA_VERSION as i64;
 
 /// The schema. `STRICT` so a value of the wrong type is an error rather than a silent coercion; no
 /// row ids, because every table already has a natural key.
+///
+/// A path is a `BLOB` of its exact bytes (ticket 74): a name need not be UTF-8, two names that read alike
+/// as text are two paths, and a `BLOB` compares by `memcmp` — the byte order git's index keeps.
 const SCHEMA: &str = "
     CREATE TABLE copies (
         source     TEXT    NOT NULL,
@@ -63,7 +66,7 @@ const SCHEMA: &str = "
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE changes (
-        path     TEXT NOT NULL,
+        path     BLOB NOT NULL,
         snapshot TEXT NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
         kind     TEXT NOT NULL,
         blob     TEXT,
@@ -82,7 +85,7 @@ const SCHEMA: &str = "
     ) STRICT, WITHOUT ROWID;
 
     CREATE TABLE observed (
-        path  TEXT    NOT NULL PRIMARY KEY,
+        path  BLOB    NOT NULL PRIMARY KEY,
         size  INTEGER NOT NULL,
         mtime TEXT    NOT NULL,
         oid   TEXT    NOT NULL
@@ -150,7 +153,7 @@ pub(crate) struct IndexedSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PathChange {
     /// The path, Root-relative.
-    pub(crate) path: String,
+    pub(crate) path: RootPath,
     /// How.
     pub(crate) kind: ChangeKind,
     /// The content it holds from this Snapshot on: none for a path deleted, and none for one the
@@ -162,7 +165,7 @@ pub(crate) struct PathChange {
 /// whether its last change left it there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PathHistory {
-    pub(crate) path: String,
+    pub(crate) path: RootPath,
     pub(crate) changes: u64,
     pub(crate) first: SnapshotId,
     pub(crate) last: SnapshotId,
@@ -172,7 +175,7 @@ pub(crate) struct PathHistory {
 /// One change as the index holds it, with the Snapshot it was in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexedChange {
-    pub(crate) path: String,
+    pub(crate) path: RootPath,
     pub(crate) snapshot: SnapshotId,
     pub(crate) kind: ChangeKind,
     pub(crate) blob: Option<git2::Oid>,
@@ -293,10 +296,11 @@ impl Index {
         }))
     }
 
-    /// Everything the last pass observed, by path.
+    /// Everything the last pass observed, by its evidence key: a path's bytes, and beyond a followed link
+    /// where the file really is.
     pub(crate) fn observations(
         &self,
-    ) -> Result<std::collections::HashMap<String, Observation>, StoreError> {
+    ) -> Result<std::collections::HashMap<Vec<u8>, Observation>, StoreError> {
         let failed = index_failed(&self.path, "read");
         let mut statement = self
             .connection
@@ -305,7 +309,7 @@ impl Index {
         let rows = statement
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
@@ -335,16 +339,16 @@ impl Index {
     /// loses its row in the same pass that noticed.
     pub(crate) fn update_observations(
         &mut self,
-        previous: &std::collections::HashMap<String, Observation>,
-        observed: &[(String, Observation)],
+        previous: &std::collections::HashMap<Vec<u8>, Observation>,
+        observed: &[(Vec<u8>, Observation)],
     ) -> Result<(), StoreError> {
-        let seen: std::collections::HashSet<&str> =
-            observed.iter().map(|(path, _)| path.as_str()).collect();
-        let vanished: Vec<&String> = previous
+        let seen: std::collections::HashSet<&[u8]> =
+            observed.iter().map(|(path, _)| path.as_slice()).collect();
+        let vanished: Vec<&Vec<u8>> = previous
             .keys()
-            .filter(|path| !seen.contains(path.as_str()))
+            .filter(|path| !seen.contains(path.as_slice()))
             .collect();
-        let changed: Vec<&(String, Observation)> = observed
+        let changed: Vec<&(Vec<u8>, Observation)> = observed
             .iter()
             .filter(|(path, observation)| previous.get(path) != Some(observation))
             .collect();
@@ -560,7 +564,7 @@ impl Index {
                     .map_err(self.failed("read"))?;
                 statement
                     .query_map(
-                        params![path.as_str(), upper, lower, limit],
+                        params![path.as_bytes(), upper, lower, limit],
                         indexed_snapshot,
                     )
                     .and_then(Iterator::collect::<Result<Vec<_>, _>>)
@@ -608,16 +612,16 @@ impl Index {
     /// costs one lookup on the path's own rows.
     pub(crate) fn path_histories(
         &self,
-        keep: &dyn Fn(&str) -> bool,
+        keep: &dyn Fn(&RootPath) -> bool,
         limit: usize,
     ) -> Result<(Vec<PathHistory>, bool), StoreError> {
         let read = || -> rusqlite::Result<(Vec<PathHistory>, bool)> {
             let mut paths = self
                 .connection
                 .prepare("SELECT DISTINCT path FROM changes ORDER BY path")?;
-            let kept: Vec<String> = paths
-                .query_map([], |row| row.get::<_, String>(0))?
-                .filter(|path| path.as_ref().map_or(true, |path| keep(path)))
+            let kept: Vec<Vec<u8>> = paths
+                .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+                .filter(|path| path.as_ref().map_or(true, |path| keep(&rooted(path))))
                 .take(limit.saturating_add(1))
                 .collect::<rusqlite::Result<_>>()?;
             let more = kept.len() > limit;
@@ -637,7 +641,7 @@ impl Index {
                         first: parse_id(row, 1)?,
                         last: parse_id(row, 2)?,
                         exists: ChangeKind::parse(&kind) != Some(ChangeKind::Deleted),
-                        path: path.clone(),
+                        path: rooted(&path),
                     })
                 })?;
                 found.push(entry);
@@ -657,7 +661,7 @@ impl Index {
                 let kind: String = row.get(2)?;
                 let blob: Option<String> = row.get(3)?;
                 Ok(IndexedChange {
-                    path: row.get(0)?,
+                    path: rooted(&row.get::<_, Vec<u8>>(0)?),
                     snapshot: parse_id(row, 1)?,
                     kind: ChangeKind::parse(&kind).unwrap_or(ChangeKind::Modified),
                     blob: blob.and_then(|blob| git2::Oid::from_str(&blob).ok()),
@@ -670,13 +674,23 @@ impl Index {
                 return statement.query_map([], row)?.collect();
             }
             // The path itself, and every path beneath it: those sort between `path/` and `path0`, `0`
-            // being the character after `/`.
+            // being the byte after `/`. The bounds are bound as bytes: SQLite's `||` makes text, which
+            // never compares equal to — or between — the `BLOB`s a path is held as.
+            let exact = under.as_bytes();
+            let bound = |last: u8| {
+                let mut bound = exact.to_vec();
+                bound.push(last);
+                bound
+            };
+            let (from, to) = (bound(b'/'), bound(b'0'));
             let mut statement = self.connection.prepare(
                 "SELECT path, snapshot, kind, blob FROM changes
-                 WHERE path = ?1 OR (path >= ?1 || '/' AND path < ?1 || '0')
+                 WHERE path = ?1 OR (path >= ?2 AND path < ?3)
                  ORDER BY path, snapshot",
             )?;
-            statement.query_map([under.as_str()], row)?.collect()
+            statement
+                .query_map(params![exact, from, to], row)?
+                .collect()
         };
 
         read().map_err(self.failed("read"))
@@ -773,18 +787,20 @@ pub(crate) fn changes_between(
                 ChangeKind::Deleted => delta.old_file(),
                 _ => delta.new_file(),
             };
-            let path = String::from_utf8_lossy(file.path_bytes()?).into_owned();
-            if path == SIDECAR {
+            let bytes = file.path_bytes()?;
+            if bytes == SIDECAR.as_bytes() {
                 sidecar_changed = true;
                 return None;
             }
+            let path = rooted(bytes);
             let blob = (kind != ChangeKind::Deleted).then(|| file.id());
 
             Some(PathChange { path, kind, blob })
         })
         .collect();
     if sidecar_changed {
-        let changed: BTreeSet<String> = changes.iter().map(|change| change.path.clone()).collect();
+        let changed: BTreeSet<RootPath> =
+            changes.iter().map(|change| change.path.clone()).collect();
         changes.extend(
             record_changes(repository, before.as_ref(), &after)
                 .into_iter()
@@ -793,7 +809,7 @@ pub(crate) fn changes_between(
                     // What the path holds, if its record changed with its content in place — a mode, an
                     // incomplete read keeping the version before; a Withheld path holds nothing.
                     let blob = (kind != ChangeKind::Deleted)
-                        .then(|| after.get_path(Path::new(&path)).ok())
+                        .then(|| after.get_path(&filesystem_path(path.as_bytes())).ok())
                         .flatten()
                         .filter(|entry| entry.kind() == Some(git2::ObjectType::Blob))
                         .map(|entry| entry.id());
@@ -814,7 +830,7 @@ fn record_changes(
     repository: &git2::Repository,
     before: Option<&git2::Tree<'_>>,
     after: &git2::Tree<'_>,
-) -> Vec<(String, ChangeKind)> {
+) -> Vec<(RootPath, ChangeKind)> {
     let sidecar = |tree: Option<&git2::Tree<'_>>| -> Sidecar {
         tree.and_then(|tree| tree.get_name(SIDECAR))
             .and_then(|entry| repository.find_blob(entry.id()).ok())
@@ -824,12 +840,12 @@ fn record_changes(
     };
     // What each path is recorded as, a mode aside: a mode is compared as the mode it makes, which a
     // changed header can change with no record changing at all.
-    let facts = |sidecar: &Sidecar| -> BTreeMap<String, Vec<Record>> {
-        let mut facts: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+    let facts = |sidecar: &Sidecar| -> BTreeMap<RootPath, Vec<Record>> {
+        let mut facts: BTreeMap<RootPath, Vec<Record>> = BTreeMap::new();
         for record in &sidecar.records {
             if !matches!(record, Record::Mode { .. }) {
                 facts
-                    .entry(record.path().as_str().to_owned())
+                    .entry(record.path().clone())
                     .or_default()
                     .push(record.clone());
             }
@@ -867,9 +883,15 @@ fn record_changes(
         }
     }
     if let Some(before) = before {
-        for change in mode_changes(before, &was_sidecar.modes(), after, &is_sidecar.modes()) {
+        for change in mode_changes(
+            repository,
+            before,
+            &was_sidecar.modes(),
+            after,
+            &is_sidecar.modes(),
+        ) {
             changes
-                .entry(change.path.as_str().to_owned())
+                .entry(change.path.clone())
                 .or_insert(ChangeKind::Modified);
         }
     }
@@ -1109,7 +1131,7 @@ fn recount_changes(
             .prepare("INSERT INTO changes (path, snapshot, kind, blob) VALUES (?1, ?2, ?3, ?4)")?;
         for change in &changes {
             statement.execute(params![
-                change.path,
+                change.path.as_bytes(),
                 id.to_string(),
                 change.kind.as_str(),
                 change.blob.map(|blob| blob.to_string())

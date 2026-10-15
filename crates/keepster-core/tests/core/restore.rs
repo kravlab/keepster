@@ -60,7 +60,7 @@ fn steps(found: Vec<Found>, naming: Naming, confirmed: &Confirmed) -> Vec<(Strin
     plan(found, naming, confirmed, &BTreeMap::new(), false)
         .paths
         .into_iter()
-        .map(|path| (path.path.as_str().to_owned(), path.step))
+        .map(|path| (path.path.to_lossy().into_owned(), path.step))
         .collect()
 }
 
@@ -244,7 +244,7 @@ fn two_files_one_name_apart_by_case_collide_where_the_destination_folds_case() {
     let outcome: Vec<(String, Step)> = planned
         .paths
         .into_iter()
-        .map(|path| (path.path.as_str().to_owned(), path.step))
+        .map(|path| (path.path.to_lossy().into_owned(), path.step))
         .collect();
     assert_eq!(
         outcome,
@@ -252,6 +252,47 @@ fn two_files_one_name_apart_by_case_collide_where_the_destination_folds_case() {
             ("README.md".to_owned(), Step::Skipped),
             ("Readme.md".to_owned(), Step::Create),
         ]
+    );
+}
+
+#[test]
+fn names_that_are_not_utf8_never_collide_by_reading_alike_as_text() {
+    // Both read as U+FFFD; a destination that folds case still holds them as two names.
+    let both = || {
+        [b"\xff.txt", b"\xfe.txt"]
+            .into_iter()
+            .map(|bytes| {
+                let path = RootPath::parse_bytes(bytes).expect("valid");
+                Found {
+                    path: path.clone(),
+                    target: path,
+                    ..absent("unused")
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let planned = plan(both(), MACOS, &Confirmed::none(), &BTreeMap::new(), false);
+
+    assert!(
+        planned.paths.iter().all(|path| path.issues.is_empty()),
+        "{:?}",
+        planned.paths
+    );
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_one_windows_cannot_hold() {
+    let path = RootPath::parse_bytes(b"\xff.txt").expect("valid");
+    let foreign = Found {
+        path: path.clone(),
+        target: path,
+        ..absent("unused")
+    };
+
+    assert_eq!(
+        only_issues(foreign, WINDOWS, &Confirmed::none()),
+        [Issue::NameInvalid]
     );
 }
 
@@ -318,14 +359,14 @@ fn a_name_windows_cannot_hold_is_renamed_by_the_user() {
 #[test]
 fn an_existing_name_in_another_case_is_kept_or_replaced_as_the_user_says() {
     let differs = Found {
-        case_variant: Some("Foo.txt".to_owned()),
+        case_variant: Some(b"Foo.txt".to_vec()),
         ..differing("foo.txt")
     };
 
     assert_eq!(
         only_issues(differs.clone(), MACOS, &Confirmed::all()),
         [Issue::NameCase {
-            existing: "Foo.txt".to_owned()
+            existing: b"Foo.txt".to_vec()
         }]
     );
 
@@ -348,7 +389,7 @@ fn an_existing_name_in_another_case_is_kept_or_replaced_as_the_user_says() {
     }
 
     let same = Found {
-        case_variant: Some("Foo.txt".to_owned()),
+        case_variant: Some(b"Foo.txt".to_vec()),
         existing: Existing::Same,
         ..absent("foo.txt")
     };
@@ -410,7 +451,7 @@ fn every_reason_has_a_stable_wire_name() {
         (Issue::NameInvalid, "name_invalid"),
         (
             Issue::NameCase {
-                existing: "A".to_owned(),
+                existing: b"A".to_vec(),
             },
             "name_case",
         ),

@@ -12,13 +12,15 @@ use std::time::SystemTime;
 
 use keepster_api::{
     Confirm, ConfirmAll, Confirmation, ErrorCode, ExportPlan, ExportRequest, JobAccepted,
-    JobResult, Problem, RestoreOutcome, RestoredPath, Root,
+    JobResult, Problem, RestoreOutcome, RestoredPath, Root, path_text, paths_bytes,
+    resolutions_to_wire,
 };
 
 use crate::client::{ClientError, DaemonClient};
 use crate::command::ExportArgs;
 use crate::exit;
 use crate::history::{located, selected};
+use crate::names::write_path;
 use crate::restore::{Answers, Operation, ask, paths_within, report_blocked, within_root};
 use crate::roots::{answered, body_of};
 
@@ -86,13 +88,16 @@ pub async fn export(args: &ExportArgs, control_path: &Path, now: SystemTime) -> 
     let url = format!("/v1/roots/{}/export", root.id);
     let interactive = !args.resolving.no_input && !args.json && io::stdin().is_terminal();
     loop {
+        let (resolutions, resolutions_bytes) = resolutions_to_wire(&answers.resolutions);
         let request = ExportRequest {
             from: from.clone(),
-            paths: paths.clone(),
+            paths: paths.iter().map(|path| path_text(path)).collect(),
+            paths_bytes: paths_bytes(&paths),
             dest: dest.to_string_lossy().into_owned(),
             dry_run: args.dry_run,
             confirm: answers.confirm.clone(),
-            resolutions: answers.resolutions.clone(),
+            resolutions,
+            resolutions_bytes,
             skip_unresolvable: answers.skip_unresolvable,
             modes: answers.modes,
         };
@@ -209,9 +214,11 @@ fn report(paths: &[RestoredPath], dry_run: bool) {
             (_, RestoreOutcome::Failed) => "failed",
             (_, RestoreOutcome::Blocked) => "blocked",
         };
-        let _ = write!(out, "{verb}  {}", path.path);
+        let _ = write!(out, "{verb}  ");
+        let _ = write_path(&mut out, &path.path, path.path_bytes.as_deref());
         if let Some(target) = &path.target {
-            let _ = write!(out, " -> {target}");
+            let _ = write!(out, " -> ");
+            let _ = write_path(&mut out, target, path.target_bytes.as_deref());
         }
         if let Some(error) = &path.error {
             let _ = write!(out, "  ({error})");
@@ -237,7 +244,7 @@ async fn archive(
     client: &DaemonClient,
     root: &Root,
     from: &str,
-    paths: &[String],
+    paths: &[Vec<u8>],
     file: &Path,
 ) -> u8 {
     if paths.len() > 1 {

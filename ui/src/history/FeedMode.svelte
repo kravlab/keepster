@@ -19,6 +19,7 @@
   import { failureText } from '../lib/failures'
   import { fromDiff, fromEntries, unchangedFile, type DiffTarget, type ShownFile } from '../lib/files'
   import { TimelinePages } from '../lib/pages.svelte'
+  import { shownPath } from '../lib/paths'
   import { railRows, timeOfDay } from '../lib/rail'
   import { strings } from '../lib/strings'
   import { changeShape, isRoutine } from '../lib/summary'
@@ -206,12 +207,12 @@
                     class="path"
                     aria-current={f.path === path && snapshot.id === snapshotId}
                     onclick={() => show(snapshot, files.from, f)}
-                    title={f.path}
+                    title={shownPath(f.path)}
                   >
                     <span class="mark {f.change}" aria-label={strings.changes[f.change].label}>
                       {strings.changes[f.change].mark}
                     </span>
-                    <code>{f.path}</code>
+                    <code>{shownPath(f.path)}</code>
                   </button>
                 </li>
               {/each}
@@ -237,7 +238,7 @@
 {#if open}
   <dialog class="overlay" {@attach (d: HTMLDialogElement) => d.showModal()} onclose={() => (open = null)}>
     <header class="bar">
-      <code class="name">{open.file.path}</code>
+      <code class="name">{shownPath(open.file.path)}</code>
       <span class="muted">{strings.snapshotOf(new Date(open.snapshot.taken_at))}</span>
       <span class="spacer"></span>
       <button onclick={(e) => e.currentTarget.closest('dialog')?.close()}>{strings.closeDiff}</button>

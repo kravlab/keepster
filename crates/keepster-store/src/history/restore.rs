@@ -10,12 +10,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use keepster_core::{
     Ancestry, CapturePolicy, Existing, Found, IGNORE_FILE, Kind, ModeChoice, ModeKind, ModeTable,
     Modes, Naming, Plan, Record, RootPath, SnapshotId, Step, Unrecoverable, Verdict,
-    WithheldReason, ignore_file_rules,
+    WithheldReason, ignore_file_rules, name_bytes,
 };
 
 use super::{
-    Content, HistoryStore, StoreError, WirePath, is_beneath, mode_kind, nothing_at, permissions,
-    withheld_at,
+    Content, HistoryStore, StoreError, filesystem_path, is_beneath, mode_kind, nothing_at,
+    permissions, withheld_at,
 };
 
 /// What a Restore covers and where it writes.
@@ -278,12 +278,12 @@ impl HistoryStore {
         sources: &mut BTreeMap<RootPath, Version>,
     ) -> Result<(), StoreError> {
         for entry in tree.iter() {
-            let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
             // The sidecar is the Snapshot's own record, not a file of the Root.
-            if under.is_root() && name == keepster_core::SIDECAR {
+            if under.is_root() && entry.name_bytes() == keepster_core::SIDECAR.as_bytes() {
                 continue;
             }
-            let path = under.child(&name);
+            // The name's exact bytes, so the file is written back under the name it had (ticket 74).
+            let path = under.child(entry.name_bytes());
             match entry.kind() {
                 Some(git2::ObjectType::Tree) => {
                     let subtree = self
@@ -757,7 +757,8 @@ pub(super) fn recoverability_in(
         if policy.honours_ignore_files() {
             if let Ok(text) = fs::read_to_string(absolute(root, &here).join(IGNORE_FILE)) {
                 let source = here.child(IGNORE_FILE);
-                policy = policy.with_ignore_rules(ignore_file_rules(&here, &text, source.as_str()));
+                policy =
+                    policy.with_ignore_rules(ignore_file_rules(&here, &text, &source.to_lossy()));
             }
         }
         if next == *path {
@@ -776,15 +777,16 @@ pub(super) fn recoverability_in(
     }
 }
 
-/// An entry beside `target` that the destination takes for the same name in another case or spelling.
-pub(super) fn variant_of(root: &Path, target: &RootPath, naming: Naming) -> Option<String> {
+/// The exact bytes of an entry's name beside `target` that the destination takes for the same name in
+/// another case or spelling.
+pub(super) fn variant_of(root: &Path, target: &RootPath, naming: Naming) -> Option<Vec<u8>> {
     let directory = absolute(root, &target.parent());
     let wanted = target.name();
 
     fs::read_dir(directory)
         .ok()?
         .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|entry| name_bytes(&entry.file_name()).map(<[u8]>::to_vec))
         .find(|name| name != wanted && naming.same_name(name, wanted))
 }
 
@@ -859,10 +861,11 @@ fn same_inode(root: &Path, target: &RootPath) -> Vec<RootPath> {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+
+                directory.child(entry.file_name().as_bytes())
             };
-            let path = directory.child(&name);
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
@@ -976,7 +979,7 @@ pub(super) fn absolute(root: &Path, path: &RootPath) -> PathBuf {
     if path.is_root() {
         root.to_path_buf()
     } else {
-        root.join(WirePath(path.as_str().to_owned()).as_filesystem_path())
+        root.join(filesystem_path(path.as_bytes()))
     }
 }
 

@@ -112,7 +112,7 @@ impl Fixture {
             .expect("a listing")
             .entries
             .iter()
-            .map(|entry| entry.path.as_str().to_owned())
+            .map(|entry| entry.path.to_lossy().into_owned())
             .collect()
     }
 

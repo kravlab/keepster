@@ -325,7 +325,8 @@ fn prepared(state: &DaemonState, path: &Path) -> Result<Prepared, ProblemRespons
     let header = PreviewRecord::Header {
         path: absolute.to_string_lossy().into_owned(),
         root: root.map(|root| root.id.to_string()),
-        within: (!start.is_root()).then(|| start.as_str().to_owned()),
+        within: (!start.is_root()).then(|| crate::wire::text(&start)),
+        within_bytes: crate::wire::companion(&start),
         overlaps: overlaps.map(|id| id.to_string()),
         config,
     };
@@ -389,7 +390,8 @@ fn walk(prepared: &Prepared, listing: &Listing, lines: &mpsc::Sender<Bytes>, sta
 /// The record of one classified path.
 fn entry_record(entry: &PreviewEntry) -> PreviewRecord {
     PreviewRecord::Entry {
-        path: entry.path.as_str().to_owned(),
+        path: crate::wire::text(&entry.path),
+        path_bytes: crate::wire::companion(&entry.path),
         kind: kind_name(entry.kind).to_owned(),
         class: class_name(entry.class).to_owned(),
         reason: reason_of(entry.class),
@@ -404,7 +406,8 @@ fn summary_record(summary: &PreviewSummary) -> PreviewRecord {
     let sizes = |side: &[(keepster_core::RootPath, u64)]| {
         side.iter()
             .map(|(path, bytes)| PreviewSize {
-                path: path.as_str().to_owned(),
+                path: crate::wire::text(path),
+                path_bytes: crate::wire::companion(path),
                 bytes: *bytes,
             })
             .collect()
@@ -429,11 +432,8 @@ fn summary_record(summary: &PreviewSummary) -> PreviewRecord {
                 files: group.files,
                 directories: group.directories,
                 bytes: group.bytes,
-                pruned: group
-                    .pruned
-                    .iter()
-                    .map(|path| path.as_str().to_owned())
-                    .collect(),
+                pruned: crate::wire::texts(&group.pruned),
+                pruned_bytes: crate::wire::companions(&group.pruned),
             })
             .collect(),
         largest_captured: sizes(&summary.largest_captured),
@@ -508,6 +508,7 @@ mod tests {
                 path: directory.path().to_string_lossy().into_owned(),
                 root: None,
                 within: None,
+                within_bytes: None,
                 overlaps: None,
                 config: None,
             },

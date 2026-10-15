@@ -109,7 +109,7 @@ fn rp(path: &str) -> RootPath {
 fn changes(files: &[FileDiff]) -> Vec<(String, Option<FileChange>)> {
     files
         .iter()
-        .map(|file| (file.path.as_str().to_owned(), file.change))
+        .map(|file| (file.path.to_lossy().into_owned(), file.change))
         .collect()
 }
 
@@ -227,9 +227,12 @@ fn a_moved_file_is_one_rename_not_a_deletion_and_an_addition() {
 
     assert_eq!(summary.len(), 1, "{summary:?}");
     assert_eq!(summary[0].change, Some(FileChange::Renamed));
-    assert_eq!(summary[0].path.as_str(), "new/name.txt");
+    assert_eq!(summary[0].path.to_lossy(), "new/name.txt");
     assert_eq!(
-        summary[0].old_path.as_ref().map(RootPath::as_str),
+        summary[0]
+            .old_path
+            .as_ref()
+            .map(|path| path.to_str().expect("a text path")),
         Some("old/name.txt")
     );
     // Asked for by either name, the answer is the rename with its one added line.
@@ -287,7 +290,7 @@ fn a_file_past_the_threshold_is_reported_as_too_large_without_hunks() {
     let summary = fixture.summary(before, &DiffTarget::Snapshot(after));
     let flags: Vec<(&str, bool)> = summary
         .iter()
-        .map(|file| (file.path.as_str(), file.too_large))
+        .map(|file| (file.path.to_str().expect("a text path"), file.too_large))
         .collect();
     assert_eq!(flags, [("big.log", true), ("small.txt", false)]);
 }
@@ -468,7 +471,7 @@ fn a_file_too_large_to_diff_is_still_found_when_moved_unchanged() {
 
     let big = summary
         .iter()
-        .find(|file| file.path.as_str() == "moved.log")
+        .find(|file| file.path.to_lossy() == "moved.log")
         .expect("the large file");
     assert_eq!(big.change, Some(FileChange::Renamed));
     assert!(big.too_large);
@@ -477,7 +480,7 @@ fn a_file_too_large_to_diff_is_still_found_when_moved_unchanged() {
     assert!(
         summary
             .iter()
-            .any(|file| file.path.as_str() == "renamed.txt"
+            .any(|file| file.path.to_lossy() == "renamed.txt"
                 && file.change == Some(FileChange::Added)),
         "{summary:?}"
     );

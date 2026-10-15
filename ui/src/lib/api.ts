@@ -11,9 +11,12 @@ import type {
   DiffFile,
   Entries,
   Entry,
+  PathHit,
+  PathResolution,
   PathSearch,
   Preferences,
   Problem,
+  RestoreIssue,
   RestoreRequest,
   Restored,
   RestoredPath,
@@ -22,7 +25,7 @@ import type {
 } from './wire'
 import { momentOf } from './ids'
 import { ndjsonRecords } from './ndjson'
-import { dirName } from './paths'
+import { dirName, exactPath, exactPaths, pathQuery, shownPath, wirePath, wirePaths } from './paths'
 
 /** How many Snapshots one timeline page asks for: the daemon's default page size. */
 const PAGE_SIZE = 100
@@ -50,13 +53,92 @@ export class UnexpectedAnswer extends Error {
   override name = 'UnexpectedAnswer'
 }
 
-/** A `/v1` path with its segments escaped and its query, leaving out absent parameters. */
-function url(segments: readonly string[], query: Record<string, string | undefined> = {}): string {
-  const path = `/v1/${segments.map(encodeURIComponent).join('/')}`
+/**
+ * A `/v1` path with its segments escaped and its query, leaving out absent parameters. A Root-relative
+ * `path` goes last, as `pathQuery` encodes its bytes: `URLSearchParams` takes text, and would spell a byte
+ * that is not UTF-8 as U+FFFD (ticket 74).
+ */
+function url(segments: readonly string[], query: Record<string, string | undefined> = {}, path?: string): string {
+  const target = `/v1/${segments.map(encodeURIComponent).join('/')}`
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, value)
-  const search = params.toString()
-  return search ? `${path}?${search}` : path
+  const search = [params.toString(), path === undefined ? '' : `path=${pathQuery(path)}`].filter(Boolean).join('&')
+  return search ? `${target}?${search}` : target
+}
+
+/*
+ * The wire's paths, each with its `_bytes` companion folded in, as `paths.ts` holds a path: every answer
+ * naming a path passes through one of these on its way in, and a request on its way out.
+ */
+
+/** An optional path field and its companion: absent or `null` as it came, the exact path otherwise. */
+function optionalPath(text: string | null | undefined, bytes: string | null | undefined): string | null | undefined {
+  return text === undefined || text === null ? text : exactPath(text, bytes)
+}
+
+/** One path a Snapshot holds, its path exact. */
+function entryIn(entry: Entry): Entry {
+  return { ...entry, path: exactPath(entry.path, entry.path_bytes) }
+}
+
+/** One file of a diff, its paths exact. */
+function diffFileIn(file: DiffFile): DiffFile {
+  return {
+    ...file,
+    path: exactPath(file.path, file.path_bytes),
+    old_path: optionalPath(file.old_path, file.old_path_bytes),
+  }
+}
+
+/** One reason a file of a Restore is not simply written, its paths exact. */
+function issueIn(issue: RestoreIssue): RestoreIssue {
+  return {
+    ...issue,
+    at: optionalPath(issue.at, issue.at_bytes),
+    existing: optionalPath(issue.existing, issue.existing_bytes),
+    paths: issue.paths === undefined ? undefined : exactPaths(issue.paths, issue.paths_bytes),
+  }
+}
+
+/** One file of a Restore, its paths exact. */
+function restoredPathIn(file: RestoredPath): RestoredPath {
+  return {
+    ...file,
+    path: exactPath(file.path, file.path_bytes),
+    target: optionalPath(file.target, file.target_bytes),
+    issues: file.issues?.map(issueIn),
+  }
+}
+
+/** One path a path search found, its path exact. */
+function hitIn(hit: PathHit): PathHit {
+  return { ...hit, path: exactPath(hit.path, hit.path_bytes) }
+}
+
+/** One record of a content search, its path exact. */
+function contentRecordIn(record: ContentRecord): ContentRecord {
+  return record.type === 'match' || record.type === 'withheld'
+    ? { ...record, path: exactPath(record.path, record.path_bytes) }
+    : record
+}
+
+/** A Restore request as the wire takes it: each path that is not UTF-8 named by its bytes as well. */
+function restoreRequestOut(request: RestoreRequest): RestoreRequest {
+  const paths = wirePaths(request.paths)
+  const resolutions: Record<string, PathResolution> = {}
+  const resolutionsBytes: Record<string, PathResolution> = {}
+  for (const [path, answer] of Object.entries(request.resolutions)) {
+    const wire = wirePath(path)
+    if (wire.bytes === undefined) resolutions[path] = answer
+    else resolutionsBytes[wire.bytes] = answer
+  }
+  return {
+    ...request,
+    paths: paths.texts,
+    ...(paths.bytes && { paths_bytes: paths.bytes }),
+    resolutions,
+    ...(Object.keys(resolutionsBytes).length > 0 && { resolutions_bytes: resolutionsBytes }),
+  }
 }
 
 /** The problem body of a failed answer, or nothing when it carries none. */
@@ -99,12 +181,12 @@ export function listRoots(): Promise<Root[]> {
  * only the Snapshots that changed that path, each saying how in `change`.
  */
 export function timeline(root: string, cursor: string | undefined, path?: string): Promise<Timeline> {
-  return getJson(url(['roots', root, 'snapshots'], { limit: String(PAGE_SIZE), cursor, path }))
+  return getJson(url(['roots', root, 'snapshots'], { limit: String(PAGE_SIZE), cursor }, path))
 }
 
 /** The newest Snapshot that changed `path`, or `null` when none did. */
 export async function newestTouching(root: string, path: string): Promise<string | null> {
-  const page = await getJson<Timeline>(url(['roots', root, 'snapshots'], { limit: '1', path }))
+  const page = await getJson<Timeline>(url(['roots', root, 'snapshots'], { limit: '1' }, path))
   return page.snapshots[0]?.id ?? null
 }
 
@@ -127,25 +209,27 @@ export async function previousSnapshot(root: string, snapshot: string): Promise<
 
 /** The files changed from Snapshot `from` to Snapshot `to`, in path order, without hunks. */
 export async function changedFiles(root: string, from: string, to: string): Promise<DiffFile[]> {
-  return (await getJson<Diff>(url(['roots', root, 'diff'], { from, to }))).files
+  return (await getJson<Diff>(url(['roots', root, 'diff'], { from, to }))).files.map(diffFileIn)
 }
 
 /** One file's diff from Snapshot `from` to Snapshot `to`, with its hunks. */
 export async function fileDiff(root: string, from: string, to: string, path: string): Promise<DiffFile> {
-  const [file] = (await getJson<Diff>(url(['roots', root, 'diff'], { from, to, path }))).files
-  if (!file) throw new UnexpectedAnswer(`the diff of ${path} names no file`)
-  return file
+  const [file] = (await getJson<Diff>(url(['roots', root, 'diff'], { from, to }, path))).files
+  if (!file) throw new UnexpectedAnswer(`the diff of ${shownPath(path)} names no file`)
+  return diffFileIn(file)
 }
 
 /** Every path a Snapshot holds, directories included. */
 export async function snapshotEntries(root: string, snapshot: string): Promise<Entry[]> {
-  return (await getJson<Entries>(url(['roots', root, 'snapshots', snapshot, 'entries'], { depth: 'infinity' }))).entries
+  return (
+    await getJson<Entries>(url(['roots', root, 'snapshots', snapshot, 'entries'], { depth: 'infinity' }))
+  ).entries.map(entryIn)
 }
 
 /** What a Snapshot holds directly in directory `dir` (`''` for the Root's top), one level deep. */
 export async function directoryEntries(root: string, snapshot: string, dir: string): Promise<Entry[]> {
   const path = dir === '' ? undefined : dir
-  return (await getJson<Entries>(url(['roots', root, 'snapshots', snapshot, 'entries'], { path }))).entries
+  return (await getJson<Entries>(url(['roots', root, 'snapshots', snapshot, 'entries'], {}, path))).entries.map(entryIn)
 }
 
 /** What a Snapshot holds at `path`, read from its directory's listing; `null` when it holds nothing there. */
@@ -159,7 +243,7 @@ export async function entryAt(root: string, snapshot: string, path: string): Pro
  * character it is rather than swallowed.
  */
 export async function fileContent(root: string, snapshot: string, path: string): Promise<string> {
-  const bytes = await (await get(url(['roots', root, 'snapshots', snapshot, 'content'], { path }))).arrayBuffer()
+  const bytes = await (await get(url(['roots', root, 'snapshots', snapshot, 'content'], {}, path))).arrayBuffer()
   return new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes)
 }
 
@@ -171,11 +255,14 @@ export type RestoreAnswer = { kind: 'done'; restored: Restored } | { kind: 'bloc
 
 /** Puts a Snapshot's versions back over the Working Tree, or, with `dry_run`, says what that would do. */
 export async function restore(root: string, request: RestoreRequest): Promise<RestoreAnswer> {
-  const response = await sendJson('POST', url(['roots', root, 'restore']), request)
-  if (response.ok) return { kind: 'done', restored: (await response.json()) as Restored }
+  const response = await sendJson('POST', url(['roots', root, 'restore']), restoreRequestOut(request))
+  if (response.ok) {
+    const restored = (await response.json()) as Restored
+    return { kind: 'done', restored: { ...restored, paths: restored.paths.map(restoredPathIn) } }
+  }
   const problem = await problemOf(response)
   if (response.status === 400 && problem.code === 'confirmation_required' && problem.paths) {
-    return { kind: 'blocked', paths: problem.paths }
+    return { kind: 'blocked', paths: problem.paths.map(restoredPathIn) }
   }
   throw failure(response, problem)
 }
@@ -196,8 +283,9 @@ export async function writePreferences(preferences: Preferences): Promise<Prefer
 }
 
 /** Every path any Snapshot of any Root changed that `q` finds, a fragment matched anywhere in the path. */
-export function searchPaths(q: string, signal?: AbortSignal): Promise<PathSearch> {
-  return getJson(url(['search', 'paths'], { q }), signal)
+export async function searchPaths(q: string, signal?: AbortSignal): Promise<PathSearch> {
+  const found = await getJson<PathSearch>(url(['search', 'paths'], { q }), signal)
+  return { ...found, hits: found.hits.map(hitIn) }
 }
 
 /**
@@ -213,7 +301,7 @@ export async function* searchContent(
   const response = await get(url(['search', 'content'], query), signal)
   if (!response.body) throw new UnexpectedAnswer('the content search answered with no body')
   try {
-    for await (const record of ndjsonRecords(response.body, signal)) yield record as ContentRecord
+    for await (const record of ndjsonRecords(response.body, signal)) yield contentRecordIn(record as ContentRecord)
   } catch (e) {
     if (e instanceof SyntaxError)
       throw new UnexpectedAnswer(`the content search sent a line that is not JSON: ${e.message}`)

@@ -1,25 +1,18 @@
 //! `explain`: whether a path is captured, and which rule at which level decided it.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use keepster_api::{
     ConfigLevel, ConfigWarning, Decision, Explanation, Origin, Problem, RuleEffect, RuleReference,
 };
 use keepster_app::config::{self, OnDiskKind};
-use keepster_core::{Kind, Level, Rule, RuleOrigin, Verdict};
+use keepster_core::{Kind, Level, RootPath, Rule, RuleOrigin, Verdict};
 
 use crate::DaemonState;
+use crate::path_parameter::PathParameter;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
-use crate::snapshots::parse_path;
-
-/// Which path to explain.
-#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub(crate) struct ExplainParameters {
-    /// The path, relative to the Root and `/`-separated. It need not exist.
-    path: Option<String>,
-}
+use crate::wire;
 
 /// Whether a path is captured, and which rule at which level decided it.
 ///
@@ -32,7 +25,10 @@ pub(crate) struct ExplainParameters {
     path = "/v1/roots/{id}/explain",
     operation_id = "explain_path",
     tag = "rules",
-    params(RootAddress, ExplainParameters),
+    params(
+        RootAddress,
+        ("path" = Option<String>, Query, description = "The path, relative to the Root and `/`-separated, its bytes percent-encoded. It need not exist."),
+    ),
     responses(
         (status = 200, description = "Whether the path is captured, and why.", body = Explanation),
         (status = 400, description = "The path is malformed.", body = Problem, content_type = "application/problem+json"),
@@ -43,10 +39,10 @@ pub(crate) struct ExplainParameters {
 pub(crate) async fn explain(
     State(state): State<DaemonState>,
     Path(RootAddress { id }): Path<RootAddress>,
-    Query(parameters): Query<ExplainParameters>,
+    PathParameter(path): PathParameter,
 ) -> Result<Json<Explanation>, ProblemResponse> {
     let id = roots::parse_id(&id)?;
-    let path = parse_path(parameters.path.as_deref().unwrap_or_default())?;
+    let path = path.unwrap_or_else(RootPath::root);
     // Resolved while the Registry is held, as everywhere: resolving may write into the Root's store
     // directory, which an erasing deregistration must not be removing at the same moment.
     let (root, loaded) = {
@@ -85,19 +81,21 @@ pub(crate) async fn explain(
         Verdict::Pruned { ancestor, rule } => (
             (Decision::Pruned, None),
             Some(*rule),
-            Some(ancestor.as_str().to_owned()),
+            Some(ancestor.clone()),
         ),
         Verdict::Secret(rule) => ((Decision::Secret, None), Some(*rule), None),
         Verdict::TooLarge { rule, .. } => (withheld("too_large"), *rule, None),
     };
 
     Ok(Json(Explanation {
-        path: path.as_str().to_owned(),
+        path: wire::text(&path),
+        path_bytes: wire::companion(&path),
         captured: decision == Decision::Captured,
         decision,
         reason,
         rule: rule.map(reference),
-        pruned_by,
+        pruned_by: pruned_by.as_ref().map(wire::text),
+        pruned_by_bytes: pruned_by.as_ref().and_then(wire::companion),
         own_rule: explained.own_rule.map(reference),
         on_disk: on_disk.kind.map(|kind| match kind {
             OnDiskKind::File => keepster_api::OnDiskKind::File,

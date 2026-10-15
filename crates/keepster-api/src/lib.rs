@@ -9,16 +9,23 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 mod code;
+mod wire_path;
 
 pub use code::ErrorCode;
+pub use wire_path::{
+    InvalidPathBytes, path_bytes, path_from_wire, path_text, paths_bytes, paths_from_wire,
+    resolutions_from_wire, resolutions_to_wire,
+};
 
 /// Percent-encode a path for the `path=` query parameter, which is how every endpoint takes a path.
 ///
 /// Paths travel as bytes (ticket 10), so this encodes bytes rather than characters: a name that is not
 /// UTF-8 survives the trip. The unreserved set of RFC 3986 plus `/`, which is a path separator here and
 /// needs no escaping.
-pub fn encode_path_query(path: &str) -> String {
-    path.bytes()
+pub fn encode_path_query(path: impl AsRef<[u8]>) -> String {
+    path.as_ref()
+        .iter()
+        .copied()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 (byte as char).to_string()
@@ -465,6 +472,10 @@ pub struct Snapshot {
     /// record of the Snapshot itself, which `entries` lists with why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
+    /// `omitted` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_bytes: Vec<Option<String>>,
     /// Paths present in the Working Tree whose content this Snapshot deliberately does not hold, and
     /// why. Withholding is policy, not failure, so it does not make a Snapshot incomplete.
     ///
@@ -505,6 +516,9 @@ pub struct Snapshot {
 pub struct Withheld {
     /// Where it is, relative to the Root.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// Why its content was not held, and for a special file what kind it is.
     #[serde(flatten)]
     pub why: WithheldReason,
@@ -534,6 +548,9 @@ pub struct WithheldReason {
 pub struct Explanation {
     /// The path asked about, relative to the Root.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// Whether a Snapshot taken now would hold its content.
     pub captured: bool,
     /// What a capture does with it.
@@ -551,6 +568,9 @@ pub struct Explanation {
     /// With `pruned`, the excluded ancestor directory that is never entered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pruned_by: Option<String>,
+    /// `pruned_by` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruned_by_bytes: Option<String>,
     /// The last of the user's rules matching the path itself, reported even when an ancestor prunes it
     /// or the denylist refuses it — so the answer can say what that rule would have done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -687,6 +707,10 @@ pub struct RestoreRequest {
     /// Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot.
     #[serde(default)]
     pub paths: Vec<String>,
+    /// `paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_bytes: Vec<Option<String>>,
     /// Plan only: answer with what would happen to every path, write nothing and take no Safety
     /// Snapshot.
     #[serde(default)]
@@ -698,6 +722,10 @@ pub struct RestoreRequest {
     /// Answers to what only the user can settle, keyed by the Snapshot path they are for.
     #[serde(default)]
     pub resolutions: std::collections::BTreeMap<String, PathResolution>,
+    /// Answers for paths that are not UTF-8, keyed by their exact bytes in base64url; an entry here wins
+    /// over one in `resolutions` naming the same bytes (ticket 74).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub resolutions_bytes: std::collections::BTreeMap<String, PathResolution>,
     /// Skip each path still in the way, with its reasons, rather than stop the request.
     #[serde(default)]
     pub skip_unresolvable: bool,
@@ -816,9 +844,15 @@ pub struct Restored {
 pub struct RestoredPath {
     /// The file's path in the Snapshot.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// Where it is written, when that is not `path`: a rename, or a name in another case kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// `target` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_bytes: Option<String>,
     /// What happened to it — or, in a dry run, what would.
     pub outcome: RestoreOutcome,
     /// For a `blocked` or `skipped` path, every reason, and what would settle each.
@@ -866,16 +900,26 @@ pub struct RestoreIssue {
     /// For `type_change` and `link_check_failed`: where, Root-relative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// `at` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_bytes: Option<String>,
     /// For `hardlinked`: the file's other names inside the Root. For `name_collision`: the other
     /// Snapshot paths that are one file with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// `paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_bytes: Vec<Option<String>>,
     /// For `hardlinked`: how many more names the file has outside the Root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links_outside: Option<u64>,
     /// For `name_case`: the name on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub existing: Option<String>,
+    /// `existing` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_bytes: Option<String>,
     /// For `overwrite_unrecoverable`: why — `too_large`, `excluded`, `unreadable` or `unsupported`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -910,6 +954,10 @@ pub struct Diff {
     /// keeps it, so the comparison is not whole there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
+    /// `omitted` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_bytes: Vec<Option<String>>,
 }
 
 /// One file's part of a diff.
@@ -919,9 +967,15 @@ pub struct DiffFile {
     /// Where the file is on the newer side — or, for a deletion, where it was. Relative to the Root. A
     /// directory is named only when its permission bits are all that changed there.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// Where a renamed file was on the older side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_path: Option<String>,
+    /// `old_path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path_bytes: Option<String>,
     /// How it changed; absent for a path asked about that did not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<FileChange>,
@@ -1293,11 +1347,19 @@ pub struct JobResult {
     /// Forget: every Root-relative path it removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_paths: Vec<String>,
+    /// `removed_paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_paths_bytes: Vec<Option<String>>,
     /// Forget: the removed paths whose file in the Working Tree still holds what was removed. Forget
     /// never touches the Working Tree, so the secret there still needs rotating — and, unless `excluded`,
     /// the next Snapshot captures it again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub still_on_disk: Vec<String>,
+    /// `still_on_disk` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub still_on_disk_bytes: Vec<Option<String>>,
     /// Forget: whether what it removed is kept out of history from now on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded: Option<bool>,
@@ -1471,6 +1533,9 @@ pub struct Entries {
 pub struct Entry {
     /// Where it is, relative to the Root, `/`-separated.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// What it is.
     pub kind: EntryKind,
     /// Its size in bytes. Absent for a directory.
@@ -1540,7 +1605,8 @@ pub struct Problem {
     #[cfg_attr(feature = "openapi", schema(schema_with = code::code_schema))]
     pub code: String,
     /// Machine-readable particulars — which path, which id, which limit — so a client composes its own
-    /// message instead of parsing ours.
+    /// message instead of parsing ours. A `path` that is not UTF-8 is joined by `path_bytes`, its exact
+    /// bytes in base64url (ticket 74).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub details: std::collections::BTreeMap<String, String>,
     /// With `confirmation_required`, every file of the Restore asked for and what it needs; absent
@@ -1589,6 +1655,9 @@ pub enum PreviewRecord {
         /// Root's rules, as a capture of the Root would classify it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         within: Option<String>,
+        /// `within` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        within_bytes: Option<String>,
         /// A Root it contains, when it is none: registering it would be refused.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         overlaps: Option<String>,
@@ -1601,6 +1670,9 @@ pub enum PreviewRecord {
     Entry {
         /// Where, relative to the directory previewed.
         path: String,
+        /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_bytes: Option<String>,
         /// `file`, `directory`, `link` or `special`.
         kind: String,
         /// `captured`, `excluded`, `withheld` or `unreadable`.
@@ -1712,6 +1784,10 @@ pub struct PreviewGroup {
     /// The directories it pruned, named and unmeasured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pruned: Vec<String>,
+    /// `pruned` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pruned_bytes: Vec<Option<String>>,
 }
 
 /// One path and its apparent size.
@@ -1720,6 +1796,9 @@ pub struct PreviewGroup {
 pub struct PreviewSize {
     /// Where, relative to the directory previewed.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// Its apparent size in bytes.
     pub bytes: u64,
 }
@@ -1737,6 +1816,10 @@ pub struct ExportRequest {
     /// Root-relative paths; a directory means everything beneath it, and none means the whole Snapshot.
     #[serde(default)]
     pub paths: Vec<String>,
+    /// `paths` as their exact bytes, base64url, one per path and `null` for each that is UTF-8; absent
+    /// when every one is (ticket 74).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_bytes: Vec<Option<String>>,
     /// The directory written into, absolute, on the daemon's machine — which is the client's, since the
     /// daemon listens only there. Each file goes at its Snapshot path beneath it; it is made if missing.
     pub dest: String,
@@ -1751,6 +1834,10 @@ pub struct ExportRequest {
     /// Answers to what only the user can settle, keyed by the Snapshot path they are for.
     #[serde(default)]
     pub resolutions: std::collections::BTreeMap<String, PathResolution>,
+    /// Answers for paths that are not UTF-8, keyed by their exact bytes in base64url; an entry here wins
+    /// over one in `resolutions` naming the same bytes (ticket 74).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub resolutions_bytes: std::collections::BTreeMap<String, PathResolution>,
     /// Skip each path still in the way, with its reasons, rather than stop the request.
     #[serde(default)]
     pub skip_unresolvable: bool,
@@ -1839,6 +1926,9 @@ pub struct PathHit {
     pub root: String,
     /// The path, Root-relative.
     pub path: String,
+    /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<String>,
     /// How many Snapshots changed it.
     pub snapshots: u64,
     /// The first of them.
@@ -1883,6 +1973,9 @@ pub enum ContentRecord {
         root: String,
         /// The path, Root-relative.
         path: String,
+        /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_bytes: Option<String>,
         /// The version's content identity, opaque: equal for equal content, wherever it is.
         content: String,
         /// The first Snapshot that held this content at this path.
@@ -1900,6 +1993,9 @@ pub enum ContentRecord {
         root: String,
         /// The path, Root-relative.
         path: String,
+        /// `path` as its exact bytes, base64url, when it is not UTF-8 (ticket 74).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_bytes: Option<String>,
         /// Why: `too_large`, `special_file`, and the rest of the Withheld reasons.
         reason: String,
         /// For a special file, what kind.

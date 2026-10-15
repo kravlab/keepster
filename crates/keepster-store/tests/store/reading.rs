@@ -339,7 +339,7 @@ fn entries_list_a_directory_shallowly_by_default_and_in_full_on_request() {
         .entries;
     let listed: Vec<_> = shallow
         .iter()
-        .map(|entry| (entry.path.as_str(), entry.kind))
+        .map(|entry| (entry.path.to_str().expect("a text path"), entry.kind))
         .collect();
     assert_eq!(
         listed,
@@ -360,7 +360,7 @@ fn entries_list_a_directory_shallowly_by_default_and_in_full_on_request() {
         .entries(snapshot, &path("src"), Depth::Infinity)
         .expect("everything under src")
         .entries;
-    let listed: Vec<_> = full.iter().map(|entry| entry.path.as_str()).collect();
+    let listed: Vec<_> = full.iter().map(|entry| entry.path.to_lossy()).collect();
     assert_eq!(
         listed,
         ["src/blob.bin", "src/deep", "src/deep/x.txt", "src/lib.rs"]

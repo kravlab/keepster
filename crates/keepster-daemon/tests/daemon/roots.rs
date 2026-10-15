@@ -96,7 +96,7 @@ async fn a_path_inside_a_root_resolves_to_it() {
     let resolved = daemon
         .get_json(&format!(
             "/v1/roots?path={}",
-            keepster_api::encode_path_query(&nested.to_string_lossy())
+            keepster_api::encode_path_query(nested.to_string_lossy().as_bytes())
         ))
         .await;
 
@@ -118,7 +118,7 @@ async fn a_path_under_no_root_resolves_to_nothing() {
     let resolved = daemon
         .get_json(&format!(
             "/v1/roots?path={}",
-            keepster_api::encode_path_query(&elsewhere.to_string_lossy())
+            keepster_api::encode_path_query(elsewhere.to_string_lossy().as_bytes())
         ))
         .await;
 

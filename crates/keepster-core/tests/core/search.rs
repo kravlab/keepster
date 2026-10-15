@@ -2,48 +2,58 @@
 //! literal or a regular expression — case-insensitively unless the query has a capital — and nothing a
 //! query could make take forever.
 
-use keepster_core::{ContentQuery, PathQuery, is_binary};
+use keepster_core::{ContentQuery, PathQuery, RootPath, is_binary};
+
+fn rp(path: &str) -> RootPath {
+    RootPath::parse(path).expect("a Root-relative path")
+}
 
 #[test]
 fn a_path_is_found_by_a_fragment_of_it_case_ignored_unless_the_query_has_capitals() {
     let lower = PathQuery::new("config", false).expect("a query");
-    assert!(lower.matches("app/Config.toml"));
-    assert!(lower.matches("config.toml"));
-    assert!(!lower.matches("app/main.rs"));
+    assert!(lower.matches(&rp("app/Config.toml")));
+    assert!(lower.matches(&rp("config.toml")));
+    assert!(!lower.matches(&rp("app/main.rs")));
 
     let capital = PathQuery::new("Config", false).expect("a query");
-    assert!(capital.matches("app/Config.toml"));
-    assert!(!capital.matches("config.toml"), "a capital asks for case");
+    assert!(capital.matches(&rp("app/Config.toml")));
+    assert!(
+        !capital.matches(&rp("config.toml")),
+        "a capital asks for case"
+    );
 }
 
 #[test]
 fn a_pattern_is_read_as_an_include_rule_is() {
     let pattern = PathQuery::new("**/*.env", true).expect("a pattern");
-    assert!(pattern.matches("deploy/prod.env"));
-    assert!(!pattern.matches("deploy/prod.envy"));
+    assert!(pattern.matches(&rp("deploy/prod.env")));
+    assert!(!pattern.matches(&rp("deploy/prod.envy")));
 
     let anywhere = PathQuery::new("*.toml", true).expect("a pattern");
     assert!(
-        anywhere.matches("a/b/c.toml"),
+        anywhere.matches(&rp("a/b/c.toml")),
         "a pattern without a slash matches at any depth"
     );
 
     let folded = PathQuery::new("*.env", true).expect("a pattern");
     assert!(
-        folded.matches("deploy/PROD.ENV"),
+        folded.matches(&rp("deploy/PROD.ENV")),
         "a pattern with no capital ignores case"
     );
     let cased = PathQuery::new("*.ENV", true).expect("a pattern");
-    assert!(cased.matches("PROD.ENV"));
-    assert!(!cased.matches("prod.env"), "a capital asks for case");
+    assert!(cased.matches(&rp("PROD.ENV")));
+    assert!(!cased.matches(&rp("prod.env")), "a capital asks for case");
 
     let directory = PathQuery::new("build/", true).expect("a pattern");
     assert!(
-        directory.matches("build/out/app.o"),
+        directory.matches(&rp("build/out/app.o")),
         "what a directory pattern takes in is found, as an Include Rule takes it in"
     );
-    assert!(!directory.matches("build"), "a file is not a directory");
-    assert!(!directory.matches("src/main.rs"));
+    assert!(
+        !directory.matches(&rp("build")),
+        "a file is not a directory"
+    );
+    assert!(!directory.matches(&rp("src/main.rs")));
 
     assert!(
         PathQuery::new("!*.toml", true).is_err(),
@@ -130,4 +140,25 @@ fn a_nul_among_the_first_bytes_makes_a_version_binary() {
     assert!(is_binary(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"));
     assert!(!is_binary(b"plain text\n"));
     assert!(!is_binary(b""));
+}
+
+#[test]
+fn a_path_that_is_not_utf8_is_found_by_the_text_around_its_stray_bytes() {
+    let odd = RootPath::parse_bytes(b"Docs/\xff report.txt").expect("valid");
+
+    assert!(
+        PathQuery::new("report", false)
+            .expect("a query")
+            .matches(&odd)
+    );
+    assert!(
+        PathQuery::new("docs/*.txt", true)
+            .expect("a pattern")
+            .matches(&odd)
+    );
+    assert!(
+        !PathQuery::new("*.md", true)
+            .expect("a pattern")
+            .matches(&odd)
+    );
 }

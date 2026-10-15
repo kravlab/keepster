@@ -12,7 +12,8 @@ use std::time::SystemTime;
 use keepster_core::{CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SnapshotId};
 
 use super::{
-    HistoryStore, IncompletePath, ModeChange, StoreError, WithheldReason, mode_changes, mode_kind,
+    HistoryStore, IncompletePath, ModeChange, StoreError, WithheldReason, filesystem_path,
+    mode_changes, mode_kind,
 };
 
 /// The size past which a file's versions are not compared line by line: 8 MiB, either side.
@@ -223,15 +224,15 @@ impl HistoryStore {
             let position = match item {
                 Item::Delta(position) => position,
                 Item::ModeOnly(_) => {
-                    let _ = writeln!(text, "diff --git a/{old} b/{new}");
+                    let _ = writeln!(text, "diff --git {old} {new}");
                     text.extend_from_slice(&mode_lines(&described));
                     continue;
                 }
             };
             if described.too_large {
-                let _ = writeln!(text, "diff --git a/{old} b/{new}");
+                let _ = writeln!(text, "diff --git {old} {new}");
                 text.extend_from_slice(&mode_lines(&described));
-                let _ = writeln!(text, "File a/{old} or b/{new} is too large to diff");
+                let _ = writeln!(text, "File {old} or {new} is too large to diff");
                 continue;
             }
             if let Some(mut patch) =
@@ -325,9 +326,9 @@ impl HistoryStore {
             .deltas()
             .filter_map(|delta| delta.new_file().path_bytes())
             .collect();
-        let mode_only = mode_changes(&from, &from_modes, &to, &to_modes)
+        let mode_only = mode_changes(&self.repository, &from, &from_modes, &to, &to_modes)
             .into_iter()
-            .filter(|change| !named.contains(change.path.as_str().as_bytes()))
+            .filter(|change| !named.contains(change.path.as_bytes()))
             .collect();
 
         Ok(Compared {
@@ -441,7 +442,7 @@ impl HistoryStore {
                     _ => {
                         let entry = compared
                             .to
-                            .get_path(Path::new(change.path.as_str()))
+                            .get_path(&filesystem_path(change.path.as_bytes()))
                             .map_err(self.failed("read"))?;
                         self.classify(&[entry.id()])?
                     }
@@ -578,7 +579,7 @@ impl HistoryStore {
     /// A path no delta names: unchanged if it is a file on either side, and not found otherwise.
     fn unchanged(&self, compared: &Compared<'_>, path: &RootPath) -> Result<FileDiff, StoreError> {
         for tree in [&compared.to, &compared.from] {
-            match tree.get_path(Path::new(path.as_str())) {
+            match tree.get_path(&filesystem_path(path.as_bytes())) {
                 Ok(entry) if entry.kind() == Some(git2::ObjectType::Blob) => {
                     let (binary, too_large) = self.classify(&[entry.id()])?;
                     return Ok(FileDiff {
@@ -632,7 +633,7 @@ impl Compared<'_> {
     /// The change that names `path`: a delta on its newer side — or, failing that, on its older side —
     /// or a change of its mode alone.
     fn item_of(&self, path: &RootPath) -> Option<Item> {
-        let wanted = Some(path.as_str().as_bytes());
+        let wanted = Some(path.as_bytes());
 
         self.diff
             .deltas()
@@ -652,15 +653,14 @@ impl Compared<'_> {
     }
 }
 
-/// The path a diff file names, as a Root-relative path.
+/// The path a diff file names, as a Root-relative path, by its exact bytes.
 ///
 /// Every path in a store was written from a [`RootPath`], so one that does not parse back is a store
 /// written by something else; it is shown as the Root itself rather than refused, since a diff is read
 /// only to be looked at.
 fn path_of(file: &git2::DiffFile<'_>) -> RootPath {
     file.path_bytes()
-        .map(String::from_utf8_lossy)
-        .and_then(|path| RootPath::parse(&path).ok())
+        .and_then(|path| RootPath::parse_bytes(path).ok())
         .unwrap_or_else(RootPath::root)
 }
 
@@ -716,10 +716,45 @@ fn with_modes(patch: &[u8], file: &FileDiff) -> Vec<u8> {
     text
 }
 
-/// The two names a too-large file goes by in a patch header.
-fn sides(file: &FileDiff) -> (&str, &str) {
-    let new = file.path.as_str();
-    let old = file.old_path.as_ref().map_or(new, RootPath::as_str);
+/// The two names a file goes by in a patch header this code writes, `a/` and `b/` prefixed and quoted
+/// as libgit2 quotes the headers it writes, so a name reads the same in every header of one patch.
+fn sides(file: &FileDiff) -> (String, String) {
+    let new = &file.path;
+    let old = file.old_path.as_ref().unwrap_or(new);
 
-    (old, new)
+    (header_name("a/", old), header_name("b/", new))
+}
+
+/// `prefix` and `path` as one name of a patch header: as they are, or — where a byte is a quote, a
+/// backslash, a control or anything beyond ASCII, a name that is not UTF-8 among them — in double
+/// quotes with that byte escaped, as libgit2 and git write such a name (ticket 74).
+fn header_name(prefix: &str, path: &RootPath) -> String {
+    let mut name = prefix.as_bytes().to_vec();
+    name.extend_from_slice(path.as_bytes());
+    if !name
+        .iter()
+        .any(|byte| matches!(byte, b'"' | b'\\') || !(b' '..=b'~').contains(byte))
+    {
+        return String::from_utf8_lossy(&name).into_owned();
+    }
+
+    let mut quoted = String::from("\"");
+    for byte in name {
+        match byte {
+            b'\x07' => quoted.push_str("\\a"),
+            b'\x08' => quoted.push_str("\\b"),
+            b'\t' => quoted.push_str("\\t"),
+            b'\n' => quoted.push_str("\\n"),
+            b'\x0b' => quoted.push_str("\\v"),
+            b'\x0c' => quoted.push_str("\\f"),
+            b'\r' => quoted.push_str("\\r"),
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            b' '..=b'~' => quoted.push(char::from(byte)),
+            other => quoted.push_str(&format!("\\{other:03o}")),
+        }
+    }
+    quoted.push('"');
+
+    quoted
 }

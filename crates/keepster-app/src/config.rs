@@ -2214,9 +2214,12 @@ pub fn policy_for_path(policy: &CapturePolicy, root_path: &Path, path: &RootPath
 /// own tooling, not to the user's configuration, so it is not ours to refuse a capture over.
 pub fn read_ignore_file(root_path: &Path, directory: &RootPath) -> Vec<Rule> {
     let relative = directory.child(IGNORE_FILE);
+    let Some(file) = relative.native(root_path) else {
+        return Vec::new();
+    };
 
-    match fs::read_to_string(root_path.join(relative.as_str())) {
-        Ok(text) => ignore_file_rules(directory, &text, relative.as_str()),
+    match fs::read_to_string(file) {
+        Ok(text) => ignore_file_rules(directory, &text, &relative.to_lossy()),
         Err(_) => Vec::new(),
     }
 }
@@ -2243,26 +2246,30 @@ pub enum OnDiskKind {
     Special,
 }
 
-/// What is at `path` in the Root at `root_path` right now, never following a link.
+/// What is at `path` in the Root at `root_path` right now, never following a link. A path no name on
+/// this platform spells — bytes that are not UTF-8 on Windows — has nothing there.
 pub fn observe(root_path: &Path, path: &RootPath) -> OnDisk {
-    match fs::symlink_metadata(root_path.join(path.as_str())) {
-        Ok(metadata) if metadata.is_dir() => OnDisk {
+    let metadata = path
+        .native(root_path)
+        .and_then(|file| fs::symlink_metadata(file).ok());
+    match metadata {
+        Some(metadata) if metadata.is_dir() => OnDisk {
             kind: Some(OnDiskKind::Directory),
             size: None,
         },
-        Ok(metadata) if metadata.is_file() => OnDisk {
+        Some(metadata) if metadata.is_file() => OnDisk {
             kind: Some(OnDiskKind::File),
             size: Some(metadata.len()),
         },
-        Ok(metadata) if metadata.is_symlink() => OnDisk {
+        Some(metadata) if metadata.is_symlink() => OnDisk {
             kind: Some(OnDiskKind::Symlink),
             size: None,
         },
-        Ok(_) => OnDisk {
+        Some(_) => OnDisk {
             kind: Some(OnDiskKind::Special),
             size: None,
         },
-        Err(_) => OnDisk {
+        None => OnDisk {
             kind: None,
             size: None,
         },

@@ -165,8 +165,8 @@ pub struct Naming {
 }
 
 impl Naming {
-    /// Whether the destination takes `a` and `b` for one name.
-    pub fn same_name(self, a: &str, b: &str) -> bool {
+    /// Whether the destination takes the names `a` and `b`, as bytes, for one name.
+    pub fn same_name(self, a: &[u8], b: &[u8]) -> bool {
         fold(a, self) == fold(b, self)
     }
 }
@@ -255,8 +255,8 @@ pub struct Found {
     /// What is at the target.
     pub existing: Existing,
     /// The name of an entry beside the target that the destination takes for the same name, in another
-    /// case or spelling — gathered only where the destination folds names.
-    pub case_variant: Option<String>,
+    /// case or spelling — gathered only where the destination folds names. Its exact bytes.
+    pub case_variant: Option<Vec<u8>>,
     /// Why the Snapshot holds no version of it, for a Withheld path beneath a directory asked for: there
     /// is nothing to write, and the answer says so rather than leaving it out (ticket 48).
     pub withheld: Option<WithheldReason>,
@@ -296,8 +296,8 @@ pub enum Issue {
     NameInvalid,
     /// An entry by the same name in another case is there.
     NameCase {
-        /// Its name.
-        existing: String,
+        /// Its name's exact bytes.
+        existing: Vec<u8>,
     },
     /// A directory is where the file would go, and whatever is inside it may be beyond what the Safety
     /// Snapshot could bring back. Refused.
@@ -663,7 +663,7 @@ fn on_its_own(
                 }
                 Some(Resolution::NameCase(NameCase::UseSnapshot)) => replaces = Some(variant),
                 _ => issues.push(Issue::NameCase {
-                    existing: variant.name().to_owned(),
+                    existing: variant.name().to_vec(),
                 }),
             }
         }
@@ -708,7 +708,7 @@ fn on_its_own(
 ///
 /// Where the destination folds nothing, only identical targets collide — two files renamed to one name.
 fn collide(paths: &mut [PathPlan], naming: Naming, resolutions: &BTreeMap<RootPath, Resolution>) {
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
     // A path already passed over writes nothing, so it takes no name from another.
     for (position, path) in paths
         .iter()
@@ -716,7 +716,7 @@ fn collide(paths: &mut [PathPlan], naming: Naming, resolutions: &BTreeMap<RootPa
         .filter(|(_, path)| path.step != Step::Skipped)
     {
         groups
-            .entry(fold(path.target.as_str(), naming))
+            .entry(fold(path.target.as_bytes(), naming))
             .or_default()
             .push(position);
     }
@@ -760,7 +760,14 @@ fn collide(paths: &mut [PathPlan], naming: Naming, resolutions: &BTreeMap<RootPa
 }
 
 /// A name as the destination compares it.
-fn fold(name: &str, naming: Naming) -> String {
+///
+/// Only text folds: a name that is not UTF-8 is compared by its exact bytes, since no folding a
+/// destination does is defined on bytes that are not characters — and reading them as U+FFFD would make
+/// two different names one.
+fn fold(name: &[u8], naming: Naming) -> Vec<u8> {
+    let Ok(name) = std::str::from_utf8(name) else {
+        return name.to_vec();
+    };
     let normalised: String = if naming.folds_normalization {
         name.nfc().collect()
     } else {
@@ -768,17 +775,20 @@ fn fold(name: &str, naming: Naming) -> String {
     };
 
     if naming.folds_case {
-        normalised.to_lowercase()
+        normalised.to_lowercase().into_bytes()
     } else {
-        normalised
+        normalised.into_bytes()
     }
 }
 
-/// Whether every component of `path` is a name Windows can hold.
+/// Whether every component of `path` is a name Windows can hold — never one that is not UTF-8.
 fn valid_on_windows(path: &RootPath) -> bool {
     const RESERVED: [&str; 4] = ["con", "prn", "aux", "nul"];
 
-    path.as_str().split('/').all(|name| {
+    let Some(path) = path.to_str() else {
+        return false;
+    };
+    path.split('/').all(|name| {
         let stem = name
             .split('.')
             .next()

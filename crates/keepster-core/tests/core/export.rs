@@ -231,7 +231,7 @@ fn a_file_landing_in_another_root_beneath_the_destination_is_refused_whatever_is
 
     fence_other_roots(
         &mut plan,
-        |target| target.as_str().starts_with("proj/"),
+        |target| target.as_bytes().starts_with(b"proj/"),
         false,
     );
 

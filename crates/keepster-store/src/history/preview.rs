@@ -11,10 +11,10 @@ use std::path::Path;
 
 use keepster_core::{
     CapturePolicy, IGNORE_FILE, Kind, PreviewClass, PreviewEntry, PreviewKind, RootPath, Rule,
-    Verdict, WithheldReason, ignore_file_rules,
+    Verdict, WithheldReason, ignore_file_rules, name_bytes,
 };
 
-use super::{Place, StoreError, link_text, special_kind};
+use super::{Place, StoreError, filesystem_path, link_text, special_kind};
 
 /// What a preview walk measures beyond what a capture would.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub fn preview(
         visit,
     };
     let mut place = Place::root(real(root));
-    if !start.as_str().is_empty() {
+    if !start.is_root() {
         let directory = walk.filesystem_path(start);
         let metadata = fs::metadata(&directory).map_err(|source| StoreError::WorkingTree {
             path: directory.clone(),
@@ -137,7 +137,7 @@ impl Walk<'_> {
             Ok(Some(text)) => {
                 let source = here.child(IGNORE_FILE);
                 extended =
-                    policy.with_ignore_rules(ignore_file_rules(here, &text, source.as_str()));
+                    policy.with_ignore_rules(ignore_file_rules(here, &text, &source.to_lossy()));
                 &extended
             }
             _ => policy,
@@ -148,8 +148,10 @@ impl Walk<'_> {
                 // The listing broke off: what it did not reach could not be looked at.
                 return Ok(self.unreadable(here.clone(), PreviewKind::Directory));
             };
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                let lossy = here.child(&entry.file_name().to_string_lossy());
+            let name = entry.file_name();
+            let Some(bytes) = name_bytes(&name) else {
+                // Only on Windows: a name holding an unpaired surrogate, which a capture withholds.
+                let lossy = here.child(name.to_string_lossy().as_bytes());
                 let going = self.emit(
                     lossy,
                     PreviewKind::File,
@@ -162,7 +164,7 @@ impl Walk<'_> {
                 }
                 continue;
             };
-            let rooted = here.child(&name);
+            let rooted = here.child(bytes);
             let going = match entry.metadata() {
                 Ok(metadata) => self.entry(
                     &rooted,
@@ -199,7 +201,7 @@ impl Walk<'_> {
             return self.link(rooted, absolute, policy, place);
         }
         if metadata.is_dir() {
-            let real = place.real.join(name_of(rooted));
+            let real = place.real.join(filesystem_path(rooted.name()));
             return self.subdirectory(rooted, metadata, policy, place, real, false);
         }
         if metadata.is_file() {
@@ -353,7 +355,7 @@ impl Walk<'_> {
                 .unwrap_or(0);
             (PreviewKind::Link, size)
         } else if metadata.is_dir() {
-            let real = place.real.join(name_of(rooted));
+            let real = place.real.join(filesystem_path(rooted.name()));
             return self.measured_directory(rooted, metadata, policy, place, real, Some(rule));
         } else if metadata.is_file() {
             (PreviewKind::File, metadata.len())
@@ -436,16 +438,11 @@ impl Walk<'_> {
 
     /// Where `here` is on disk.
     fn filesystem_path(&self, here: &RootPath) -> std::path::PathBuf {
-        here.as_str()
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .fold(self.root.to_path_buf(), |path, part| path.join(part))
+        if here.is_root() {
+            return self.root.to_path_buf();
+        }
+        self.root.join(filesystem_path(here.as_bytes()))
     }
-}
-
-/// The last component of `path`: the name a directory listing gave it.
-fn name_of(path: &RootPath) -> &str {
-    path.as_str().rsplit('/').next().unwrap_or_default()
 }
 
 /// What a verdict means for a preview, and the rule behind it.

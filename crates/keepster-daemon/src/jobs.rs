@@ -453,7 +453,7 @@ fn refuse_opted_in(
                  forget it and keep watching, or take it off the list first"
             ),
         )
-        .with_detail("path", path.as_str())),
+        .with_path(path.as_bytes())),
         None => Ok(()),
     }
 }
@@ -512,16 +512,10 @@ fn forgetting(
         reclaimed_bytes: Some(reclaimed),
         snapshots_touched: Some(forgotten.snapshots_touched),
         blobs_removed: Some(forgotten.blobs_removed),
-        removed_paths: forgotten
-            .paths
-            .iter()
-            .map(|path| path.as_str().to_owned())
-            .collect(),
-        still_on_disk: forgotten
-            .still_on_disk
-            .iter()
-            .map(|path| path.as_str().to_owned())
-            .collect(),
+        removed_paths: crate::wire::texts(&forgotten.paths),
+        removed_paths_bytes: crate::wire::companions(&forgotten.paths),
+        still_on_disk: crate::wire::texts(&forgotten.still_on_disk),
+        still_on_disk_bytes: crate::wire::companions(&forgotten.still_on_disk),
         excluded: Some(exclude),
         left_alone: forgotten.left_alone,
         ..JobResult::default()
