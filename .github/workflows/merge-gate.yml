@@ -4,9 +4,10 @@
 # release time instead, and the advisory database check runs on a schedule. The platform table, the
 # watcher conformance report and the coverage report run in `reports.yml`.
 #
-# The copy is private, so minutes are budgeted: macOS bills ten times Linux, and its leg runs on pull
-# requests only, with `nightly.yml` covering whatever reaches `main` without one. A change that touches
-# nothing but tickets and documentation runs nothing at all.
+# The copy is private, so minutes are budgeted. The gate runs on pull requests only: every change
+# reaches `main` through one, so a run on the merged commit would repeat the pull request's. Whatever
+# reaches `main` without one, `nightly.yml` covers on macOS. A change that touches nothing but tickets
+# and documentation runs nothing at all.
 #
 # CI lives on GitHub while the canonical remote is Bitbucket, so release tags must reach this copy or
 # the API compatibility gate compares against the wrong baseline.
@@ -15,12 +16,6 @@ name: merge gate
 
 on:
   pull_request:
-    paths-ignore:
-      - ".scratch/**"
-      - "docs/**"
-      - "**.md"
-  push:
-    branches: [main, dev]
     paths-ignore:
       - ".scratch/**"
       - "docs/**"
@@ -42,11 +37,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install the toolchain
         run: rustup component add rustfmt clippy
-      # Dependencies only: the workspace's own crates are rebuilt every time. Saved from `main` alone, so
-      # branches read the one cache instead of each filling the repository's 10 GB with its own.
+      # Dependencies only: the workspace's own crates are rebuilt every time. Never saved here: a pull
+      # request's cache is its own, and saving each would fill the repository's 10 GB. What is restored
+      # is whatever an earlier run on `main` left.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # Every other cargo call enables every feature, so the build without the embedded web UI (ticket 24)
@@ -75,11 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS on pull requests only: it is the costliest leg by far, and `nightly.yml` runs it once a
-        # night on `main` whenever something new has landed there.
         os: [ubuntu-latest, windows-latest, macos-latest]
-        exclude:
-          - os: ${{ github.event_name != 'pull_request' && 'macos-latest' || 'none' }}
     # Line tables only: a failing test still says where, and the debug information every test binary
     # carries — which Windows writes out as a PDB per binary — shrinks to a fraction.
     env:
@@ -89,7 +81,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       # Every failing test binary is reported, not only the first: a platform's failures are read in
       # one run rather than one per push. No `--all-targets`: the workspace has no examples, and its one
       # bench, the tripwire (ticket 69), measures rather than tests: `make bench` runs it, and the lints
@@ -107,8 +99,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        exclude:
-          - os: ${{ github.event_name != 'pull_request' && 'macos-latest' || 'none' }}
     steps:
       - uses: actions/checkout@v4
       - name: install.sh
@@ -135,7 +125,7 @@ jobs:
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       # The drift test also runs in every `tests` leg; it is run here by name so that this job's verdict
       # covers the whole contract, and a stale document is reported as such rather than as a test failure
       # among many.
@@ -166,7 +156,7 @@ jobs:
         run: rustup toolchain install ${{ steps.msrv.outputs.floor }} --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Check, not test — a floor is about compiling
         run: cargo +${{ steps.msrv.outputs.floor }} check --workspace --all-features --locked
 
