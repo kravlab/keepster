@@ -453,7 +453,9 @@ impl<'a> Filter<'a> {
                             if matches!(record, Record::Incomplete { .. }) {
                                 incomplete_removed += 1;
                             }
-                            if !matches!(record, Record::Mode { .. })
+                            // A mode or a placeholder's mtime is a fact about a path the tree
+                            // holds, which is counted with it, never a path of its own.
+                            if !matches!(record, Record::Mode { .. } | Record::Placeholder { .. })
                                 && !held.contains(record.path())
                             {
                                 removed.push((record.path().clone(), None));

@@ -906,7 +906,10 @@ impl Fixture {
     /// How long installing the watches takes. The watcher is dropped untimed.
     fn watch(&self) -> Result<f64, TripwireError> {
         let (watcher, took) = timed(|| {
-            Watcher::start(&self.tree, &self.policy, |_| {}).map_err(failed("watch the tree"))
+            let placeholder =
+                |_: &Path, metadata: &fs::Metadata| keepster_core::is_cloud_placeholder(metadata);
+            Watcher::start(&self.tree, &self.policy, placeholder, |_| {})
+                .map_err(failed("watch the tree"))
         })?;
         drop(watcher);
         Ok(took)

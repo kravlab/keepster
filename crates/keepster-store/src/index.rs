@@ -825,7 +825,8 @@ pub(crate) fn changes_between(
 /// The paths whose sidecar records differ between two trees, and how: a path that became Withheld was
 /// added to what the Snapshot names, one that stopped being Withheld went from it, and one whose
 /// incomplete record came, went or changed was modified — as was one whose mode changed, with nothing
-/// else (ticket 50).
+/// else (ticket 50). A placeholder's mtime is no change at all: it is written when the OS frees a file's
+/// space and moves only when the file does, which its blob already says (ticket 75).
 fn record_changes(
     repository: &git2::Repository,
     before: Option<&git2::Tree<'_>>,
@@ -838,12 +839,12 @@ fn record_changes(
             .map(|parsed| parsed.sidecar)
             .unwrap_or_default()
     };
-    // What each path is recorded as, a mode aside: a mode is compared as the mode it makes, which a
-    // changed header can change with no record changing at all.
+    // What each path is recorded as, a mode and a placeholder's mtime aside: a mode is compared as the
+    // mode it makes, which a changed header can change with no record changing at all.
     let facts = |sidecar: &Sidecar| -> BTreeMap<RootPath, Vec<Record>> {
         let mut facts: BTreeMap<RootPath, Vec<Record>> = BTreeMap::new();
         for record in &sidecar.records {
-            if !matches!(record, Record::Mode { .. }) {
+            if !matches!(record, Record::Mode { .. } | Record::Placeholder { .. }) {
                 facts
                     .entry(record.path().clone())
                     .or_default()

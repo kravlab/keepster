@@ -5,7 +5,7 @@ trigger machine — and the usual way to protect it is hexagonal: the core decla
 Clock`, `trait FileSystem`, and adapters obey. We do the opposite. `keepster-core` is pure functions over domain
 types with no traits and no I/O; `keepster-app` holds use-cases that call a **concrete** `SnapshotStore`; time is a
 parameter. The workspace contains no port trait for the store, the clock or the filesystem, and no fake or mock of
-any of them; the one stand-in it has is named below, with why. A reader expecting hexagonal architecture would
+any of them; the two stand-ins it has are named below, with why. A reader expecting hexagonal architecture would
 otherwise read this as an oversight, which is why it is written down.
 
 ## Considered Options
@@ -49,9 +49,15 @@ otherwise read this as an oversight, which is why it is written down.
   `keepster-testkit`, whose performance tripwire (ticket 69) times reading a Snapshot's tree into a git index,
   which no store operation exposes on its own, and names each fixture profile by a git blob id. It is a
   dev-only crate, so the product stays confined; a store rewrite rewrites those lines too.
-- **One stand-in exists, and it is not a store: which volume a path is on** (ticket 56, ADR 0011). The daemon
-  asks it through `trait Volumes`, and the harness answers with `FakeVolumes`. The reasoning above runs the other
-  way here: what must be proved is the daemon's behaviour when a disk is unplugged or remounted elsewhere, which no
-  test can do to the machine it runs on, while the platform's own answers are tested for real, in
-  `keepster-service`, on every platform CI runs. The trait is the daemon's, never the core's, and has one
-  production implementation.
+- **Two stand-ins exist, and neither is a store. The first is which volume a path is on** (ticket 56,
+  ADR 0011). The daemon asks it through `trait Volumes`, and the harness answers with `FakeVolumes`. The reasoning
+  above runs the other way here: what must be proved is the daemon's behaviour when a disk is unplugged or
+  remounted elsewhere, which no test can do to the machine it runs on, while the platform's own answers are tested
+  for real, in `keepster-service`, on every platform CI runs. The trait is the daemon's, never the core's, and has
+  one production implementation.
+- **The second is which files are cloud placeholders** (ticket 75). The store asks it through `trait CloudFiles`,
+  the watcher through the function type `IsPlaceholder`, and their tests answer with stand-ins (`FakeCloud`). The
+  reason is the same: what must be proved is that a file whose data is only in the cloud is never read, and no CI
+  machine has a sync client to free a file's space. Both production answers are one pure function of a `stat`
+  already taken, `keepster_core::is_cloud_placeholder`, whose bits are tested as values. The trait and the type
+  belong to the store and the watcher, never to the core.

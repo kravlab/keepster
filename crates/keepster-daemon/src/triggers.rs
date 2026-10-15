@@ -8,7 +8,8 @@
 //! were handled in, and shutdown is one more event rather than a second code path.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
@@ -506,7 +507,10 @@ async fn watch(
 
     // Arming walks the tree, which blocks.
     let started = tokio::task::spawn_blocking(move || {
-        Watcher::start(&path, &rules, move |event| {
+        // The platform says which files are placeholders, as it does to the capture (ticket 75).
+        let placeholder =
+            |_: &Path, metadata: &fs::Metadata| keepster_core::is_cloud_placeholder(metadata);
+        Watcher::start(&path, &rules, placeholder, move |event| {
             let event = match event {
                 WatchEvent::Changed(paths) => PolicyEvent::Changed(paths),
                 // The platform lost events, and nothing says which: the guarantee is a pass over the

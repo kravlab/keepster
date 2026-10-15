@@ -5,6 +5,7 @@
 //! — be tested without a disk and replayed without a daemon.
 
 mod archive;
+mod cloud;
 mod event;
 mod git;
 mod identity;
@@ -24,6 +25,7 @@ mod trigger;
 mod volume;
 
 pub use archive::{ArchiveEntry, ArchiveWriter, Crc32, archive_size};
+pub use cloud::{is_cloud_placeholder, placeholder_by_attributes, placeholder_by_flags};
 pub use event::EventId;
 pub use git::{GIT_DOWNLOADS, GIT_MINIMUM, GitVersion, PackageFamily, Platform, git_candidates};
 pub use identity::NotAnIdentity;

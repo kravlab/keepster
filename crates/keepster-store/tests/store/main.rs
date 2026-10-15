@@ -2,6 +2,7 @@
 //! a crate of its own. One binary links once, where one per file linked dozens of times over — most of
 //! what a test run cost on Windows.
 
+mod cloud;
 mod diff;
 mod export;
 mod forget;

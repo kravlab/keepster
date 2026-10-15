@@ -1,5 +1,5 @@
 //! The metadata sidecar: one blob at a Snapshot's tree root, the single home for every per-path fact git
-//! cannot express (ADR 0006, ticket 48).
+//! cannot express (ADR 0006, ticket 48), a cloud placeholder's mtime among them (ticket 75).
 //!
 //! It is line-oriented: a header naming the grammar's version and the Root's modal defaults, then one typed
 //! record per line, `<type> <field> <path>`. Records are sorted by path, then type, so a sidecar holding the
@@ -190,6 +190,16 @@ pub enum Record {
         /// The bits, `0o7777` at most.
         mode: u32,
     },
+    /// `p`: the modification time, in nanoseconds since the epoch, of the version the tree holds at a
+    /// path that has been a cloud placeholder (ticket 75). A git tree has no mtime, and a placeholder
+    /// is never read, so this is what a later placeholder's mtime is compared against to know it is
+    /// still that version (ADR 0009).
+    Placeholder {
+        /// Where.
+        path: RootPath,
+        /// Nanoseconds since the epoch, negative before it.
+        mtime: i128,
+    },
 }
 
 impl Record {
@@ -198,7 +208,8 @@ impl Record {
         match self {
             Self::Withheld { path, .. }
             | Self::Incomplete { path, .. }
-            | Self::Mode { path, .. } => path,
+            | Self::Mode { path, .. }
+            | Self::Placeholder { path, .. } => path,
         }
     }
 
@@ -207,6 +218,7 @@ impl Record {
             Self::Withheld { .. } => 'w',
             Self::Incomplete { .. } => 'i',
             Self::Mode { .. } => 'm',
+            Self::Placeholder { .. } => 'p',
         }
     }
 
@@ -215,6 +227,7 @@ impl Record {
             Self::Withheld { reason, .. } => reason.field(),
             Self::Incomplete { why, .. } => why.as_str().to_owned(),
             Self::Mode { mode, .. } => format!("{mode:04o}"),
+            Self::Placeholder { mtime, .. } => mtime.to_string(),
         }
     }
 }
@@ -397,6 +410,18 @@ impl Sidecar {
         }
     }
 
+    /// The mtime each path that has been a cloud placeholder had when the tree's version of it was
+    /// held, indexed by path as [`Sidecar::modes`] is.
+    pub fn placeholders(&self) -> std::collections::HashMap<RootPath, i128> {
+        self.records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Placeholder { path, mtime } => Some((path.clone(), *mtime)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Read a sidecar blob.
     pub fn parse(bytes: &[u8]) -> Result<Parsed, SidecarError> {
         let text = String::from_utf8_lossy(bytes);
@@ -484,8 +509,23 @@ fn parse_record(line: &str) -> Option<Record> {
                 .ok()
                 .filter(|mode| field.len() == 4 && *mode <= 0o7777)?,
         }),
+        "p" => Some(Record::Placeholder {
+            path,
+            mtime: parse_nanos(field)?,
+        }),
         _ => None,
     }
+}
+
+/// A count of nanoseconds as a `p` record writes it: decimal digits, a `-` before them for a moment
+/// before the epoch, and nothing else — so `+1`, which `i128`'s parser would accept, is not one.
+fn parse_nanos(field: &str) -> Option<i128> {
+    let digits = field.strip_prefix('-').unwrap_or(field);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    field.parse().ok()
 }
 
 /// A path as one line holds it: as it is, or quoted as git quotes a name it cannot print plainly.

@@ -191,6 +191,14 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, StartError> {
         pid = std::process::id(),
         "the daemon is starting"
     );
+    // Before any capture can run. The walk never opens a placeholder whatever this says; what the
+    // platform adds is a second line, so a daemon without it still starts (ticket 75).
+    if let Err(error) = keepster_service::guard_cloud_placeholders() {
+        tracing::warn!(
+            %error,
+            "the platform could not be told to keep cloud placeholders unhydrated"
+        );
+    }
     let events = Arc::new(events::EventBus::new(events::REPLAY_BOUND));
     let log_levels = Arc::new(logging::LogLevels::new(
         settings.log_level.clone(),

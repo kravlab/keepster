@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use keepster_core::CapturePolicy;
-use keepster_watch::{WatchEvent, Watcher};
+use keepster_watch::{IsPlaceholder, WatchEvent, Watcher};
 
 /// Long enough for a loaded CI runner; the tests finish as soon as the event arrives.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -41,9 +41,20 @@ fn excluding(patterns: &[&str]) -> CapturePolicy {
     )
 }
 
+/// Watch `root` under `policy`, where no file is a cloud placeholder, collecting what is reported.
 fn watching(root: &Path, policy: &CapturePolicy) -> (Watcher, mpsc::Receiver<WatchEvent>) {
+    watching_with(root, policy, |_, _| false)
+}
+
+/// Watch `root` under `policy`, where `placeholder` says which files are cloud placeholders — a stand-in,
+/// since no test machine has a sync client — collecting what is reported.
+fn watching_with(
+    root: &Path,
+    policy: &CapturePolicy,
+    placeholder: IsPlaceholder,
+) -> (Watcher, mpsc::Receiver<WatchEvent>) {
     let (sender, receiver) = mpsc::channel();
-    let watcher = Watcher::start(root, policy, move |event| {
+    let watcher = Watcher::start(root, policy, placeholder, move |event| {
         let _ = sender.send(event);
     })
     .expect("a watcher");
@@ -144,6 +155,24 @@ fn a_directory_ignored_by_a_gitignore_is_not_watched_when_ignore_files_are_honou
         .map(|path| path.to_lossy().into_owned())
         .collect();
     assert_eq!(watched, ["", "src"]);
+}
+
+/// An ignore file that is a cloud placeholder is never read, since reading it would download it
+/// (ticket 75): its rules are not applied, so more is reported rather than less, and the capture decides.
+#[test]
+fn the_rules_of_an_ignore_file_that_is_a_cloud_placeholder_are_not_applied() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path().canonicalize().expect("the root");
+    std::fs::write(root.join(".gitignore"), b"*.log\n").expect("an ignore file");
+    let (_watcher, events) = watching_with(
+        &root,
+        &CapturePolicy::default().honouring_ignore_files(true),
+        |path, _| path.ends_with(".gitignore"),
+    );
+
+    std::fs::write(root.join("debug.log"), b"left out only by rules never read").expect("a file");
+
+    eventually_names(&events, "debug.log");
 }
 
 #[test]
