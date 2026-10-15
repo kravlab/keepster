@@ -175,3 +175,13 @@ Refines tickets 14, 27, 28, 30 and 31.
   This is not the shape the answer anticipated for a private copy, which moved the expensive legs to merges into
   `main`: here most changes reach `main` by a direct push rather than a pull request, so that shape would have
   saved nothing.
+
+- **Amended again: pull requests only** (user decision). Since release 0.1.0 every change reaches `main` through a
+  pull request, which replaces the shape above:
+  - **The gate runs on pull requests only**, all three platforms in every run, macOS included (#6): a run on the
+    merged commit would repeat the pull request's.
+  - **`nightly.yml` is removed** (#8): nothing reaches `main` without a pull request, so each night repeated a macOS
+    run the pull request had already made.
+  - **No run saves a dependency cache.** A pull request's cache is never saved, and no run reaches `main`, so a run
+    restores whatever an earlier run on `main` left until it is evicted, and builds from cold after that.
+  - A change touching only `.scratch/**`, `docs/**` or `*.md` still runs no gate.
