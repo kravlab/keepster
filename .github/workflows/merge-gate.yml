@@ -5,9 +5,8 @@
 # watcher conformance report and the coverage report run in `reports.yml`.
 #
 # The copy is private, so minutes are budgeted. The gate runs on pull requests only: every change
-# reaches `main` through one, so a run on the merged commit would repeat the pull request's. Whatever
-# reaches `main` without one, `nightly.yml` covers on macOS. A change that touches nothing but tickets
-# and documentation runs nothing at all.
+# reaches `main` through one, so a run on the merged commit would repeat the pull request's. A change
+# that touches nothing but tickets and documentation runs nothing at all.
 #
 # CI lives on GitHub while the canonical remote is Bitbucket, so release tags must reach this copy or
 # the API compatibility gate compares against the wrong baseline.
@@ -39,7 +38,8 @@ jobs:
         run: rustup component add rustfmt clippy
       # Dependencies only: the workspace's own crates are rebuilt every time. Never saved here: a pull
       # request's cache is its own, and saving each would fill the repository's 10 GB. What is restored
-      # is whatever an earlier run on `main` left.
+      # is whatever an earlier run on `main` left; no run saves one any more, so once those caches are
+      # evicted every run builds its dependencies from cold.
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
