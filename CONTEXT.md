@@ -15,6 +15,12 @@ A Root that is no longer watched but whose history is kept: nothing captures it 
 last state, which is pinned, and its identity alone reaches it. Erasing its history erases it entirely.
 _Avoid_: former Root, orphan, orphaned store, archived Root
 
+**Move**:
+Recording, at the person's word, that a Root's directory now lives at another path: the identity, and with it
+the history, stays the same, and no file is touched. Never inferred, because to the daemon a moved directory is
+indistinguishable from a deleted one; following a volume mounted elsewhere is not a Move (Volume Identity).
+_Avoid_: relocate, rename, re-register, change path
+
 **Registry**:
 The daemon's record of every registered Root and its current path.
 _Avoid_: database, index, root list

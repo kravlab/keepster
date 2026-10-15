@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TimelinePages } from './pages.svelte'
+import { FakeSource, following, stopFollowing, stream } from './testing'
 
 /** A Snapshot as the timeline lists it; only the id matters here. */
 const snap = (id: string) => ({ id, taken_at: '2026-10-12T10:00:00Z', trigger: 'manual', pinned: false })
@@ -24,40 +25,9 @@ const serve = (pages: (cursor: string) => unknown) => {
 
 const ids = (pages: TimelinePages) => pages.snapshots.map((s) => s.id)
 
-/** The browser's EventSource as the live stream opens it, driven by hand; every one opened is kept. */
-class FakeSource {
-  static opened: FakeSource[] = []
-  readyState = 1
-  closed = false
-  private readonly listeners = new Map<string, ((e: { data: string }) => void)[]>()
-
-  constructor() {
-    FakeSource.opened.push(this)
-  }
-
-  addEventListener(type: string, listener: (e: { data: string }) => void) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
-  }
-
-  close() {
-    this.closed = true
-  }
-
-  send(name: string, data: object) {
-    for (const listener of this.listeners.get(name) ?? []) listener({ data: JSON.stringify(data) })
-  }
-}
-
-/** The live stream the last `follow` opened. */
-const stream = () => {
-  const source = FakeSource.opened.at(-1)
-  if (!source) throw new Error('no stream was opened')
-  return source
-}
-
 afterEach(() => {
+  stopFollowing()
   vi.unstubAllGlobals()
-  FakeSource.opened = []
 })
 
 describe('a view mode’s timeline pages', () => {
@@ -212,7 +182,7 @@ describe('a view mode’s timeline pages', () => {
       serve(() => fresh)
       const pages = new TimelinePages('r', String)
       await pages.reload()
-      pages.follow()
+      following(pages.follow())
 
       fresh = page(['s2', 's1'])
       stream().send('snapshot.created', { root: 'r' })
@@ -225,7 +195,7 @@ describe('a view mode’s timeline pages', () => {
       const asked = serve(() => page(['s1']))
       const pages = new TimelinePages('r', String)
       await pages.reload()
-      pages.follow()
+      following(pages.follow())
 
       stream().send('snapshot.created', { root: 'other' })
       await Promise.resolve()
@@ -240,7 +210,7 @@ describe('a view mode’s timeline pages', () => {
       const pages = new TimelinePages('r', String)
       await pages.reload()
       const told: string[] = []
-      pages.follow({ until: () => 's2', onResync: () => told.push('resync') })
+      following(pages.follow({ until: () => 's2', onResync: () => told.push('resync') }))
 
       pagesServed = { '': page(['s4'], 'p2'), p2: page(['s2']) }
       stream().send('resync', {})
@@ -253,7 +223,7 @@ describe('a view mode’s timeline pages', () => {
       vi.stubGlobal('EventSource', FakeSource)
       const pages = new TimelinePages('r', String)
 
-      const stop = pages.follow()
+      const stop = following(pages.follow())
       stop()
 
       expect(stream().closed).toBe(true)

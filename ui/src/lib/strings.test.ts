@@ -62,6 +62,18 @@ describe('the Restore dialog’s words', () => {
   })
 })
 
+describe('the words for a Root’s state', () => {
+  it('names a state the daemon reports, and shows an unknown one as the daemon names it', () => {
+    expect(strings.roots.state('unavailable')).toBe('Unavailable')
+    expect(strings.roots.state('a_new_state')).toBe('a_new_state')
+  })
+
+  it('says why a Root is not watching, and shows an unknown reason as the daemon names it', () => {
+    expect(strings.roots.reason('root_missing')).toBe('Its directory is not found at this path. Was it moved?')
+    expect(strings.roots.reason('a_new_reason')).toBe('a_new_reason')
+  })
+})
+
 describe('the words of a search', () => {
   it('says how far a content search has got', () => {
     expect(strings.search.progress(2, 5)).toBe('Searched 2 of 5 versions')

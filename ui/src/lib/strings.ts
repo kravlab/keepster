@@ -24,6 +24,35 @@ const UNRECOVERABLE: Partial<Record<string, string>> = {
   unsupported: 'not a kind of file Keepster captures',
 }
 
+/** A Root's state, by the daemon's name for it (`keepster_api::RootState`, an open set). */
+const ROOT_STATES: Partial<Record<string, string>> = {
+  watching: 'Watching',
+  degraded: 'Degraded',
+  unavailable: 'Unavailable',
+}
+/**
+ * Why a Root is not `watching`, by its `state_code`, in the words `keepster status` uses where it has
+ * them. The codes are an open set: one this page does not know has no entry, and is shown as it is.
+ */
+const ROOT_REASONS: Partial<Record<string, string>> = {
+  root_missing: 'Its directory is not found at this path. Was it moved?',
+  volume_mismatch: 'Its disk is not mounted there, so nothing is captured; its history reads as ever.',
+  store_unreachable: 'Its history store cannot be written, so nothing is captured, and nowhere else instead.',
+  store_too_new: 'Its history was written by a newer Keepster, which this one cannot open.',
+  record_unreadable: 'Its registration cannot be read.',
+  config_invalid:
+    'Its configuration is invalid: the last valid version stays in force, and without one nothing is captured.',
+  capture_held:
+    'Every file is gone and nothing proves it is the disk it was, so capturing is held until a Snapshot is asked for.',
+  capture_unavailable: 'Every Trigger is off: only a Snapshot someone asks for is ever taken.',
+  coverage_not_guaranteed: 'What changed while nothing watched is not captured until a Reconciliation has run.',
+  watch_ceiling: 'Watching it would exceed the daemon’s limit on watches, so it is reconciled periodically instead.',
+  watch_unavailable: 'The system refused to watch it, so it is reconciled periodically instead.',
+  watch_blind: 'Changes made on the server are never announced here; it is reconciled periodically.',
+  mtime_coarse:
+    'Its filesystem keeps coarse modification times, so a change can go unseen until its content is hashed.',
+}
+
 export const strings = {
   appName: 'Keepster',
   /** A moment written out in full: date and time, where the user is. */
@@ -45,6 +74,22 @@ export const strings = {
 
   rootLabel: 'Root',
   noRoots: 'No Roots are registered.',
+  /** In the Root picker while no Root is shown. */
+  noRootChosen: 'None',
+  chooseRoot: 'Choose a Root to see its history.',
+
+  /** The Root management page (ticket 92). */
+  roots: {
+    /** The header's way to the page, and the empty state's. */
+    manage: 'Manage Roots',
+    title: 'Watched Roots',
+    /** Opens a Root's history from its row. */
+    open: 'Open history',
+    /** A Root's state, by the daemon's name for it; an open set, so one not here is shown as it is. */
+    state: (state: string) => ROOT_STATES[state] ?? state,
+    /** Why a Root is not `watching`, by its `state_code`. */
+    reason: (code: string) => ROOT_REASONS[code] ?? code,
+  },
 
   themeLabel: 'Theme',
   /** The palettes, by the daemon's name for each. */
