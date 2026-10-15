@@ -33,6 +33,11 @@ export interface Root {
   path: string
   /** An open set (`keepster_api::RootState`); shown as it is. */
   state: string
+  /**
+   * The reason behind a state that is not `watching`, such as `root_missing`; absent while it is. An
+   * open set: a code the page has no words for is shown as it is.
+   */
+  state_code?: string | null
 }
 
 /** One Snapshot on the timeline (`keepster_api::Snapshot`). */

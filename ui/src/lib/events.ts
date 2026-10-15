@@ -1,12 +1,18 @@
 /**
  * The daemon's live event stream, `GET /v1/events` (ticket 45), kept open for the life of the page.
  *
+ * One connection serves the whole page (ticket 92): every subscriber — a view mode's timeline, the Root
+ * list — shares it, each receiving the events it named. A page holding one long-lived connection per
+ * subscriber would spend the browser's few connections to the daemon's origin on streams, and with a few
+ * tabs open the plain requests would queue behind them. The connection opens with the first subscriber
+ * and closes with the last.
+ *
  * Two ways a stream ends, handled differently:
  * - The connection drops. The browser reconnects by itself and sends `Last-Event-ID`, so the daemon
  *   replays what was missed, or answers `resync` when it no longer holds that event. Nothing to do here.
  * - The browser gives up (`readyState` CLOSED): the daemon answered something other than an event stream,
  *   such as a 401 or a 5xx. A new `EventSource` is opened after a wait that doubles from 1 s up to 30 s.
- *   A new source cannot send `Last-Event-ID`, so whatever happened in between is lost: once it opens, the
+ *   A new source cannot send `Last-Event-ID`, so whatever happened in between is lost: once it opens, every
  *   subscriber is told `resync`, exactly as if the daemon had said it.
  */
 
@@ -48,50 +54,108 @@ export interface EventsOptions {
 
 /** A running subscription. */
 export interface LiveEvents {
-  /** Closes the stream and cancels any pending reopen; no event is delivered after it. */
+  /**
+   * Ends this subscription: no event is delivered to it after this. The last subscription to end closes
+   * the connection and cancels any pending reopen.
+   */
   close(): void
 }
 
-/** Opens the stream and keeps it open until `close`. */
-export function connectEvents({ names, onEvent, create = (url) => new EventSource(url) }: EventsOptions): LiveEvents {
-  let source: EventSourceLike | null = null
-  let reopen: ReturnType<typeof setTimeout> | null = null
-  let wait = FIRST_WAIT_MS
-  let closed = false
+/** One subscriber: the names it asked for, and where its events go. */
+interface Subscriber {
+  names: ReadonlySet<string>
+  onEvent: (event: LiveEvent) => void
+}
 
-  /** Opens a new source; `reopened` when it replaces one the browser gave up on, which owes a `resync`. */
-  const open = (reopened: boolean) => {
-    const current = create(EVENTS_URL)
-    source = current
-    for (const name of new Set([...names, RESYNC])) {
-      current.addEventListener(name, (event) => {
-        if (source === current) onEvent({ name, data: JSON.parse(event.data) as unknown })
-      })
+/** The page's one connection and everyone listening to it. */
+class SharedStream {
+  readonly #subscribers = new Set<Subscriber>()
+  #source: EventSourceLike | null = null
+  /* The names the current source has a listener for: `EventSource` delivers only names it listens to. */
+  #listening = new Set<string>()
+  #reopen: ReturnType<typeof setTimeout> | null = null
+  #wait = FIRST_WAIT_MS
+
+  /** @param create opens a source: the first subscriber's choice, for the life of this stream */
+  constructor(private readonly create: (url: string) => EventSourceLike) {
+    this.#open(false)
+  }
+
+  /** Starts delivering `subscriber`'s names to it. */
+  add(subscriber: Subscriber) {
+    this.#subscribers.add(subscriber)
+    for (const name of subscriber.names) this.#listen(name)
+  }
+
+  /** Stops delivering to `subscriber`; with no one left, closes the connection and cancels any reopen. */
+  remove(subscriber: Subscriber) {
+    this.#subscribers.delete(subscriber)
+    if (this.#subscribers.size > 0) return
+    if (this.#reopen !== null) clearTimeout(this.#reopen)
+    this.#source?.close()
+    this.#source = null
+    if (shared === this) shared = null
+  }
+
+  /** Delivers one event to every subscriber that asked for it; `resync` goes to all. */
+  #deliver(event: LiveEvent) {
+    for (const subscriber of [...this.#subscribers]) {
+      if (event.name === RESYNC || subscriber.names.has(event.name)) subscriber.onEvent(event)
     }
-    current.addEventListener('open', () => {
-      wait = FIRST_WAIT_MS
-      if (reopened) {
-        reopened = false
-        onEvent({ name: RESYNC, data: { event: RESYNC } })
-      }
-    })
-    current.addEventListener('error', () => {
-      if (current.readyState !== CLOSED || source !== current) return
-      reopen = setTimeout(() => {
-        reopen = null
-        if (!closed) open(true)
-      }, wait)
-      wait = Math.min(wait * 2, LONGEST_WAIT_MS)
+  }
+
+  /** Adds a listener for `name` to the current source, once. */
+  #listen(name: string) {
+    const current = this.#source
+    if (current === null || this.#listening.has(name)) return
+    this.#listening.add(name)
+    current.addEventListener(name, (event) => {
+      if (this.#source === current) this.#deliver({ name, data: JSON.parse(event.data) as unknown })
     })
   }
 
-  open(false)
+  /** Opens a new source; `reopened` when it replaces one the browser gave up on, which owes a `resync`. */
+  #open(reopened: boolean) {
+    const current = this.create(EVENTS_URL)
+    this.#source = current
+    this.#listening = new Set()
+    this.#listen(RESYNC)
+    for (const subscriber of this.#subscribers) for (const name of subscriber.names) this.#listen(name)
+    current.addEventListener('open', () => {
+      this.#wait = FIRST_WAIT_MS
+      if (reopened) {
+        reopened = false
+        this.#deliver({ name: RESYNC, data: { event: RESYNC } })
+      }
+    })
+    current.addEventListener('error', () => {
+      if (current.readyState !== CLOSED || this.#source !== current) return
+      this.#reopen = setTimeout(() => {
+        this.#reopen = null
+        if (this.#source === current) this.#open(true)
+      }, this.#wait)
+      this.#wait = Math.min(this.#wait * 2, LONGEST_WAIT_MS)
+    })
+  }
+}
+
+/* The page's stream while anyone subscribes to it. */
+let shared: SharedStream | null = null
+
+/**
+ * Subscribes to the page's stream, opening it if no one else has, until `close`. `create` is used only
+ * when this call opens the stream.
+ */
+export function connectEvents({ names, onEvent, create = (url) => new EventSource(url) }: EventsOptions): LiveEvents {
+  const stream = (shared ??= new SharedStream(create))
+  const subscriber: Subscriber = { names: new Set(names), onEvent }
+  stream.add(subscriber)
+  let closed = false
   return {
     close() {
+      if (closed) return
       closed = true
-      if (reopen !== null) clearTimeout(reopen)
-      source?.close()
-      source = null
+      stream.remove(subscriber)
     },
   }
 }
