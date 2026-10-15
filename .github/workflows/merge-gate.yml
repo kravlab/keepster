@@ -5,9 +5,8 @@
 # watcher conformance report and the coverage report run in `reports.yml`.
 #
 # The copy is private, so minutes are budgeted. The gate runs on pull requests only: every change
-# reaches `main` through one, so a run on the merged commit would repeat the pull request's. Whatever
-# reaches `main` without one, `nightly.yml` covers on macOS. A change that touches nothing but tickets
-# and documentation runs nothing at all.
+# reaches `main` through one, so a run on the merged commit would repeat the pull request's. A change
+# that touches nothing but tickets and documentation runs nothing at all.
 #
 # CI lives on GitHub while the canonical remote is Bitbucket, so release tags must reach this copy or
 # the API compatibility gate compares against the wrong baseline.
