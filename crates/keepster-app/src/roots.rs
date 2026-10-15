@@ -115,7 +115,7 @@ pub fn register(
 /// Every registered Root, in registration order, including the ones whose record cannot be read.
 ///
 /// Reporting is the one caller that must see a broken Root rather than skip it: ticket 08 makes such a
-/// Root a value, and `CONTEXT.md` calls that value `Unavailable`.
+/// Root a value, and `GLOSSARY.md` calls that value `Unavailable`.
 pub fn list(registry: &Registry) -> Result<Vec<RegistryEntry>, RegistryError> {
     registry.list()
 }

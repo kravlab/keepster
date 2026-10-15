@@ -8,12 +8,7 @@ These domain skills supplement workflow skills; they do not replace them.
 
 ### Issue tracker
 
-Issues are tracked as Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
-
-Run `make issues` to list the open tickets (`make issues-all` includes the closed ones). Every ticket carries a
-`Status:` line that MUST be kept true — in particular, set `Status: done` in the same commit as the code that closes
-the ticket. See the status lifecycle in `docs/agents/issue-tracker.md`.
-
+Issues are tracked in this repo's GitHub Issues, through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -21,7 +16,7 @@ The five canonical triage roles are used verbatim as label strings. See `docs/ag
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ### Workflow handoffs
 
