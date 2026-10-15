@@ -2,7 +2,9 @@
 
 **Blocked by:** 74 (Paths as bytes — a name that is not UTF-8 survives the round trip)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #35
 
 **What to build:** a folder whose own path is not valid UTF-8 can be watched, picked, exported to and previewed like
 any other, instead of being shown lossily or left out.

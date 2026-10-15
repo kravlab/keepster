@@ -1,6 +1,8 @@
 # 90: The web UI does everything the CLI does
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #27
 
 **What to build:** every operation a person can perform with `keepster` against a running daemon can also be
 performed in the web UI, through the same `/v1` endpoints the CLI uses. The owner's requirement: "the web UI must be

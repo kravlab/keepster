@@ -2,7 +2,9 @@
 
 **Blocked by:** 92 (A live Root list and the Root management page), 93 (Registering a directory from the web UI)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #32
 
 **What to build:** each Root's row on the management page records a Move — where the Root's directory is now — as
 `keepster move` does. Part of spec 91 (user stories 5, 33–37).

@@ -2,7 +2,9 @@
 
 **Blocked by:** 69 (The performance harness — fixtures, the tripwire and the first baseline)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #25
 
 **What to build:** the daemon and every test that runs `git` find it by one function, so the places `git` is
 looked for cannot drift apart between the product and the tests that stand in for it.

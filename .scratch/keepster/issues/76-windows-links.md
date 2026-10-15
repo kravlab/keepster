@@ -2,7 +2,9 @@
 
 **Blocked by:** 49 (Symlinks — stored as links, optionally followed)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #15
 
 **What to build:** Windows' several kinds of link surrogate each behave predictably: a junction is captured and
 restored as a junction, a volume mount point or a WSL symlink is Withheld rather than misread, and a symlink the

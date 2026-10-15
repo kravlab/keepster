@@ -2,7 +2,9 @@
 
 **Blocked by:** 69 (The performance harness — fixtures, the tripwire and the first baseline)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #24
 
 **What to build:** the invariant ticket 12 measured and left "to implementation" enters the code, and the tripwire
 line measured for it starts defending it.

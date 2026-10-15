@@ -2,7 +2,9 @@
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #14
 
 **What to build:** a configuration edit saved by truncating the file and writing it again — which some tools
 do instead of an atomic rename — is never mistaken, in the instant between the two, for an empty and therefore

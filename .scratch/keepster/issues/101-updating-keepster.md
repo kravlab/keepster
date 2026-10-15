@@ -1,6 +1,8 @@
 # 101: Updating Keepster
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #37
 
 **What to build:** a person who has Keepster installed can update it to a newer release, and after the update every
 part of Keepster that is running is the new version.

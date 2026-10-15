@@ -1,11 +1,4 @@
-.PHONY: issues issues-all openapi check-api ui check-ui check-ui-size bench bench-calibrate bench-ceiling platform-table conformance coverage
-
-# Issue tracker (.scratch/), see docs/agents/issue-tracker.md
-issues:
-	@./scripts/issues.sh
-
-issues-all:
-	@./scripts/issues.sh --all
+.PHONY: openapi check-api ui check-ui check-ui-size bench bench-calibrate bench-ceiling platform-table conformance coverage
 
 # The `/v1` contract (ticket 40). The committed openapi.json is generated, never edited: this rewrites it
 # from the code, and the drift test in `cargo test` fails on any byte that differs.

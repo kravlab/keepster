@@ -2,7 +2,9 @@
 
 **Blocked by:** 92 (A live Root list and the Root management page)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #29
 
 **What to build:** the management page registers a directory as a Watched Root, chosen by browsing the daemon's
 machine or by typing a path. Part of spec 91 (user stories 1, 6–13, 22–25).

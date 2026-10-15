@@ -2,7 +2,9 @@
 
 **Blocked by:** 52 (The external `git` prerequisite and the Maintenance Pass)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #19
 
 **What to build:** a user with an optional disk cap sees it respected — by dropping the oldest history first, never
 by thinning within a Tier, and never by refusing to capture while maintenance can still free space.

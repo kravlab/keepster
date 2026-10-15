@@ -2,7 +2,9 @@
 
 **Blocked by:** 75 (Cloud placeholders are never hydrated)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #40
 
 **What to build:** a Restore or an Export into a folder synced by OneDrive, iCloud Drive or a similar client never
 downloads a file that is only in the cloud merely by looking at what is already where it writes.

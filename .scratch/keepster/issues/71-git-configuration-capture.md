@@ -1,7 +1,8 @@
 # 71 — Capturing a repository's own git configuration
 
 Type: grilling
-Status: needs-triage
+Status: migrated
+Migrated to: #12
 
 ## Question
 

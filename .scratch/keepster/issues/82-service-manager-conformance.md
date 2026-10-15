@@ -2,7 +2,9 @@
 
 **Blocked by:** 61 (Autostart on three platforms, and one supervised daemon)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #20
 
 **What to build:** evidence, per platform, that the units ticket 61 writes do what they declare — so that "the
 daemon comes back after a reboot and after an unexpected death" is observed rather than assumed.

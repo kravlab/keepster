@@ -2,7 +2,9 @@
 
 **Blocked by:** 75 (Cloud placeholders are never hydrated)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #39
 
 **What to build:** a Capture Preview of a folder synced by OneDrive, iCloud Drive or a similar client reports each
 cloud placeholder as the next capture would treat it: kept at the version already held, or Withheld
