@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keepster_core::{
@@ -26,11 +27,14 @@ use keepster_core::{
 use crate::format;
 use crate::index::{self, Index, Observation};
 
+mod cloud;
 mod diff;
 mod error_name;
 mod forget;
 mod maintenance;
 
+pub use cloud::CloudFiles;
+use cloud::PlatformCloudFiles;
 pub use forget::Forgotten;
 pub use maintenance::Maintained;
 mod export;
@@ -531,6 +535,8 @@ pub struct HistoryStore {
     /// The derived index, opened on first use. Lazily, because a capture must not depend on it: the
     /// commit and the ref come first, and an index that cannot even be opened only lags.
     index: RefCell<Option<Index>>,
+    /// What says which files are cloud placeholders, never to be opened (ticket 75).
+    cloud: Arc<dyn CloudFiles>,
 }
 
 impl HistoryStore {
@@ -563,6 +569,7 @@ impl HistoryStore {
             index_path: index.as_ref().to_path_buf(),
             verify_index: false,
             index: RefCell::new(None),
+            cloud: Arc::new(PlatformCloudFiles),
         })
     }
 
@@ -618,7 +625,14 @@ impl HistoryStore {
             index_path: index.to_path_buf(),
             verify_index: verify,
             index: RefCell::new(None),
+            cloud: Arc::new(PlatformCloudFiles),
         }))
+    }
+
+    /// This store, asking `cloud` rather than the platform which files are cloud placeholders.
+    pub fn with_cloud_files(mut self, cloud: Arc<dyn CloudFiles>) -> Self {
+        self.cloud = cloud;
+        self
     }
 
     /// Where this store lives.
@@ -724,15 +738,11 @@ impl HistoryStore {
             .index()
             .and_then(|index| index.observations())
             .unwrap_or_default();
-        let vouching = match verify {
-            Verify::Stat => &observations,
-            Verify::Hash => &HashMap::new(),
-        };
         let (tree_id, walked) = self.write_working_tree(
             baseline_tree.as_ref(),
             root_path,
             policy,
-            vouching,
+            (&observations, verify),
             now,
             trigger == Trigger::Reconcile,
         )?;
@@ -746,12 +756,15 @@ impl HistoryStore {
         let changes = index::changes_between(&self.repository, baseline_id, tree_id);
         // A tree written differently that changed no path — a header counted again by a
         // Reconciliation — is nothing to record: the next Snapshot that changes something carries it.
-        // Modes observed for the first time are something: from then on a `chmod` can be told.
+        // Modes observed for the first time are something: from then on a `chmod` can be told. So is a
+        // placeholder seen for the first time: its `p` record must reach history, or a lost index
+        // would leave the file Withheld until it is downloaded again (ticket 75).
         let nothing_changed = match &baseline_tree {
             Some(baseline) => {
+                let tree = self.find(tree_id)?;
                 changes.as_ref().is_ok_and(|changes| changes.is_empty())
-                    && self.observes_modes(baseline)?
-                        == self.observes_modes(&self.find(tree_id)?)?
+                    && self.observes_modes(baseline)? == self.observes_modes(&tree)?
+                    && !self.records_new_placeholders(baseline, &tree)?
             }
             None => false,
         };
@@ -879,12 +892,15 @@ impl HistoryStore {
     ///
     /// Writing the tree writes the blobs it needs; when no Snapshot follows, they stay unreferenced until
     /// maintenance prunes them, and the next capture that needs them finds them already written.
+    ///
+    /// `observed` is the last pass's evidence (ADR 0014), and how this pass verifies: only under
+    /// `Verify::Stat` may that evidence vouch for a file's content so that the file is not read.
     fn write_working_tree(
         &self,
         baseline_tree: Option<&git2::Tree<'_>>,
         root_path: &Path,
         policy: &CapturePolicy,
-        vouching: &HashMap<Vec<u8>, Observation>,
+        observed: (&HashMap<Vec<u8>, Observation>, Verify),
         now: SystemTime,
         reconciling: bool,
     ) -> Result<(git2::Oid, Walked), StoreError> {
@@ -897,8 +913,25 @@ impl HistoryStore {
             index.read_tree(tree).map_err(self.failed("read"))?;
         }
 
+        let baseline_sidecar = match baseline_tree {
+            Some(tree) => Some(self.sidecar(tree)?.sidecar),
+            None => None,
+        };
+        let placeholders = baseline_sidecar
+            .as_ref()
+            .map(Sidecar::placeholders)
+            .unwrap_or_default();
+        let (observations, verify) = observed;
+        let evidence = Evidence {
+            observations,
+            vouches: verify == Verify::Stat,
+            placeholders: &placeholders,
+        };
         let mut walked =
-            self.add_working_tree(&mut index, baseline_tree, root_path, policy, vouching, now)?;
+            self.add_working_tree(&mut index, baseline_tree, root_path, policy, evidence, now)?;
+        if let Some(sidecar) = &baseline_sidecar {
+            walked.carry_records(sidecar);
+        }
         remove_vanished(&mut index, &walked)?;
         walked.unrecognized =
             self.write_sidecar(&mut index, baseline_tree, &walked, reconciling)?;
@@ -921,9 +954,10 @@ impl HistoryStore {
     /// were observed, so every Snapshot taken there has a sidecar; elsewhere none are, and a Snapshot
     /// with no Withheld or incomplete path has none.
     ///
-    /// The records come from this walk alone, so whatever the baseline's sidecar held that this build
-    /// does not know — a later build's facts — is not written again, and is handed back to be reported
-    /// rather than dropped in silence.
+    /// The records come from this walk — beneath a path it carried forward, from the baseline's records
+    /// it kept (`Walked::carry_records`) — so whatever the baseline's sidecar held that this build does
+    /// not know — a later build's facts — is not written again, and is handed back to be reported rather
+    /// than dropped in silence.
     fn write_sidecar(
         &self,
         index: &mut git2::Index,
@@ -1024,11 +1058,12 @@ impl HistoryStore {
     ) -> Result<Listing, StoreError> {
         let root = self.snapshot_tree(snapshot)?;
         let Parsed { sidecar, unknown } = self.sidecar(&root)?;
-        // A mode is a fact about a path the tree holds, read with it below, and never a path of its own.
+        // A mode or a placeholder's mtime is a fact about a path the tree holds, a mode read with it
+        // below, and never a path of its own.
         let records: Vec<&Record> = sidecar
             .records
             .iter()
-            .filter(|record| !matches!(record, Record::Mode { .. }))
+            .filter(|record| !matches!(record, Record::Mode { .. } | Record::Placeholder { .. }))
             .filter(|record| is_beneath(record.path(), directory))
             .collect();
 
@@ -1140,6 +1175,22 @@ impl HistoryStore {
     /// Whether the Snapshot whose tree is `root` observed its paths' modes.
     fn observes_modes(&self, root: &git2::Tree<'_>) -> Result<bool, StoreError> {
         Ok(self.sidecar(root)?.sidecar.header.observed)
+    }
+
+    /// Whether `tree`'s sidecar holds a `p` record for a path `baseline`'s does not: a file freed for
+    /// the first time since it was held. A `p` record that only stayed, or moved with its file, is not.
+    fn records_new_placeholders(
+        &self,
+        baseline: &git2::Tree<'_>,
+        tree: &git2::Tree<'_>,
+    ) -> Result<bool, StoreError> {
+        let before = self.sidecar(baseline)?.sidecar.placeholders();
+        Ok(self
+            .sidecar(tree)?
+            .sidecar
+            .placeholders()
+            .keys()
+            .any(|path| !before.contains_key(path)))
     }
 
     /// What a Snapshot's sidecar says, or nothing when it has none.
@@ -1341,13 +1392,20 @@ impl HistoryStore {
         baseline: Option<&git2::Tree<'_>>,
         root_path: &Path,
         policy: &CapturePolicy,
-        observations: &HashMap<Vec<u8>, Observation>,
+        evidence: Evidence<'_>,
         now: SystemTime,
     ) -> Result<Walked, StoreError> {
         let mut walked = Walked::default();
         let place =
             Place::root(fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf()));
-        collect_files(root_path, &RootPath::root(), policy, &place, &mut walked)?;
+        collect_files(
+            root_path,
+            &RootPath::root(),
+            policy,
+            &place,
+            &*self.cloud,
+            &mut walked,
+        )?;
 
         // Entries are applied in the index's own order, which is the byte order of the `/`-joined path —
         // not the component order `Path` compares by, where `sub/b.txt` would precede `sub.txt` while
@@ -1381,30 +1439,33 @@ impl HistoryStore {
                 }
             };
             let recorded = baseline_entry(baseline, path);
+            // Beyond a followed link the evidence is keyed by where the file really is, so a link
+            // retargeted at a lookalike tree — same sizes, same mtimes — vouches for nothing.
+            let key = evidence_key(path, walked.real.get(path).map(PathBuf::as_path));
+            let walked_mtime = metadata.modified().ok().map(nanos_since_epoch);
 
             // The filter: the last pass read this very size and mtime and found the content the baseline
             // holds. Any doubt — no row, a different size or mtime, a baseline that disagrees — reads.
-            let mtime = metadata.modified().ok().map(nanos_since_epoch);
-            // Beyond a followed link the evidence is keyed by where the file really is, so a link
-            // retargeted at a lookalike tree — same sizes, same mtimes — vouches for nothing.
-            let evidence = evidence_key(path, walked.real.get(path).map(PathBuf::as_path));
-            let vouched = match (observations.get(&evidence), mtime, recorded) {
-                (Some(seen), Some(mtime), Some((oid, _)))
-                    if seen.size == metadata.len() && seen.mtime == mtime && seen.oid == oid =>
-                {
-                    Some(oid)
-                }
+            // A placeholder is never read at all, so it is neither vouched for nor read (ticket 75).
+            let placeholder = self.cloud.is_placeholder(&absolute, &metadata);
+            let vouched = match recorded {
+                Some((oid, _)) if evidence.vouches && !placeholder => evidence
+                    .observed(&key, metadata.len(), walked_mtime, oid)
+                    .then_some(oid),
                 _ => None,
             };
             // What was read is described by the `stat` taken while it was open, which is what the next
-            // pass's filter must compare against.
-            let (oid, metadata) = match vouched {
-                Some(oid) => (oid, metadata),
+            // pass's filter must compare against; what was vouched for, by the walk's.
+            let read = match vouched {
+                Some(oid) => Some((oid, None)),
+                None if placeholder => None,
                 None => match self.read_settled(&absolute)? {
                     Settled::Held(oid, metadata) => {
                         walked.hashed += 1;
-                        (oid, metadata)
+                        Some((oid, Some(metadata)))
                     }
+                    // Its data left the disk between the walk and the read.
+                    Settled::Placeholder => None,
                     // Whatever the baseline holds stays — it is already in the index — and a path it
                     // does not hold stays absent; either way the record names it.
                     Settled::Unstable => {
@@ -1426,6 +1487,26 @@ impl HistoryStore {
                     }
                 },
             };
+            let Some((oid, read)) = read else {
+                // Kept unread while it is provably the version the baseline holds; otherwise — changed
+                // in the cloud, or never here — there is no version of it to hold.
+                let version = self.placeholder_version(
+                    path,
+                    &key,
+                    (metadata.len(), walked_mtime),
+                    recorded,
+                    evidence,
+                )?;
+                match version {
+                    Some(oid) => walked.carry_placeholder(path, key, &metadata, walked_mtime, oid),
+                    None => {
+                        walked.withhold(path.to_root_path(), WithheldReason::CloudPlaceholder);
+                        gone.push(path.clone());
+                    }
+                }
+                continue;
+            };
+            let metadata = read.unwrap_or(metadata);
             let mode = mode_for(&metadata);
             // Taken from the `stat` the filter already made, so a permission-only change costs nothing
             // to see: the sidecar's records differ, and with them the tree.
@@ -1437,9 +1518,17 @@ impl HistoryStore {
             sub_second |= mtime.is_some_and(|mtime| mtime % 1_000_000_000 != 0);
 
             if let Some(mtime) = mtime {
+                // A path that has been a placeholder keeps its mtime while it is held, so the OS freeing
+                // its space again changes nothing the Snapshot says (ticket 75).
+                if !evidence.placeholders.is_empty() {
+                    let rooted = path.to_root_path();
+                    if evidence.placeholders.contains_key(&rooted) {
+                        walked.placeholders.push((rooted, mtime));
+                    }
+                }
                 walked
                     .observed
-                    .push((evidence, Observation { size, mtime, oid }));
+                    .push((key, Observation { size, mtime, oid }));
             }
             walked.seen += 1;
 
@@ -1485,6 +1574,39 @@ impl HistoryStore {
         Ok(walked)
     }
 
+    /// The version the baseline holds of the placeholder at `path`, which `metadata` describes, if the
+    /// placeholder is provably still that version (ticket 75).
+    ///
+    /// Freeing a file's space changes neither its size nor its mtime, so the version is the baseline's
+    /// when its blob has the placeholder's size and the placeholder's mtime is the one recorded for that
+    /// version: in the baseline's `p` record, or, before the path has one, in the last pass's evidence
+    /// of the read that produced it. Anything else — changed in the cloud, never here, a link or a
+    /// directory in the baseline — has no version to keep.
+    fn placeholder_version(
+        &self,
+        path: &WirePath,
+        key: &[u8],
+        (size, mtime): (u64, Option<i128>),
+        recorded: Option<(git2::Oid, u32)>,
+        evidence: Evidence<'_>,
+    ) -> Result<Option<git2::Oid>, StoreError> {
+        let (Some((oid, mode)), Some(mtime)) = (recorded, mtime) else {
+            return Ok(None);
+        };
+        if mode != REGULAR_MODE && mode != EXECUTABLE_MODE {
+            return Ok(None);
+        }
+        if self.blob_size(oid)? != size {
+            return Ok(None);
+        }
+
+        let recorded_mtime = evidence.placeholders.get(&path.to_root_path());
+        Ok(
+            (recorded_mtime == Some(&mtime) || evidence.observed(key, size, Some(mtime), oid))
+                .then_some(oid),
+        )
+    }
+
     /// Read one file into the object database, trying again while it changes under the read.
     ///
     /// A file being written is read again rather than captured half-written; one that never settles is
@@ -1523,6 +1645,11 @@ impl HistoryStore {
                 Some(kind) => Attempt::Settled(Settled::Special(kind)),
                 None => Attempt::Changed,
             });
+        }
+        // Freed to the cloud since the walk looked: opening it fetched nothing, reading it would
+        // (ticket 75).
+        if self.cloud.is_placeholder(path, &before) {
+            return Ok(Attempt::Settled(Settled::Placeholder));
         }
 
         let mut writer = self
@@ -1822,6 +1949,9 @@ struct Walked {
     carried: Vec<WirePath>,
     /// Paths present but deliberately not held.
     withheld: Vec<WithheldPath>,
+    /// Each held path that is, or has been, a cloud placeholder, with the mtime of the version held:
+    /// what the next pass compares a placeholder's mtime against (ticket 75).
+    placeholders: Vec<(RootPath, i128)>,
     /// Links stored as links, with their target text.
     links: Vec<(WirePath, Vec<u8>)>,
     /// Where a file reached through a followed link to it is read from, since the link is never opened.
@@ -1892,6 +2022,16 @@ impl Walked {
         }
     }
 
+    /// Keep what the baseline holds beneath `directory`, whose ignore file at `ignore_file` is a cloud
+    /// placeholder, and name that file: its rules cannot be read without downloading it (ticket 75).
+    fn rules_in_cloud(&mut self, directory: WirePath, ignore_file: &RootPath) {
+        self.incomplete(
+            &WirePath::of(ignore_file),
+            Incomplete::Error(WithheldReason::CloudPlaceholder.as_str().to_owned()),
+        );
+        self.carried.push(directory);
+    }
+
     /// Name a directory that leads back to one already on the way to it, and keep what the baseline
     /// holds there, rather than walk it for ever.
     fn loops(&mut self, rooted: &RootPath) {
@@ -1913,6 +2053,35 @@ impl Walked {
         self.withheld.push(WithheldPath { path, reason });
     }
 
+    /// Keep the version `oid` the baseline holds at `path` for the placeholder there, which `metadata`
+    /// describes and whose mtime is `mtime`, without reading it: the mtime goes in the sidecar, and its
+    /// evidence to the next pass, as a read's would. The entry itself is already in the index, as the
+    /// baseline has it.
+    fn carry_placeholder(
+        &mut self,
+        path: &WirePath,
+        key: Vec<u8>,
+        metadata: &fs::Metadata,
+        mtime: Option<i128>,
+        oid: git2::Oid,
+    ) {
+        if let Some(bits) = permissions(metadata) {
+            self.modes.insert(path.as_bytes().to_vec(), bits);
+        }
+        if let Some(mtime) = mtime {
+            self.placeholders.push((path.to_root_path(), mtime));
+            self.observed.push((
+                key,
+                Observation {
+                    size: metadata.len(),
+                    mtime,
+                    oid,
+                },
+            ));
+        }
+        self.seen += 1;
+    }
+
     /// What the sidecar says of this walk.
     fn records(&self) -> Vec<Record> {
         self.withheld
@@ -1925,6 +2094,14 @@ impl Walked {
                 path: incomplete.path.clone(),
                 why: incomplete.why.clone(),
             }))
+            .chain(
+                self.placeholders
+                    .iter()
+                    .map(|(path, mtime)| Record::Placeholder {
+                        path: path.clone(),
+                        mtime: *mtime,
+                    }),
+            )
             .collect()
     }
 
@@ -1932,8 +2109,8 @@ impl Walked {
     ///
     /// A path that was walked survives because it is still there; a path at or beneath one that could
     /// not be looked at survives because its absence was never observed. The sidecar is written after
-    /// this, from this walk's records. Everything else is gone, and a Snapshot that kept it would claim
-    /// content the Working Tree no longer has.
+    /// this, from this walk's records and the baseline's beneath what it carried. Everything else is
+    /// gone, and a Snapshot that kept it would claim content the Working Tree no longer has.
     fn keeps(&self, path: &[u8]) -> bool {
         // `paths` is sorted by the time the baseline is compared against it.
         path == SIDECAR.as_bytes()
@@ -1945,10 +2122,77 @@ impl Walked {
                 .links
                 .binary_search_by(|(walked, _)| walked.as_bytes().cmp(path))
                 .is_ok()
-            || self.carried.iter().any(|carried| {
-                path.strip_prefix(carried.as_bytes())
+            || self.is_carried(path)
+    }
+
+    /// Whether `path` is at or beneath a path this walk could not look at, and carried forward.
+    fn is_carried(&self, path: &[u8]) -> bool {
+        // The Root itself is carried when its own ignore file is in the cloud (ticket 75).
+        self.carried.iter().any(|carried| {
+            carried.as_bytes().is_empty()
+                || path
+                    .strip_prefix(carried.as_bytes())
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
-            })
+        })
+    }
+
+    /// Keep what the baseline's `sidecar` said of each path beneath one carried forward: what the
+    /// walk did not look at, it cannot have seen change, so a Withheld path is still Withheld, an
+    /// incomplete one still not held as it is, and a placeholder's mtime still the one its version
+    /// had (ticket 75). A record the walk made itself for the same path wins. Modes need nothing
+    /// here: they are read from the carried index entries.
+    fn carry_records(&mut self, sidecar: &Sidecar) {
+        for record in &sidecar.records {
+            if !self.is_carried(record.path().as_bytes()) {
+                continue;
+            }
+            match record {
+                Record::Withheld { path, reason } => {
+                    if !self.withheld.iter().any(|withheld| withheld.path == *path) {
+                        self.withhold(path.clone(), *reason);
+                    }
+                }
+                Record::Incomplete { path, why } => {
+                    if !self
+                        .incomplete
+                        .iter()
+                        .any(|incomplete| incomplete.path == *path)
+                    {
+                        self.incomplete.push(IncompletePath {
+                            path: path.clone(),
+                            why: why.clone(),
+                        });
+                    }
+                }
+                Record::Placeholder { path, mtime } => {
+                    if !self.placeholders.iter().any(|(held, _)| held == path) {
+                        self.placeholders.push((path.clone(), *mtime));
+                    }
+                }
+                Record::Mode { .. } => {}
+            }
+        }
+    }
+}
+
+/// What a pass knows of the Root's files before it looks at them.
+#[derive(Debug, Clone, Copy)]
+struct Evidence<'a> {
+    /// What the last pass observed of each file it read or vouched for, by evidence key (ADR 0014).
+    observations: &'a HashMap<Vec<u8>, Observation>,
+    /// Whether that may vouch for a file's content, so that the file is not read: not when verifying
+    /// by hash. It still says which version a placeholder is, since a placeholder is never read.
+    vouches: bool,
+    /// The mtime the baseline's sidecar records for each path that has been a placeholder.
+    placeholders: &'a HashMap<RootPath, i128>,
+}
+
+impl Evidence<'_> {
+    /// Whether the last pass saw the file under `key` at `size` and `mtime`, holding the content `oid`.
+    fn observed(&self, key: &[u8], size: u64, mtime: Option<i128>, oid: git2::Oid) -> bool {
+        self.observations
+            .get(key)
+            .is_some_and(|seen| seen.size == size && Some(seen.mtime) == mtime && seen.oid == oid)
     }
 }
 
@@ -1966,6 +2210,8 @@ enum Settled {
     Failed(io::Error),
     /// A special file is there now, which is Withheld rather than read.
     Special(SpecialKind),
+    /// A cloud placeholder is there now, which is never read (ticket 75).
+    Placeholder,
 }
 
 /// What one attempt at reading a file came to.
@@ -2169,8 +2415,9 @@ fn join_records(entries: &mut Vec<Entry>, records: &[&Record], directory: &RootP
             // A tree entry where the sidecar says there is none was not written by this build's
             // rule (ADR 0009); the entry is what can be read, so it stands.
             (Record::Withheld { .. }, Some(_)) => {}
-            // Never passed in: a mode is read with the tree entry it belongs to.
-            (Record::Mode { .. }, _) => {}
+            // Never passed in: a mode is read with the tree entry it belongs to, and a placeholder's
+            // mtime is the capture's alone.
+            (Record::Mode { .. } | Record::Placeholder { .. }, _) => {}
         }
     }
 }
@@ -2198,11 +2445,16 @@ fn nanos_since_epoch(moment: SystemTime) -> i128 {
 /// freeze a Root's history (ticket 05), and whatever the baseline holds beneath it is carried forward,
 /// because its absence was never observed. Only the Root itself being unreadable is an error, since then
 /// there is nothing to capture at all.
+///
+/// An ignore file that is a cloud placeholder is never read, since reading it would download it; without
+/// its rules nothing beneath its directory can be judged, so that directory is carried forward like one
+/// that cannot be listed, and the ignore file is named as the reason (ticket 75).
 fn collect_files(
     root: &Path,
     here: &RootPath,
     policy: &CapturePolicy,
     place: &Place,
+    cloud: &dyn CloudFiles,
     walked: &mut Walked,
 ) -> Result<(), StoreError> {
     let relative = WirePath::of(here);
@@ -2230,7 +2482,14 @@ fn collect_files(
 
     let extended;
     let policy = if policy.honours_ignore_files() {
-        match fs::read_to_string(directory.join(IGNORE_FILE)) {
+        let ignore_file = directory.join(IGNORE_FILE);
+        let in_cloud = fs::metadata(&ignore_file)
+            .is_ok_and(|metadata| cloud.is_placeholder(&ignore_file, &metadata));
+        if in_cloud {
+            walked.rules_in_cloud(relative, &here.child(IGNORE_FILE));
+            return Ok(());
+        }
+        match fs::read_to_string(ignore_file) {
             Ok(text) => {
                 let source = here.child(IGNORE_FILE);
                 extended =
@@ -2291,7 +2550,15 @@ fn collect_files(
         // Present, but without content: no tree entry at all (ADR 0009), and a record in the sidecar.
         // A reserved or fenced directory is one record, and is never entered.
         if metadata.file_type().is_symlink() {
-            walk_link(root, &rooted, &directory.join(&name), policy, place, walked)?;
+            walk_link(
+                root,
+                &rooted,
+                &directory.join(&name),
+                policy,
+                place,
+                cloud,
+                walked,
+            )?;
         } else if metadata.is_dir() {
             let real = place.real.join(&name);
             match Judged::from(policy.directory(&rooted)) {
@@ -2308,6 +2575,7 @@ fn collect_files(
                             &rooted,
                             policy,
                             &place.within(real, &metadata),
+                            cloud,
                             walked,
                         )?;
                     }
@@ -2426,6 +2694,7 @@ fn walk_link(
     absolute: &Path,
     policy: &CapturePolicy,
     place: &Place,
+    cloud: &dyn CloudFiles,
     walked: &mut Walked,
 ) -> Result<(), StoreError> {
     let wire = || WirePath::of(rooted);
@@ -2459,7 +2728,7 @@ fn walk_link(
                     walked.followed += 1;
                     walked.entered(rooted, &metadata);
                     let inside = place.following(real, &metadata);
-                    collect_files(root, rooted, policy, &inside, walked)
+                    collect_files(root, rooted, policy, &inside, cloud, walked)
                 })?;
             } else if metadata.is_file() {
                 // Read by its real path: the link itself is never opened, since reads never follow one.
@@ -2579,6 +2848,9 @@ fn special_kind(metadata: &fs::Metadata) -> Option<SpecialKind> {
 /// The mode a sidecar, or any regular file that is not executable, is held with.
 const REGULAR_MODE: u32 = 0o100_644;
 
+/// The mode an executable regular file is held with.
+const EXECUTABLE_MODE: u32 = 0o100_755;
+
 /// The mode a link is held with, its blob the target text.
 const LINK_MODE: u32 = 0o120_000;
 
@@ -2592,12 +2864,10 @@ fn mode_for(metadata: &fs::Metadata) -> u32 {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        const EXECUTABLE: u32 = 0o100_755;
-
         if metadata.permissions().mode() & 0o111 == 0 {
             REGULAR_MODE
         } else {
-            EXECUTABLE
+            EXECUTABLE_MODE
         }
     }
 

@@ -1,5 +1,6 @@
 //! What only the Windows API can answer: the control channel's name and the access control that makes it
-//! the owner's alone, a file's hard-link names, and where Git for Windows is installed (ticket 52).
+//! the owner's alone, a file's hard-link names, where Git for Windows is installed (ticket 52), and how
+//! this process is shown cloud placeholders (ticket 75).
 //!
 //! Every `unsafe` block in the workspace that touches the Windows API lives in this crate — here, or,
 //! for which volume a path is on, in `volume/windows.rs` (ticket 56). Ticket 10 settled that shape when
@@ -23,7 +24,59 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+/// `PHCM_EXPOSE_PLACEHOLDERS` from `ntifs.h`, which `windows-sys` does not define.
+const PHCM_EXPOSE_PLACEHOLDERS: i8 = 2;
+
+/// Show this process cloud placeholders as they are, for every thread it runs, so that the attributes
+/// marking one — `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` among them — reach the walk, which then never
+/// opens it (ticket 75). Most programs see placeholders exposed already; Windows may disguise them for
+/// some, and a disguised placeholder looks like any local file until it is read and downloaded.
+///
+/// `RtlSetProcessPlaceholderCompatibilityMode` arrived in Windows 10 1803. It is looked up when called
+/// rather than imported, so that an older Windows still starts the daemon, and only this call fails.
+pub(crate) fn expose_placeholders() -> io::Result<()> {
+    let ntdll = to_wide("ntdll.dll");
+    // SAFETY: `ntdll` is NUL-terminated. ntdll is mapped into every process, so the handle needs no
+    // release.
+    let module = unsafe { GetModuleHandleW(ntdll.as_ptr()) };
+    if module.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `module` is ntdll's handle and the name is a NUL-terminated ANSI string.
+    let found = unsafe {
+        GetProcAddress(
+            module,
+            c"RtlSetProcessPlaceholderCompatibilityMode".as_ptr().cast(),
+        )
+    };
+    let Some(found) = found else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this Windows has no placeholder compatibility mode, which arrived in Windows 10 1803",
+        ));
+    };
+    // SAFETY: `ntifs.h` declares the export as `CHAR RtlSetProcessPlaceholderCompatibilityMode(CHAR)`,
+    // a system-convention function, which is this type.
+    let set_mode = unsafe {
+        std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            unsafe extern "system" fn(i8) -> i8,
+        >(found)
+    };
+    // SAFETY: a mode by value; the call changes only this process's own setting.
+    let previous = unsafe { set_mode(PHCM_EXPOSE_PLACEHOLDERS) };
+    // A negative answer is a `PHCM_ERROR_*`; anything else is the mode replaced.
+    if previous < 0 {
+        return Err(io::Error::other(format!(
+            "the placeholder compatibility mode was refused with {previous}"
+        )));
+    }
+
+    Ok(())
+}
 
 /// The security identifier of the user this process runs as, in its string form.
 ///

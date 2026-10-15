@@ -35,6 +35,12 @@ pub enum WatchEvent {
     Rescan,
 }
 
+/// Whether the file at a path, which the metadata describes, is a cloud placeholder: one whose data is
+/// only in the cloud, so that reading it would download it (ticket 75). The platform's answer in
+/// production, `keepster_core::is_cloud_placeholder`; a stand-in in tests, since no test machine has a
+/// sync client.
+pub type IsPlaceholder = fn(&Path, &fs::Metadata) -> bool;
+
 /// Why a Root could not be watched.
 #[derive(Debug, thiserror::Error)]
 #[error("{path} could not be watched: {source}")]
@@ -74,9 +80,11 @@ struct Shared {
 
 impl Watcher {
     /// Watch the Root at `root` under `policy`, handing every change to `report` on a thread of its own.
+    /// An ignore file that `placeholder` calls a cloud placeholder is never read.
     pub fn start(
         root: &Path,
         policy: &CapturePolicy,
+        placeholder: IsPlaceholder,
         report: impl Fn(WatchEvent) + Send + 'static,
     ) -> Result<Self, WatchError> {
         let (raw, events) = mpsc::channel();
@@ -97,6 +105,7 @@ impl Watcher {
         let context = Context {
             root: resolved(root),
             policy: policy.clone(),
+            placeholder,
             shared: Arc::clone(&shared),
         };
         if PER_DIRECTORY {
@@ -152,6 +161,8 @@ const PER_DIRECTORY: bool = cfg!(target_os = "linux");
 struct Context {
     root: PathBuf,
     policy: CapturePolicy,
+    /// Which ignore files are cloud placeholders, and so never read.
+    placeholder: IsPlaceholder,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -248,6 +259,10 @@ impl Context {
     }
 
     /// `policy` with the ignore file of `directory` added, when ignore files are honoured.
+    ///
+    /// One that is a cloud placeholder is never read, since reading it would download it (ticket 75):
+    /// its rules are left out, so the watch reports more rather than less, and the capture — which
+    /// carries that directory forward and names the file — decides.
     fn policy_within(&self, directory: &RootPath, policy: &CapturePolicy) -> CapturePolicy {
         if !policy.honours_ignore_files() {
             return policy.clone();
@@ -256,6 +271,9 @@ impl Context {
         let Some(on_disk) = file.native(&self.root) else {
             return policy.clone();
         };
+        if fs::metadata(&on_disk).is_ok_and(|metadata| (self.placeholder)(&on_disk, &metadata)) {
+            return policy.clone();
+        }
         match fs::read_to_string(on_disk) {
             Ok(text) => {
                 let rules = ignore_file_rules(directory, &text, &file.to_lossy());

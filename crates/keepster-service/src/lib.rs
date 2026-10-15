@@ -1,5 +1,6 @@
 //! Platform integration: where the daemon's control channel lives, and — from ticket 61 — how
-//! autostart is installed on each platform.
+//! autostart is installed on each platform, and — from ticket 75 — what keeps the daemon from
+//! hydrating a cloud placeholder.
 //!
 //! The control-channel path lives here rather than in the daemon because the CLI needs it too, and
 //! ticket 08 forbids the CLI to depend on the daemon. It is a platform fact, and this is the
@@ -9,6 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod autostart;
+mod cloud;
 pub mod mountinfo;
 mod pid;
 pub mod rotating;
@@ -16,6 +18,7 @@ mod volume;
 #[cfg(windows)]
 mod windows;
 
+pub use cloud::guard_cloud_placeholders;
 pub use pid::{
     PID_FILE, PidLock, PidLockError, RuntimeDirCleared, TRAY_PID_FILE, clear_runtime_dir,
     lock_pid_file,

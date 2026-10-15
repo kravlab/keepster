@@ -14,7 +14,7 @@ mod registry;
 
 pub use git::{Git, GitUnavailable};
 pub use history::{
-    CaptureRequest, CapturedSnapshot, Comparison, Content, ContentFound, ContentPlan,
+    CaptureRequest, CapturedSnapshot, CloudFiles, Comparison, Content, ContentFound, ContentPlan,
     ContentVersion, DIFF_MAX_SIZE, Depth, DiffLine, DiffTarget, Entry, EntryKind, ExportScope,
     FileChange, FileDiff, Forgotten, HistoryStore, Hunk, IncompletePath, LineKind, LinkNames,
     Listing, Maintained, Pass, PathFound, PinShape, Preflight, PreviewOptions, RestoreScope,

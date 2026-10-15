@@ -49,6 +49,15 @@ The same argument disqualifies mtime on a `w` record.
   successfully becomes `cloud_placeholder` in every later Snapshot merely because the OS freed its space. It does
   not reintroduce the churn that killed the size field: a placeholder's mtime changes only when the file really
   changed, which is Snapshot-worthy anyway.
+  As built (ticket 75): the first time a captured file is found dehydrated, its mtime comes from the stat cache of
+  ADR 0014, which records the size and mtime of the read that produced the held blob; from then on the path keeps a
+  `p` record for as long as it is held, hydrated or not, updated whenever the file is read again. A `p` record
+  counts as no change of its path, but one seen for the first time is something to record, as modes observed for
+  the first time are: the pass that first finds a file freed mints one Snapshot with no changed path, so the record
+  reaches history even where nothing else changes. Freeing or fetching it again mints none. Should the index be
+  lost after a file is freed and before that pass, the file is `cloud_placeholder` until it is fetched again. Linux
+  has no placeholders to recognise: a FUSE sync client fetches on read and marks nothing beforehand, so there every
+  file is read as any other.
 - **A Withheld path carries no `m` record.** Its mode is unusable — there is no tree entry to restore onto, and
   ticket 10 already refuses Restore of a Withheld path — and recording it would re-open the churn problem from the
   other side, since `chmod` on an over-cap file would mint an empty Snapshot. An `i` path keeps its `m`, because it

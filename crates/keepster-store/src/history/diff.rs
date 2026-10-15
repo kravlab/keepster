@@ -9,7 +9,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use keepster_core::{CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SnapshotId};
+use keepster_core::{
+    CapturePolicy, ModeKind, ModeTable, Record, RootPath, SIDECAR, SnapshotId, Verify,
+};
 
 use super::{
     HistoryStore, IncompletePath, ModeChange, StoreError, WithheldReason, filesystem_path,
@@ -278,7 +280,9 @@ impl HistoryStore {
                     .into_iter()
                     .filter_map(|record| match record {
                         Record::Withheld { path, reason } => Some((path, reason)),
-                        Record::Incomplete { .. } | Record::Mode { .. } => None,
+                        Record::Incomplete { .. }
+                        | Record::Mode { .. }
+                        | Record::Placeholder { .. } => None,
                     })
                     .collect();
                 (
@@ -369,7 +373,7 @@ impl HistoryStore {
             baseline_tree.as_ref(),
             root_path,
             policy,
-            &observations,
+            (&observations, Verify::Stat),
             now,
             false,
         )?;

@@ -3,6 +3,7 @@
 //! what a test run cost on Windows.
 
 mod archive;
+mod cloud;
 mod export;
 mod follow;
 mod git;

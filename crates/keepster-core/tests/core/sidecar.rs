@@ -337,6 +337,7 @@ fn every_record_type_is_spelled_as_it_always_was() {
             path: rp("m"),
             mode: 0o600,
         },
+        placeholder("n", 1_760_000_000_000_000_000),
     ]);
 
     assert_eq!(
@@ -354,11 +355,81 @@ fn every_record_type_is_spelled_as_it_always_was() {
          w cloud_placeholder j\n\
          i unstable k\n\
          i eacces l\n\
-         m 0600 m\n"
+         m 0600 m\n\
+         p 1760000000000000000 n\n"
     );
     assert_eq!(
         Sidecar::parse(&sidecar.to_bytes()).expect("parses").sidecar,
         sidecar,
         "and every one reads back as itself"
     );
+}
+
+/// The `p` record of a placeholder at `path` whose mtime is `mtime` nanoseconds since the epoch.
+fn placeholder(path: &str, mtime: i128) -> Record {
+    Record::Placeholder {
+        path: rp(path),
+        mtime,
+    }
+}
+
+#[test]
+fn a_placeholder_s_mtime_is_written_in_nanoseconds_and_read_back_exactly() {
+    let sidecar = Sidecar::with_records(vec![
+        placeholder("cloud/report.pdf", 1_760_000_000_123_456_789),
+        // Before the epoch, as a file restored from an old archive can be dated.
+        placeholder("cloud/old.txt", -1_500_000_000),
+        withheld("cloud/report.pdf", WithheldReason::TooLarge),
+    ]);
+
+    let text = String::from_utf8(sidecar.to_bytes()).expect("text");
+
+    assert_eq!(
+        text,
+        "keepster-meta 1 file=0644 dir=0755\n\
+         p -1500000000 cloud/old.txt\n\
+         p 1760000000123456789 cloud/report.pdf\n\
+         w too_large cloud/report.pdf\n"
+    );
+    assert_eq!(
+        Sidecar::parse(text.as_bytes()).expect("parses").sidecar,
+        sidecar
+    );
+}
+
+#[test]
+fn a_placeholder_record_whose_mtime_is_not_a_whole_number_is_reported_rather_than_misread() {
+    let text = b"keepster-meta 1 file=0644 dir=0755\n\
+                 p 12.5 a\n\
+                 p +12 b\n\
+                 p  c\n\
+                 p 0x10 d\n\
+                 p 7 e\n";
+
+    let parsed = Sidecar::parse(text).expect("an older build still reads it");
+
+    assert_eq!(parsed.sidecar.records, [placeholder("e", 7)]);
+    assert_eq!(parsed.unknown, ["p 12.5 a", "p +12 b", "p  c", "p 0x10 d"]);
+}
+
+#[test]
+fn the_placeholder_mtimes_are_looked_up_by_path() {
+    let sidecar = Sidecar::with_records(vec![
+        placeholder("a.txt", 10),
+        withheld("b.txt", WithheldReason::CloudPlaceholder),
+        Record::Mode {
+            path: rp("a.txt"),
+            mode: 0o600,
+        },
+    ]);
+
+    let mtimes = sidecar.placeholders();
+
+    assert_eq!(mtimes.get(&rp("a.txt")), Some(&10));
+    assert_eq!(
+        mtimes.get(&rp("b.txt")),
+        None,
+        "a Withheld path has no mtime"
+    );
+    assert_eq!(mtimes.len(), 1);
 }
