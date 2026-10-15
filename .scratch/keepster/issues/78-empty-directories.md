@@ -2,7 +2,9 @@
 
 **Blocked by:** 50 (Permissions)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #17
 
 **What to build:** a restored tree still has the directories the tools expect. An Empty Directory — one the
 Snapshot holds no content under, including one whose contents were all excluded or Withheld — is recorded, because a

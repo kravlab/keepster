@@ -2,7 +2,9 @@
 
 **Blocked by:** none
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #13
 
 **What to build:** registering, moving or unwatching a Root on Windows is as durable as on Linux and macOS: once the
 command has answered, a power cut cannot bring back the previous `root.toml`.

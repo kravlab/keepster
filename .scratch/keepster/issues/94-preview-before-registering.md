@@ -2,7 +2,9 @@
 
 **Blocked by:** 93 (Registering a directory from the web UI)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #30
 
 **What to build:** registering from the web UI checks what watching the directory would capture first, exactly as
 `keepster watch` does. Part of spec 91 (user stories 14–21).

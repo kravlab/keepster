@@ -2,7 +2,9 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #34
 
 **What to build:** whatever the paths of the Watched Roots, the web UI's header shows every control it holds within
 the window: the Root picker, the shown Root's state and reason, Manage Roots, the search field and the theme.

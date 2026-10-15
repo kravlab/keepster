@@ -2,7 +2,9 @@
 
 **Blocked by:** 74 (Paths as bytes — a name that is not UTF-8 survives the round trip)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #36
 
 **What to build:** on Windows, names that cannot be held because they contain an unpaired surrogate never put two
 records at the same path in a Snapshot, and never collide with a file the Snapshot holds under the same text.

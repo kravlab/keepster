@@ -2,7 +2,9 @@
 
 **Blocked by:** 67 (The tray process, and notifications when the insurance stops)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #21
 
 **What to build:** `keepster service stop` and `keepster service restart` on Windows stop the daemon the way they do
 on Linux and macOS: the daemon finishes its graceful shutdown and says `daemon.stopping` on the event stream before

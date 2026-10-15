@@ -1,6 +1,8 @@
 # 102: Checking for updates
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #38
 
 **What to build:** Keepster finds out whether a newer release than the one installed exists, and tells the person.
 

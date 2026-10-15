@@ -1,6 +1,8 @@
 # 91: Managing Roots in the web UI
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #28
 
 ## Problem Statement
 

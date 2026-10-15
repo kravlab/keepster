@@ -2,7 +2,9 @@
 
 **Blocked by:** 51 (Retention — the ladder and thinning)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #18
 
 **What to build:** a user can choose how much history one Segment holds, and a store holding Segments of several
 periods is a supported steady state, never a migration to finish.

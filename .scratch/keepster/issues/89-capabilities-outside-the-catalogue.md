@@ -2,7 +2,9 @@
 
 **Blocked by:** 70 (The report layer — the platform matrix, watcher conformance and coverage)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #26
 
 **What to build:** a test that needs something a machine may lack — a temporary directory on a named volume, the
 machine's own `git`, a user whom file permissions bind — either runs or is reported `unavailable` with its reason,

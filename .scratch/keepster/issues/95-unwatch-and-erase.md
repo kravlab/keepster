@@ -2,7 +2,9 @@
 
 **Blocked by:** 92 (A live Root list and the Root management page)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #31
 
 **What to build:** each Root's row on the management page can stop watching it, and on explicit consent erase its
 history too, as `keepster unwatch [--purge]` does. Part of spec 91 (user stories 26–32).

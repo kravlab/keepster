@@ -2,7 +2,9 @@
 
 **Blocked by:** 49 (Symlinks — stored as links, optionally followed)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #16
 
 **What to build:** registering a directory reached through a symlink asks whether the link or its real path is the
 Root, and a Root registered as the link follows it when it is retargeted, without escaping the overlap rule.

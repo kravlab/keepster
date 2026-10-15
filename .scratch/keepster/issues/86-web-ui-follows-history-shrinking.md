@@ -2,7 +2,9 @@
 
 **Blocked by:** 68 (Install, uninstall, and erasing only on request)
 
-**Status:** needs-triage
+**Status:** migrated
+
+**Migrated to:** #23
 
 **What to build:** when a Root's history loses Snapshots while the web UI shows it, the open view loads that history
 afresh, as it already does on `resync`, instead of showing Snapshots that are gone until the page is reloaded.

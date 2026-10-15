@@ -2,7 +2,9 @@
 
 **Blocked by:** 92 (A live Root list and the Root management page)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #33
 
 **What to build:** when the Root whose history is open stops being watched, or loses its history, from this tab, another
 tab or the CLI, the History screen stays where it is and says so. Part of spec 91 (user stories 42–48).

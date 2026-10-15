@@ -7,7 +7,9 @@ layer), 71 (Capturing a repository's own git configuration), 72 (A Root's record
 cap), 82 (Service-manager conformance on three platforms), 84 (A graceful stop of the daemon on Windows), 86 (The
 web UI drops Snapshots that Retention, Forget or an erasing removed)
 
-**Status:** ready-for-agent
+**Status:** migrated
+
+**Migrated to:** #22
 
 **What to build:** a person can install Keepster on Linux, macOS or Windows from a released artifact, and remove it
 later with their package manager's own command.
