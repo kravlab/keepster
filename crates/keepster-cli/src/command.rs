@@ -752,6 +752,27 @@ pub struct MoveArgs {
 
     /// Where the Root's directory is now.
     pub path: PathBuf,
+
+    #[command(flatten)]
+    pub path_mode: PathModeArgs,
+
+    /// Never ask any question, whichever the command has; refuse instead when the command line does not
+    /// say everything.
+    #[arg(long)]
+    pub no_input: bool,
+}
+
+/// What `keepster watch` and `keepster move` need to know when the path leads through a link: whether
+/// the Root is the link or the real directory it leads to.
+#[derive(Debug, Args)]
+pub struct PathModeArgs {
+    /// If the path leads through a link, use the link, following it when it is pointed elsewhere.
+    #[arg(long, conflicts_with = "canonical")]
+    pub keep_link: bool,
+
+    /// If the path leads through a link, use the real directory it leads to now.
+    #[arg(long)]
+    pub canonical: bool,
 }
 
 /// Options of `keepster watch`.
@@ -767,6 +788,14 @@ pub struct WatchArgs {
     /// Watch it without asking, even past what one Root is claimed to hold.
     #[arg(long)]
     pub yes: bool,
+
+    #[command(flatten)]
+    pub path_mode: PathModeArgs,
+
+    /// Never ask any question, whichever the command has; refuse instead when the command line does not
+    /// say everything.
+    #[arg(long)]
+    pub no_input: bool,
 }
 
 /// Options of `keepster preview`.

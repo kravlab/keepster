@@ -4,17 +4,25 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use keepster_api::{ErrorCode, Pins, Problem, RegisterRoot, Reported, Root, Status};
+use keepster_api::{
+    ErrorCode, MISSING_PATH_MODE, MoveRoot, PathMode, Pins, Problem, RegisterRoot, Reported, Root,
+    Status,
+};
 use serde::de::DeserializeOwned;
 
 use crate::client::{ClientError, DaemonClient, Response};
-use crate::command::{MoveArgs, PurgeArgs, UnwatchArgs, WatchArgs};
+use crate::command::{MoveArgs, PathModeArgs, PurgeArgs, UnwatchArgs, WatchArgs};
 use crate::exit;
 use crate::preview::Shown;
 use crate::render::{write_git, write_roots};
 use crate::resolve::Target;
 
 /// Register a directory as a Watched Root.
+///
+/// In order: `--dry-run` only previews; then the claim of what one Root may hold is checked (`--yes`
+/// skips it); then the directory is registered, and a path through a link is settled last, since only
+/// the daemon's refusal says that it is one — by `--keep-link` or `--canonical`, by asking at a
+/// terminal, or by saying which flag to pass (ticket 77).
 pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
     // The daemon makes the path absolute itself, but it cannot know the caller's working directory, so
     // a relative argument is resolved here — on the client, where the working directory belongs.
@@ -37,21 +45,22 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
             Err(code) => code,
         };
     }
+    let can_ask = crate::restore::may_ask(args.no_input);
     if !args.yes {
-        if let Err(code) = within_claim(&client, &path).await {
+        if let Err(code) = within_claim(&client, &path, can_ask).await {
             return code;
         }
     }
 
-    let body = serde_json::json!({ "path": path.to_string_lossy() });
-    let answer = client
-        .post(
-            "/v1/roots",
-            &serde_json::to_vec(&body).expect("a JSON body"),
-        )
-        .await;
-
-    match answered::<Root>(answer) {
+    match register_through_link(
+        &client,
+        &Sending::Register,
+        &path,
+        chosen(&args.path_mode),
+        can_ask,
+    )
+    .await
+    {
         Ok(root) => {
             let code = print_roots(std::slice::from_ref(&root));
             notice_unmaintained(&client).await;
@@ -63,12 +72,16 @@ pub async fn watch(args: &WatchArgs, control_path: &Path) -> u8 {
 
 /// Go on registering `path` only once it is known to be within what one Root is claimed to hold, or the
 /// person has said to go on past it (ticket 30): nothing is refused, but a directory that big is not
-/// watched by surprise. Where nothing can be asked, `--yes` says it.
+/// watched by surprise. Where nothing can be asked (no terminal, or `--no-input`), `--yes` says it.
 ///
 /// A preview that cannot be had says nothing either way, and registering goes on: it will say for itself
 /// whatever is wrong with the directory. One that is busy is the exception, since registering would not
 /// notice: the directory is not watched unseen, and the command says to try again.
-async fn within_claim(client: &DaemonClient, path: &std::path::Path) -> Result<(), u8> {
+async fn within_claim(
+    client: &DaemonClient,
+    path: &std::path::Path,
+    can_ask: bool,
+) -> Result<(), u8> {
     use std::io::IsTerminal;
 
     if io::stderr().is_terminal() {
@@ -97,7 +110,7 @@ async fn within_claim(client: &DaemonClient, path: &std::path::Path) -> Result<(
     }
 
     let _ = crate::preview::render(&summary, &mut std::io::stdout().lock());
-    let asked = std::io::stdin().is_terminal()
+    let asked = can_ask
         && crate::restore::yes(format!(
             "{} is past what one Root is claimed to hold. Watch it anyway?",
             path.display()
@@ -289,14 +302,150 @@ fn exit_code_for_known(code: ErrorCode) -> u8 {
     }
 }
 
-/// The request body both registering and moving send, built from the contract type rather than from a
-/// literal, so the shape lives in `keepster-api` alone.
-fn register_body(path: &std::path::Path) -> Vec<u8> {
+/// The request body of a registration, built from the contract type rather than from a literal, so the
+/// shape lives in `keepster-api` alone. `path_mode` is the choice for a path through a link, absent
+/// until one has been made.
+fn register_body(path: &std::path::Path, path_mode: Option<PathMode>) -> Vec<u8> {
     let request = RegisterRoot {
         path: path.to_string_lossy().into_owned(),
+        path_mode,
     };
 
     serde_json::to_vec(&request).expect("the request serialises")
+}
+
+/// The request body of a move, as [`register_body`] is of a registration.
+fn move_body(path: &std::path::Path, path_mode: Option<PathMode>) -> Vec<u8> {
+    let request = MoveRoot {
+        path: path.to_string_lossy().into_owned(),
+        path_mode,
+    };
+
+    serde_json::to_vec(&request).expect("the request serialises")
+}
+
+/// The choice the flags make for a path through a link; none when neither is given.
+fn chosen(flags: &PathModeArgs) -> Option<PathMode> {
+    match (flags.keep_link, flags.canonical) {
+        (true, _) => Some(PathMode::Link),
+        (_, true) => Some(PathMode::Canonical),
+        _ => None,
+    }
+}
+
+/// The two requests that take a path and may find it leads through a link (ticket 77).
+enum Sending {
+    /// `POST /v1/roots`: watch a directory.
+    Register,
+    /// `PATCH /v1/roots/{id}`: record that the Root of this identity has moved.
+    Move(String),
+}
+
+/// What the daemon said a path through a link needs: the choice between the link and where it leads.
+#[derive(Debug, PartialEq, Eq)]
+struct PathModeNeeded {
+    /// The path as it was sent.
+    path: String,
+    /// The real path the link leads to now.
+    real_path: String,
+}
+
+/// The question a refusal asks, when it is the daemon asking which a path through a link is
+/// (`confirmation_required` missing a `path_mode`); `None` for any other refusal.
+fn path_mode_needed(problem: &Problem) -> Option<PathModeNeeded> {
+    if problem.code != ErrorCode::ConfirmationRequired.as_str()
+        || problem.details.get("missing").map(String::as_str) != Some(MISSING_PATH_MODE)
+    {
+        return None;
+    }
+
+    Some(PathModeNeeded {
+        path: problem.details.get("path")?.clone(),
+        real_path: problem.details.get("real_path")?.clone(),
+    })
+}
+
+/// The question put to the person at a terminal; the answer is read by [`path_mode_answer`].
+fn path_mode_question(needed: &PathModeNeeded) -> String {
+    format!(
+        "{} leads through a link to {}. Use the link, following it when it is pointed elsewhere (l), \
+         or the real directory (c)? ",
+        needed.path, needed.real_path
+    )
+}
+
+/// The choice an answer to [`path_mode_question`] makes: `l` or `c`, or the word, in any case; `None` for
+/// anything else, since a guess would register the wrong directory.
+fn path_mode_answer(answer: &str) -> Option<PathMode> {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "l" | "link" | "keep-link" => Some(PathMode::Link),
+        "c" | "canonical" => Some(PathMode::Canonical),
+        _ => None,
+    }
+}
+
+/// What a command line that cannot ask says: which flags make the choice.
+fn path_mode_hint(needed: &PathModeNeeded) -> String {
+    format!(
+        "{} leads through a link to {}; pass --keep-link to use the link, following it when it is \
+         pointed elsewhere, or --canonical to use the real directory",
+        needed.path, needed.real_path
+    )
+}
+
+/// Send `path` as a registration or a move, and settle the choice a path through a link needs.
+///
+/// A flag has made it already (`path_mode`). Otherwise the daemon refuses the path with
+/// `confirmation_required` before changing anything; where `can_ask` the person is asked and the
+/// request sent again with the answer, and elsewhere the command says which flags to pass and ends with
+/// the exit code of that refusal. An answer that is neither choice changes nothing and ends the command
+/// as an unanswered question does elsewhere.
+async fn register_through_link(
+    client: &DaemonClient,
+    sending: &Sending,
+    path: &std::path::Path,
+    path_mode: Option<PathMode>,
+    can_ask: bool,
+) -> Result<Root, u8> {
+    let mut path_mode = path_mode;
+    loop {
+        let answer = match sending {
+            Sending::Register => {
+                client
+                    .post("/v1/roots", &register_body(path, path_mode))
+                    .await
+            }
+            Sending::Move(id) => {
+                client
+                    .patch(&format!("/v1/roots/{id}"), &move_body(path, path_mode))
+                    .await
+            }
+        };
+
+        let needed = match (&answer, path_mode) {
+            (Ok(response), None) => serde_json::from_slice::<Problem>(&response.body)
+                .ok()
+                .and_then(|problem| path_mode_needed(&problem)),
+            _ => None,
+        };
+        let Some(needed) = needed else {
+            return answered::<Root>(answer);
+        };
+
+        if !can_ask {
+            eprintln!("keepster: {}", path_mode_hint(&needed));
+
+            return Err(exit_code_for_known(ErrorCode::ConfirmationRequired));
+        }
+        match path_mode_answer(&crate::restore::line(path_mode_question(&needed))) {
+            Some(chosen) => path_mode = Some(chosen),
+            None => {
+                eprintln!("keepster: nothing was changed");
+
+                return Err(exit::USAGE);
+            }
+        }
+    }
 }
 
 fn print_roots(roots: &[Root]) -> u8 {
@@ -447,7 +596,8 @@ fn refuse(command: &str, named: &str) -> u8 {
     exit::USAGE
 }
 
-/// Record that a Root's directory has moved.
+/// Record that a Root's directory has moved. A new path through a link is settled as `watch` settles
+/// one.
 pub async fn move_root(args: &MoveArgs, control_path: &Path) -> u8 {
     let client = DaemonClient::new(control_path);
 
@@ -468,11 +618,15 @@ pub async fn move_root(args: &MoveArgs, control_path: &Path) -> u8 {
         }
     };
 
-    let answer = client
-        .patch(&format!("/v1/roots/{}", root.id), &register_body(&path))
-        .await;
-
-    match answered::<Root>(answer) {
+    match register_through_link(
+        &client,
+        &Sending::Move(root.id),
+        &path,
+        chosen(&args.path_mode),
+        crate::restore::may_ask(args.no_input),
+    )
+    .await
+    {
         Ok(moved) => print_roots(std::slice::from_ref(&moved)),
         Err(code) => code,
     }
@@ -484,7 +638,13 @@ mod tests {
 
     use keepster_api::Problem;
 
-    use super::exit_code_for;
+    use keepster_api::PathMode;
+
+    use super::{
+        PathModeNeeded, chosen, exit_code_for, path_mode_answer, path_mode_needed,
+        path_mode_question,
+    };
+    use crate::command::PathModeArgs;
     use crate::exit;
 
     fn problem(code: &str) -> Problem {
@@ -547,5 +707,80 @@ mod tests {
             exit::OTHER
         );
         assert_eq!(exit_code_for(None, 404), exit::NOT_FOUND);
+    }
+
+    #[test]
+    fn the_answer_to_the_question_is_the_letter_or_the_word_whatever_its_case() {
+        assert_eq!(path_mode_answer("l"), Some(PathMode::Link));
+        assert_eq!(path_mode_answer("L"), Some(PathMode::Link));
+        assert_eq!(path_mode_answer("link"), Some(PathMode::Link));
+        assert_eq!(path_mode_answer("keep-link"), Some(PathMode::Link));
+        assert_eq!(path_mode_answer("c"), Some(PathMode::Canonical));
+        assert_eq!(path_mode_answer("C"), Some(PathMode::Canonical));
+        assert_eq!(path_mode_answer("canonical"), Some(PathMode::Canonical));
+        // Anything else is no answer: a guess would register the wrong directory.
+        assert_eq!(path_mode_answer(""), None);
+        assert_eq!(path_mode_answer("y"), None);
+        assert_eq!(path_mode_answer("lc"), None);
+    }
+
+    #[test]
+    fn the_flags_make_the_choice_and_without_them_there_is_none() {
+        let flags = |keep_link, canonical| PathModeArgs {
+            keep_link,
+            canonical,
+        };
+
+        assert_eq!(chosen(&flags(true, false)), Some(PathMode::Link));
+        assert_eq!(chosen(&flags(false, true)), Some(PathMode::Canonical));
+        assert_eq!(chosen(&flags(false, false)), None);
+    }
+
+    #[test]
+    fn only_a_confirmation_missing_the_path_mode_asks_which_a_path_through_a_link_is() {
+        let mut asking = problem("confirmation_required");
+        asking.details = BTreeMap::from([
+            ("path".to_owned(), "/home/u/current".to_owned()),
+            ("real_path".to_owned(), "/home/u/release".to_owned()),
+            (
+                "missing".to_owned(),
+                keepster_api::MISSING_PATH_MODE.to_owned(),
+            ),
+        ]);
+
+        assert_eq!(
+            path_mode_needed(&asking),
+            Some(PathModeNeeded {
+                path: "/home/u/current".to_owned(),
+                real_path: "/home/u/release".to_owned(),
+            })
+        );
+
+        // Another confirmation, another code, or particulars left out are a refusal like any other.
+        let mut other = asking.clone();
+        other.details.insert("missing".to_owned(), "x".to_owned());
+        assert_eq!(path_mode_needed(&other), None);
+        let mut other = asking.clone();
+        other.code = "path_invalid".to_owned();
+        assert_eq!(path_mode_needed(&other), None);
+        let mut other = asking.clone();
+        other.details.remove("real_path");
+        assert_eq!(path_mode_needed(&other), None);
+        assert_eq!(path_mode_needed(&problem("confirmation_required")), None);
+    }
+
+    #[test]
+    fn the_question_names_both_directories_and_the_letter_that_picks_each() {
+        let needed = PathModeNeeded {
+            path: "/home/u/current".to_owned(),
+            real_path: "/home/u/release".to_owned(),
+        };
+
+        let question = path_mode_question(&needed);
+
+        assert!(question.contains("/home/u/current"), "{question}");
+        assert!(question.contains("/home/u/release"), "{question}");
+        assert!(question.contains("(l)"), "{question}");
+        assert!(question.contains("(c)"), "{question}");
     }
 }

@@ -58,6 +58,9 @@ pub(crate) struct Runtimes {
 #[derive(Debug)]
 struct Runtime {
     path: PathBuf,
+    /// Where the Root's link led when the runtime started, for a Root following its link (ticket 77):
+    /// one whose link is pointed elsewhere is started afresh, watching the new target.
+    target: Option<PathBuf>,
     inbox: mpsc::UnboundedSender<Message>,
     task: JoinHandle<()>,
     activity: Arc<Mutex<Activity>>,
@@ -141,7 +144,9 @@ impl Runtimes {
     /// automatically, hand every running one its current configuration, and stop the rest.
     ///
     /// `roots` is every registered Root with its configuration in force, `None` when it has none — which
-    /// leaves the Root uncaptured rather than captured by the defaults (ticket 04).
+    /// leaves the Root uncaptured rather than captured by the defaults (ticket 04). A Root following its
+    /// link is not captured automatically while the link leads inside another Root, and is watched
+    /// afresh once it leads somewhere other than its runtime started on (ticket 77).
     pub(crate) fn sync(&self, state: &DaemonState, roots: Vec<(RootRecord, Option<Effective>)>) {
         let mut runtimes = self.runtimes();
         // Checked under the lock `stop` sets it under, so no runtime starts after the stop drained them.
@@ -151,6 +156,7 @@ impl Runtimes {
 
         let settled = self.settled.swap(true, Ordering::SeqCst);
         let keep: Vec<RootId> = roots.iter().map(|(record, _)| record.id).collect();
+        let records: Vec<RootRecord> = roots.iter().map(|(record, _)| record.clone()).collect();
         runtimes.retain(|id, runtime| {
             let kept = keep.contains(id);
             if !kept {
@@ -160,13 +166,20 @@ impl Runtimes {
         });
 
         for (record, effective) in roots {
-            let capturable = record.path.is_dir() && effective.is_some();
+            let capturable = record.path.is_dir()
+                && effective.is_some()
+                && keepster_app::roots::overlapped_now(&record, &records).is_none();
             match (runtimes.get(&record.id), effective) {
-                (Some(runtime), Some(effective)) if capturable && runtime.path == record.path => {
+                (Some(runtime), Some(effective))
+                    if capturable
+                        && runtime.path == record.path
+                        && runtime.target == record.target =>
+                {
                     let _ = runtime.inbox.send(Message::Refresh(Box::new(effective)));
                 }
-                // A Root registered, moved or back from being gone: a runtime of its own, whose first
-                // act is the Reconciliation a Registry change owes (ADR 0009).
+                // A Root registered, moved, back from being gone, or whose link now leads elsewhere: a
+                // runtime of its own — a watcher resolves the Root's path once, as it starts — whose
+                // first act is the Reconciliation a Registry change owes (ADR 0009).
                 (_, Some(effective)) if capturable => {
                     if let Some(old) = runtimes.remove(&record.id) {
                         let _ = old.inbox.send(Message::Stop);
@@ -175,8 +188,9 @@ impl Runtimes {
                     runtimes.insert(record.id, start(state, record, effective, reconcile));
                 }
                 _ => {
-                    // A Root that cannot be captured — its directory is gone, or its configuration never
-                    // had a valid version — has nothing for a runtime to do until that changes.
+                    // A Root that cannot be captured — its directory is gone, its link leads inside
+                    // another Root, or its configuration never had a valid version — has nothing for a
+                    // runtime to do until that changes.
                     if let Some(old) = runtimes.remove(&record.id) {
                         let _ = old.inbox.send(Message::Stop);
                     }
@@ -291,6 +305,7 @@ fn start(
     let activity = Arc::new(Mutex::new(Activity::default()));
     describe(&mut lock(&activity), &effective);
     let path = record.path.clone();
+    let target = record.target.clone();
     let task = tokio::spawn(run(
         state.clone(),
         record,
@@ -303,6 +318,7 @@ fn start(
 
     Runtime {
         path,
+        target,
         inbox,
         task,
         activity,
@@ -630,10 +646,14 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
         return (PolicyEvent::CaptureFailed, None);
     }
     // Holding the store, so the Root cannot move under the capture once its volume is followed.
-    let hold = match crate::volumes::gate(state, id, trigger) {
-        Gate::Capture { hold } => hold,
+    let (hold, walked) = match crate::volumes::gate(state, id, trigger) {
+        Gate::Capture { hold, path } => (hold, path),
         Gate::Elsewhere => {
             tracing::warn!(root = %id, %trigger, "the Root's directory is on a volume other than the one registered; nothing is captured from it");
+            return (PolicyEvent::CaptureFailed, None);
+        }
+        Gate::Overlaps { root } => {
+            tracing::warn!(root = %id, %trigger, inside = %root, "the Root's link leads inside another Root; nothing is captured from it");
             return (PolicyEvent::CaptureFailed, None);
         }
     };
@@ -644,6 +664,7 @@ fn capture_now(state: &DaemonState, id: RootId, trigger: Trigger) -> (PolicyEven
             return (PolicyEvent::CaptureFailed, None);
         }
     };
+    let root = crate::snapshots::walked_at(root, walked);
 
     let request = CaptureRequest {
         trigger,

@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 keepster-core.workspace = true
+keepster-path.workspace = true
 keepster-store.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
@@ -18,4 +19,5 @@ toml = "1.1.6"
 tracing = "0.1.44"
 
 [dev-dependencies]
+keepster-path = { workspace = true, features = ["test-util"] }
 tempfile = "3.27.0"

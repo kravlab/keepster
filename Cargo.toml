@@ -20,6 +20,7 @@ keepster-app = { path = "crates/keepster-app", version = "0.1.0" }
 keepster-cli = { path = "crates/keepster-cli", version = "0.1.0" }
 keepster-core = { path = "crates/keepster-core", version = "0.1.0" }
 keepster-daemon = { path = "crates/keepster-daemon", version = "0.1.0" }
+keepster-path = { path = "crates/keepster-path", version = "0.1.0" }
 keepster-service = { path = "crates/keepster-service", version = "0.1.0" }
 keepster-store = { path = "crates/keepster-store", version = "0.1.0" }
 keepster-testkit = { path = "crates/keepster-testkit", version = "0.1.0" }

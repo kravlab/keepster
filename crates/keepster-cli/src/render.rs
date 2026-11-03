@@ -269,6 +269,10 @@ pub fn write_roots(roots: &[Root], out: &mut impl Write) -> io::Result<()> {
                 "its history store cannot be written, so nothing is captured, and nowhere else instead"
                     .to_owned(),
             ),
+            Some("root_overlaps") => Some(
+                "its link now leads inside another Root, so nothing is captured; point the link elsewhere, its history reads as ever"
+                    .to_owned(),
+            ),
             Some("watch_blind") => Some(
                 "changes made on the server are never announced here; it is reconciled periodically"
                     .to_owned(),

@@ -6,7 +6,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Json, response::IntoResponse};
 use keepster_api::{
-    ErrorCode, Event, FollowTargets, Problem, RegisterRoot, Root, RootState, UnwatchedRoot,
+    ErrorCode, Event, FollowTargets, MoveRoot, Problem, RegisterRoot, Root, RootState,
+    UnwatchedRoot,
 };
 use keepster_app::roots::{self, RegisterError, RootError};
 use keepster_core::{RootId, VolumeVerdict};
@@ -62,11 +63,12 @@ pub(crate) async fn list(
         Some(path) => {
             let path = absolute_query_path(path)?;
             let found = roots::resolve(&registry, &path).map_err(registry_problem)?;
+            let records = registry.readable().map_err(registry_problem)?;
 
             Ok(Json(
                 found
                     .iter()
-                    .map(|record| describe_record(&state, record))
+                    .map(|record| describe_record(&state, record, Some(&records)))
                     .collect(),
             ))
         }
@@ -140,7 +142,7 @@ pub(crate) async fn show(
     request_body = RegisterRoot,
     responses(
         (status = 201, description = "The directory is now a Watched Root.", body = Root),
-        (status = 400, description = "The path is not a directory, or cannot be resolved; or the body is not JSON.", body = Problem, content_type = "application/problem+json"),
+        (status = 400, description = "The path is not a directory, or cannot be resolved; or the body is not JSON; or the path passes through a link and `path_mode` is absent (`confirmation_required`, with `details.path`, `details.real_path` and `details.missing = path_mode`), in which case nothing is registered.", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The directory overlaps a Root that is already registered.", body = Problem, content_type = "application/problem+json"),
@@ -152,18 +154,30 @@ pub(crate) async fn register(
     body: Result<Json<RegisterRoot>, JsonRejection>,
 ) -> Result<impl IntoResponse, ProblemResponse> {
     let Json(request) = body.map_err(body_problem)?;
-    let registry = state.registry();
-    let record = roots::register(&registry, now(), request.path.as_ref(), &|path| {
-        crate::volumes::place_of(&*state.volumes, path)
-    })
-    .map_err(register_problem)?;
-    // Announced before the reload, so a state the new Root reaches is announced after it exists.
-    state.publish(Event::RootRegistered {
-        root: record.id.to_string(),
-    });
-    configuration::reload_with(&state, &registry);
+    let record = {
+        let registry = state.registry();
+        let record = roots::register(
+            &registry,
+            now(),
+            request.path.as_ref(),
+            request.path_mode,
+            &|path| crate::volumes::place_of(&*state.volumes, path),
+        )
+        .map_err(register_problem)?;
+        // Announced before the reload, so a state the new Root reaches is announced after it exists.
+        state.publish(Event::RootRegistered {
+            root: record.id.to_string(),
+        });
+        configuration::reload_with(&state, &registry);
 
-    Ok((StatusCode::CREATED, Json(describe_record(&state, &record))))
+        record
+    };
+
+    // The Registry's lock is released: describing the Root takes it again.
+    Ok((
+        StatusCode::CREATED,
+        Json(describe_record(&state, &record, None)),
+    ))
 }
 
 /// Whether a deregistration also erases the History Store.
@@ -295,10 +309,10 @@ where
     operation_id = "move_root",
     tag = "roots",
     params(RootAddress),
-    request_body = RegisterRoot,
+    request_body = MoveRoot,
     responses(
         (status = 200, description = "The Root, at its new path.", body = Root),
-        (status = 400, description = "The new path is not a directory; or the body is not JSON.", body = Problem, content_type = "application/problem+json"),
+        (status = 400, description = "The new path is not a directory; or the body is not JSON; or the new path passes through a link and `path_mode` is absent (`confirmation_required`, with `details.path`, `details.real_path` and `details.missing = path_mode`), in which case the Root is not moved.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The new path overlaps another Root.", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
@@ -309,21 +323,30 @@ where
 pub(crate) async fn move_root(
     State(state): State<DaemonState>,
     Path(RootAddress { id }): Path<RootAddress>,
-    body: Result<Json<RegisterRoot>, JsonRejection>,
+    body: Result<Json<MoveRoot>, JsonRejection>,
 ) -> Result<Json<Root>, ProblemResponse> {
     let Json(request) = body.map_err(body_problem)?;
     let id = parse_id(&id)?;
-    let registry = state.registry();
-    let record = roots::move_root(&registry, id, request.path.as_ref(), &|path| {
-        crate::volumes::place_of(&*state.volumes, path)
-    })
-    .map_err(root_problem)?;
-    state.publish(Event::RootMoved {
-        root: id.to_string(),
-    });
-    configuration::reload_with(&state, &registry);
+    let record = {
+        let registry = state.registry();
+        let record = roots::move_root(
+            &registry,
+            id,
+            request.path.as_ref(),
+            request.path_mode,
+            &|path| crate::volumes::place_of(&*state.volumes, path),
+        )
+        .map_err(root_problem)?;
+        state.publish(Event::RootMoved {
+            root: id.to_string(),
+        });
+        configuration::reload_with(&state, &registry);
 
-    Ok(Json(describe_record(&state, &record)))
+        record
+    };
+
+    // The Registry's lock is released: describing the Root takes it again.
+    Ok(Json(describe_record(&state, &record, None)))
 }
 
 /// Every Root as `status` and the registry listing report it.
@@ -335,8 +358,15 @@ pub(crate) fn reported(
     registry: &keepster_store::Registry,
 ) -> Result<Vec<Root>, ProblemResponse> {
     let entries = roots::list(registry).map_err(registry_problem)?;
+    let records: Vec<RootRecord> = entries
+        .iter()
+        .filter_map(|entry| entry.record.as_ref().ok().cloned())
+        .collect();
 
-    Ok(entries.iter().map(|entry| describe(state, entry)).collect())
+    Ok(entries
+        .iter()
+        .map(|entry| describe(state, entry, &records))
+        .collect())
 }
 
 /// The Registry's record for one Root, or the problem that explains why there is none.
@@ -435,10 +465,11 @@ pub(crate) fn rfc3339(moment: std::time::SystemTime) -> Option<String> {
 ///
 /// A Root whose record cannot be read is still reported, as `Unavailable` with the reason: ticket 08
 /// makes such a Root a value rather than an error, and ticket 26 refuses a newer store format as
-/// narrowly as its level allows — this Root, not the whole listing.
-fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
+/// narrowly as its level allows — this Root, not the whole listing. `records` is every readable Root,
+/// which a Root following its link is compared with.
+fn describe(state: &DaemonState, entry: &RegistryEntry, records: &[RootRecord]) -> Root {
     match &entry.record {
-        Ok(record) => describe_record(state, record),
+        Ok(record) => describe_record(state, record, Some(records)),
         Err(error) => Root {
             id: entry.id.to_string(),
             // A record too new to trust still parsed, so its path is known; a corrupt one gives nothing,
@@ -449,6 +480,8 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
             oldest_pending_seconds: None,
             follow_targets: None,
             unrecognized_records: None,
+            path_mode: None,
+            real_path: None,
             state_code: Some(
                 match error {
                     RegistryError::TooNew { .. } => "store_too_new",
@@ -464,17 +497,31 @@ fn describe(state: &DaemonState, entry: &RegistryEntry) -> Root {
 ///
 /// The state is the honest one this build can determine, the most serious reason first: a directory
 /// that is gone means nothing can be captured at all, which `GLOSSARY.md` calls `Unavailable`, and so
-/// does a configuration with no version to apply; one whose current version is invalid leaves the last
+/// do a link pointed inside another of `records` (ticket 77) and a configuration with no version to
+/// apply; one whose current version is invalid leaves the last
 /// known-good in force, `Degraded`. Past that, a Root is `Watching` only while the guarantee holds as
 /// promised — Reconciliation at the start, a watcher or a periodic pass, and a `stat` filter worth its
 /// name — and `Degraded` with the reason otherwise.
-fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) -> Root {
+///
+/// `records` are the Roots a link-mode Root is compared with, when the caller has them already (a
+/// listing reads them once for all its Roots). `None` reads them here, and only for a link-mode Root,
+/// since no other Root can overlap another after registration. Reading takes the Registry's lock, so a
+/// caller that holds it passes `records`.
+fn describe_record(
+    daemon: &DaemonState,
+    record: &keepster_store::RootRecord,
+    records: Option<&[RootRecord]>,
+) -> Root {
     let activity = daemon.runtimes.activity(record.id).unwrap_or_default();
     // From the base rather than the Registry, whose lock a caller may be holding.
     let location =
         keepster_app::snapshots::location(&daemon.store_base.join(record.id.to_string()));
     let state = if !record.path.is_dir() {
         Some((RootState::Unavailable, "root_missing"))
+    } else if overlaps_another(daemon, record, records) {
+        // A Root following its link, pointed inside another Root: capturing it would capture that
+        // Root's files a second time, so nothing is, until the link is pointed back out (ticket 77).
+        Some((RootState::Unavailable, "root_overlaps"))
     } else if crate::volumes::verdict(&*daemon.volumes, record) == VolumeVerdict::Elsewhere {
         // A directory, but on a volume other than the one registered — an empty mount point, most
         // likely: nothing may be captured from it, and the history is as readable as ever (ADR 0011).
@@ -518,6 +565,34 @@ fn describe_record(daemon: &DaemonState, record: &keepster_store::RootRecord) ->
             interval: interval.as_secs(),
         }),
         unrecognized_records: (activity.unrecognized > 0).then_some(activity.unrecognized),
+        path_mode: record.path_mode,
+        // Where the link leads as this request is answered, not as last recorded: a link led inside
+        // another Root is never recorded, and the tick that records the rest may not have run yet.
+        real_path: (record.path_mode == Some(keepster_core::PathMode::Link))
+            .then(|| keepster_path::real_path(&record.path).ok())
+            .flatten()
+            .map(|real| real.to_string_lossy().into_owned()),
+    }
+}
+
+/// Whether a Root following its link is pointed inside another Root, judged against `records`, or the
+/// Registry's when the caller has none. A Registry that cannot be read judges nothing: the Root is
+/// reported as it would be without the comparison.
+fn overlaps_another(
+    daemon: &DaemonState,
+    record: &RootRecord,
+    records: Option<&[RootRecord]>,
+) -> bool {
+    if record.path_mode != Some(keepster_core::PathMode::Link) {
+        return false;
+    }
+    match records {
+        Some(records) => keepster_app::roots::overlapped_now(record, records).is_some(),
+        None => {
+            let records = daemon.registry().readable().unwrap_or_default();
+
+            keepster_app::roots::overlapped_now(record, &records).is_some()
+        }
     }
 }
 
@@ -569,6 +644,9 @@ fn register_problem(error: RegisterError) -> ProblemResponse {
         )
         .with_detail("path", path.to_string_lossy())
         .with_detail("root", existing.to_string()),
+        RegisterError::PathModeRequired(ref required) => {
+            path_mode_required(error.to_string(), &required.path, &required.real)
+        }
         RegisterError::Registry(error) => registry_problem(error),
     }
 }
@@ -589,9 +667,29 @@ fn root_problem(error: RootError) -> ProblemResponse {
             error.to_string(),
         )
         .with_detail("path", path.to_string_lossy()),
+        RootError::PathModeRequired(ref required) => {
+            path_mode_required(error.to_string(), &required.path, &required.real)
+        }
         RootError::Registry(error) => registry_problem(error),
         RootError::Store(error) => crate::snapshots::store_problem(error),
     }
+}
+
+/// A path through a link given without saying whether the Root follows the link or its target (ticket
+/// 77): nothing was registered, and the details say what to choose between.
+fn path_mode_required(
+    message: String,
+    path: &std::path::Path,
+    real: &std::path::Path,
+) -> ProblemResponse {
+    ProblemResponse::new(
+        StatusCode::BAD_REQUEST,
+        ErrorCode::ConfirmationRequired,
+        message,
+    )
+    .with_detail("path", path.to_string_lossy())
+    .with_detail("real_path", real.to_string_lossy())
+    .with_detail("missing", keepster_api::MISSING_PATH_MODE)
 }
 
 /// A Registry that cannot be read at all — as opposed to one record that cannot — is a failure of the

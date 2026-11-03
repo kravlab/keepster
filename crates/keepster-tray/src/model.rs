@@ -406,6 +406,8 @@ mod tests {
             oldest_pending_seconds: None,
             follow_targets: None,
             unrecognized_records: None,
+            path_mode: None,
+            real_path: None,
         }
     }
 

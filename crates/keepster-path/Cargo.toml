@@ -1,0 +1,23 @@
+[package]
+name = "keepster-path"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Both default-off, so the crate carries no dependency of its own: the domain core uses its pure
+# functions and `PathMode` as they are, the wire and the record enable `serde`, and only the daemon's
+# schema generation, through `keepster-api`'s `openapi` feature, enables `utoipa`.
+serde = ["dep:serde"]
+utoipa = ["dep:utoipa"]
+# Test helpers only, default-off: enabled from the dev-dependencies of the crates whose tests use them.
+test-util = []
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+utoipa = { version = "5.5.0", default-features = false, features = ["macros"], optional = true }

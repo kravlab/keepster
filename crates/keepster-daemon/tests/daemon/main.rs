@@ -39,6 +39,7 @@ mod preview;
 mod reading;
 mod reconciliation;
 mod restore;
+mod root_links;
 mod root_states;
 mod roots;
 mod rules;

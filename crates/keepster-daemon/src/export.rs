@@ -116,7 +116,7 @@ fn parsed(request: ExportRequest) -> Result<export::ExportRequest, ProblemRespon
     let paths = crate::wire::requested(&request.paths, &request.paths_bytes)?;
     // Rid of `.` and `..` by name before anything compares it: a destination spelt to climb back into a
     // History Store or a Root is checked as where it leads.
-    let dest = crate::places::lexical(&PathBuf::from(&request.dest));
+    let dest = keepster_path::lexical(&PathBuf::from(&request.dest));
     if !dest.is_absolute() {
         return Err(ProblemResponse::new(
             StatusCode::BAD_REQUEST,
@@ -157,8 +157,9 @@ fn destination(
     state: &DaemonState,
     dest: &std::path::Path,
 ) -> Result<Destination, ProblemResponse> {
-    let real = crate::places::real(dest).unwrap_or_else(|| dest.to_path_buf());
-    let stores = crate::places::real(&state.store_base).unwrap_or_else(|| state.store_base.clone());
+    let real = keepster_app::roots::real_or_nearest(dest).unwrap_or_else(|| dest.to_path_buf());
+    let stores = keepster_app::roots::real_or_nearest(&state.store_base)
+        .unwrap_or_else(|| state.store_base.clone());
     if real.starts_with(&stores) {
         return Err(ProblemResponse::new(
             StatusCode::BAD_REQUEST,

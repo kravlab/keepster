@@ -6,7 +6,7 @@
 //! followed to its end unless `--detach`.
 
 use std::fs::File;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -86,7 +86,7 @@ pub async fn export(args: &ExportArgs, control_path: &Path, now: SystemTime) -> 
         client.events(None).await.ok()
     };
     let url = format!("/v1/roots/{}/export", root.id);
-    let interactive = !args.resolving.no_input && !args.json && io::stdin().is_terminal();
+    let interactive = crate::restore::may_ask(args.resolving.no_input) && !args.json;
     loop {
         let (resolutions, resolutions_bytes) = resolutions_to_wire(&answers.resolutions);
         let request = ExportRequest {

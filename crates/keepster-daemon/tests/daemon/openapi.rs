@@ -168,6 +168,7 @@ fn every_success_shape_the_api_already_has_is_a_named_schema() {
         "Root",
         "RootState",
         "RegisterRoot",
+        "MoveRoot",
         "Snapshot",
         "Change",
         "Timeline",

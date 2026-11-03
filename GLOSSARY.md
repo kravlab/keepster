@@ -15,6 +15,19 @@ A Root that is no longer watched but whose history is kept: nothing captures it 
 last state, which is pinned, and its identity alone reaches it. Erasing its history erases it entirely.
 _Avoid_: former Root, orphan, orphaned store, archived Root
 
+**Link-mode Root**:
+A Root registered through a link (a symlink or similar) with the person's word that the link, not what it points at, is
+the Root: the identity stays with the link, so retargeting the link keeps the Root and its history, and the Root
+follows the link to its new target. If the link now leads inside another Root, the Root is Unavailable
+(`root_overlaps`) until the overlap ends, and the other Roots and the History Store inside its new target are Withheld.
+_Avoid_: symlink Root, followed Root
+
+**Canonical Root**:
+A Root registered through a link with the person's word that what the link points at is the Root: the identity stays
+with the resolved directory, so retargeting the link leaves the Root where it was. Registering through a link asks
+which of the two is meant.
+_Avoid_: resolved Root, pinned Root
+
 **Move**:
 Recording, at the person's word, that a Root's directory now lives at another path: the identity, and with it
 the history, stays the same, and no file is touched. Never inferred, because to the daemon a moved directory is
@@ -160,8 +173,9 @@ _Avoid_: broken, error state, unhealthy
 
 **Unavailable**:
 The state of a Root that cannot be captured at all — its directory is missing, unmounted or unreadable, it is on
-a volume other than the one it was registered on, its History Store cannot be written or was written by a version
-this one cannot open, or its configuration has never had a valid version to fall back on. Distinct from Degraded,
+a volume other than the one it was registered on, its link (for a link-mode Root) leads inside another Root, its
+History Store cannot be written or was written by a version this one cannot open, or its configuration has never had
+a valid version to fall back on. Distinct from Degraded,
 where watching continues on worse terms; an Unavailable Root is never deregistered and its History Store is kept,
 because the Root's identity does not depend on its path. **It does not mean the history is unreadable**: the
 timeline, diffs and content read as ever, and only capture and Restore stop.

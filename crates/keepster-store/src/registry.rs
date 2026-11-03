@@ -8,7 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use keepster_core::{RootId, VolumePlace};
+use keepster_core::{PathMode, RootId, VolumePlace};
 use serde::{Deserialize, Serialize};
 
 use crate::atomic;
@@ -52,6 +52,12 @@ pub struct RootRecord {
     /// Where it sits on its volume, recorded at registration and compared before every capture
     /// (ADR 0011) — `None` where the volume could not be identified.
     pub volume: Option<VolumePlace>,
+    /// How the Root resolves the link it was registered through (ticket 77) — `None` where its path
+    /// passes through no link.
+    pub path_mode: Option<PathMode>,
+    /// Where the link led when last recorded: the real path of a Root following its link, `None`
+    /// otherwise.
+    pub target: Option<PathBuf>,
 }
 
 /// Why a Registry operation failed.
@@ -359,6 +365,13 @@ struct RecordFile {
     /// The Root's place within that volume, `/`-separated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     within_volume: Option<String>,
+    /// How a Root registered through a link resolves it. Optional and additive like `volume`, and absent
+    /// for a path through no link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path_mode: Option<PathMode>,
+    /// Where the link led when last recorded, for a Root following its link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<PathBuf>,
 }
 
 fn read_record(path: &Path) -> Result<RootRecord, RegistryError> {
@@ -391,6 +404,8 @@ fn read_record(path: &Path) -> Result<RootRecord, RegistryError> {
             identity,
             within: file.within_volume.unwrap_or_default(),
         }),
+        path_mode: file.path_mode,
+        target: file.target,
     })
 }
 
@@ -414,6 +429,8 @@ fn write_record(path: &Path, record: &RootRecord) -> Result<(), RegistryError> {
         path: record.path.clone(),
         volume: record.volume.as_ref().map(|place| place.identity.clone()),
         within_volume: record.volume.as_ref().map(|place| place.within.clone()),
+        path_mode: record.path_mode,
+        target: record.target.clone(),
     };
     let text = toml::to_string_pretty(&file).map_err(|error| RegistryError::Unreadable {
         path: path.to_path_buf(),
