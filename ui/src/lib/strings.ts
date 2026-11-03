@@ -91,6 +91,79 @@ export const strings = {
     state: (state: string) => ROOT_STATES[state] ?? state,
     /** Why a Root is not `watching`, by its `state_code`. */
     reason: (code: string) => ROOT_REASONS[code] ?? code,
+    /** Opens the add dialog, on the page and in the empty state, and heads it. */
+    add: 'Add a directory',
+  },
+
+  /** The add dialog and the banner after it (ticket 93). */
+  adding: {
+    /** Before the directory the browser has listed, the one that will be added. */
+    chosen: 'Watch',
+    go: 'Add',
+    working: 'Adding…',
+    cancel: 'Cancel',
+    /** Before the daemon's reason a directory was not added. */
+    failed: 'Not added:',
+    /** Why `path` was not added when it overlaps the Root at `rootPath`, a Root the page knows. */
+    overlaps: (path: string, rootPath: string) => `${path} overlaps the Root at ${rootPath}`,
+    /** The question a path through a link needs, worded as `keepster watch` asks it. */
+    link: {
+      question: (path: string, realPath: string) =>
+        `${path} leads through a link to ${realPath}. Use the link, following it when it is pointed ` +
+        `elsewhere, or the real directory?`,
+      link: 'Use the link',
+      canonical: 'Use the real directory',
+    },
+    /** The banner once the directory is a Root; the page stays where it is. */
+    added: (path: string) => `${path} is now watched.`,
+    open: 'Open its history',
+    dismiss: 'Dismiss',
+  },
+
+  /**
+   * What the "added" banner says while store maintenance cannot run, as `keepster watch` says it (ticket
+   * 11), without the part about the shell's own `git`: a page cannot know what a shell runs.
+   */
+  maintenance: {
+    title: 'Store maintenance is unavailable.',
+    /** The `git` the daemon found, where it knows its version as well. */
+    gitAt: (version: string, path: string) => `git ${version} at ${path}`,
+    /** The `git` the daemon found, without a version. */
+    gitPath: (path: string) => `git ${path}`,
+    /**
+     * Why maintenance cannot run, by the daemon's `git.reason`, in the words `keepster watch` uses. An open
+     * set: a reason without an entry is shown as it is. `too_old` and `failed` are worded below.
+     */
+    reasons: {
+      missing: 'No git was found',
+      macos_stub: 'Only the macOS stub is installed, without the Command Line Tools',
+      not_executable: 'It could not be run',
+    } as Partial<Record<string, string>>,
+    /** Why, for `too_old`. */
+    tooOld: (minimum: string) => `It is older than ${minimum}`,
+    /** What `why` costs while no usable git is installed. */
+    unreclaimed: (why: string, minimum: string) =>
+      `${why}; nothing Retention removes is reclaimed until git ${minimum} or newer is installed.`,
+    /** Why, and what it costs, for `failed`. */
+    failed:
+      'A Maintenance Pass with it failed; nothing Retention removes is reclaimed until the daemon restarts or git.path changes.',
+    /** What running `git` said, word for word. */
+    gitSaid: (detail: string) => `git said: ${detail}`,
+    /** Before the command that installs `git`, which is set as code; Keepster never runs it. */
+    install: 'Install it:',
+  },
+
+  /** The folder browser over the daemon's machine (ticket 93), for adding a directory and recording a Move. */
+  folders: {
+    label: 'Folders',
+    /** The field holding the directory listed, where an absolute path can be typed or pasted. */
+    path: 'Path',
+    go: 'Go',
+    up: 'Up',
+    showHidden: 'Show hidden folders',
+    /** Beside a folder that cannot be listed, which cannot be gone into. */
+    unreadable: 'cannot be listed',
+    empty: 'No folders here.',
   },
 
   themeLabel: 'Theme',

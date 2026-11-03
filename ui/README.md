@@ -24,8 +24,9 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
 - `src/lib/`: everything that is not drawing, with unit tests beside it. The `/v1` client and its narrow
   types (`api.ts`, `wire.ts`), what a failure says on screen (`failures.ts`), daemon hunks to editor ranges
   (`hunks.ts`, and its failure in `mismatch.ts`), the live event stream, one per page (`events.ts`), the
-  Watched Roots kept current from it (`roots.svelte.ts`), the rail's day
-  headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
+  Watched Roots kept current from it (`roots.svelte.ts`), adding a directory as a Root (`adding.svelte.ts`)
+  and the notice when store maintenance is unavailable (`maintenance.ts`), the folder browser over the
+  daemon's machine (`folders.svelte.ts`), the rail's day headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
   Root-relative paths (`paths.ts`), the changed-file list and what the diff pane is given (`files.ts`), the
   pane's data loaded for one Snapshot and named by it (`shown.ts`), a
   Snapshot's changes in words and what counts as routine (`summary.ts`), the selection carried across view
@@ -35,7 +36,9 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   newline-delimited JSON off a stream (`ndjson.ts`), search results and a content search's stream folded
   (`search.ts`, and one search run at a time in `searching.svelte.ts`), and every user-facing text
   (`strings.ts`). `testing.ts` is test support only: a hand-driven event stream.
-- `src/roots/`: the Root management page the header's Manage Roots opens (`RootsPage.svelte`).
+- `src/roots/`: the Root management page the header's Manage Roots opens (`RootsPage.svelte`), its add
+  dialog (`AddDialog.svelte`), and the banner once a directory is added (`AddedBanner.svelte`).
+- `src/folders/`: the folder picker that chooses a directory on the daemon's machine (`FolderPicker.svelte`).
 - `src/editor/`: the CodeMirror adapter, its colors read from the theme's variables (`palette.ts`), and the
   curated grammars, loaded lazily.
 - `src/search/`: the search overlay the header's field opens (`SearchOverlay.svelte`).

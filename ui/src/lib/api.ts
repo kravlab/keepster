@@ -9,18 +9,22 @@ import type {
   ContentRecord,
   Diff,
   DiffFile,
+  DirectoryListing,
   Entries,
   Entry,
   PathHit,
+  PathMode,
   PathResolution,
   PathSearch,
   Preferences,
   Problem,
+  RegisterRoot,
   RestoreIssue,
   RestoreRequest,
   Restored,
   RestoredPath,
   Root,
+  Status,
   Timeline,
 } from './wire'
 import { momentOf } from './ids'
@@ -35,7 +39,10 @@ export class SessionEnded extends Error {
   override name = 'SessionEnded'
 }
 
-/** The daemon refused or failed a request; `detail` is its own explanation, when it gave one. */
+/**
+ * The daemon refused or failed a request; `detail` is its own explanation, when it gave one, and `details`
+ * its machine-readable particulars, such as the `root` a `root_overlaps` refusal names.
+ */
 export class ApiError extends Error {
   override name = 'ApiError'
 
@@ -43,6 +50,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly detail?: string,
     readonly code?: string,
+    readonly details?: Record<string, string>,
   ) {
     super(detail ?? `HTTP ${status}`)
   }
@@ -54,9 +62,9 @@ export class UnexpectedAnswer extends Error {
 }
 
 /**
- * A `/v1` path with its segments escaped and its query, leaving out absent parameters. A Root-relative
- * `path` goes last, as `pathQuery` encodes its bytes: `URLSearchParams` takes text, and would spell a byte
- * that is not UTF-8 as U+FFFD (ticket 74).
+ * A `/v1` path with its segments escaped and its query, leaving out absent parameters. A `path` — Root-
+ * relative, or an absolute path on the daemon's machine for `/v1/fs` — goes last, as `pathQuery` encodes
+ * its bytes: `URLSearchParams` takes text, and would spell a byte that is not UTF-8 as U+FFFD (ticket 74).
  */
 function url(segments: readonly string[], query: Record<string, string | undefined> = {}, path?: string): string {
   const target = `/v1/${segments.map(encodeURIComponent).join('/')}`
@@ -151,7 +159,7 @@ async function problemOf(response: Response): Promise<Partial<Problem>> {
 /** The failure an answer that is not OK stands for: `SessionEnded` for a 401, `ApiError` otherwise. */
 function failure(response: Response, problem: Partial<Problem>): Error {
   if (response.status === 401) return new SessionEnded('the session has ended')
-  return new ApiError(response.status, problem.detail, problem.code)
+  return new ApiError(response.status, problem.detail, problem.code, problem.details)
 }
 
 /** GETs `target`, turning a failure into `SessionEnded` or `ApiError`; `signal` aborts the request. */
@@ -174,6 +182,15 @@ function sendJson(method: 'POST' | 'PUT', target: string, body: unknown): Promis
 /** Every registered Root. */
 export function listRoots(): Promise<Root[]> {
   return getJson(url(['roots']))
+}
+
+/**
+ * The directories in the absolute directory `path` on the daemon's machine, or in its home directory
+ * when `path` is absent. A path that is not absolute, names nothing, is not a directory or cannot be
+ * listed is refused as an `ApiError` with the daemon's explanation.
+ */
+export function listDirectories(path?: string): Promise<DirectoryListing> {
+  return getJson(url(['fs'], {}, path))
 }
 
 /**
@@ -265,6 +282,41 @@ export async function restore(root: string, request: RestoreRequest): Promise<Re
     return { kind: 'blocked', paths: problem.paths.map(restoredPathIn) }
   }
   throw failure(response, problem)
+}
+
+/**
+ * What registering a directory came to: the Root it now is, or a refusal asking which a path through a
+ * link is — `path` as it was sent and `realPath` where the link leads now — with nothing registered. Any
+ * other refusal is thrown, as everywhere.
+ */
+export type RegisterAnswer =
+  { kind: 'registered'; root: Root } | { kind: 'throughLink'; path: string; realPath: string }
+
+/**
+ * Registers the directory at `path` as a Watched Root. A path through a link is refused until `pathMode`
+ * says which the Root is; that refusal is answered as `throughLink`, so the person can be asked.
+ */
+export async function registerRoot(path: string, pathMode?: PathMode): Promise<RegisterAnswer> {
+  const body: RegisterRoot = pathMode === undefined ? { path } : { path, path_mode: pathMode }
+  const response = await sendJson('POST', url(['roots']), body)
+  if (response.ok) return { kind: 'registered', root: (await response.json()) as Root }
+  const problem = await problemOf(response)
+  const details = problem.details
+  if (
+    response.status === 400 &&
+    problem.code === 'confirmation_required' &&
+    details?.missing === 'path_mode' &&
+    details.path !== undefined &&
+    details.real_path !== undefined
+  ) {
+    return { kind: 'throughLink', path: details.path, realPath: details.real_path }
+  }
+  throw failure(response, problem)
+}
+
+/** The daemon's health surface; only its maintenance rows are read. */
+export function readStatus(): Promise<Status> {
+  return getJson(url(['status']))
 }
 
 /** The web UI's preferences, as the daemon keeps them. */

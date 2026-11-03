@@ -4,25 +4,67 @@
    * that is not `watching`, the reason in words. The list is the live one the shell keeps, so a Root
    * registered, unwatched or moved elsewhere shows here as it happens. Opening a Root's history is the
    * person's choice, from its row; the page never goes anywhere by itself.
+   *
+   * It adds a directory too (ticket 93), through the add dialog. Once added, the page stays as it is: the
+   * new Root shows in the list as the live list brings it, and a banner says it was added, with the way to
+   * its history and, while store maintenance cannot run, what `keepster watch` would warn of.
    */
+  import { onMount } from 'svelte'
+  import { AddingRoot } from '../lib/adding.svelte'
+  import { failureText } from '../lib/failures'
+  import { FolderBrowser } from '../lib/folders.svelte'
   import { strings } from '../lib/strings'
   import type { Root } from '../lib/wire'
+  import AddDialog from './AddDialog.svelte'
+  import AddedBanner from './AddedBanner.svelte'
 
   let {
     roots,
     current,
     onOpen,
+    addFirst = false,
+    onSessionEnded,
   }: {
     roots: Root[]
     /** The Root whose history the shell shows, if any; marked in the list. */
     current: string | null
     /** Called with a Root's id when its history is asked for. */
     onOpen: (id: string) => void
+    /** Whether the page opens with the add dialog, as the empty state's way here asks. Read once. */
+    addFirst?: boolean
+    onSessionEnded: () => void
   } = $props()
+
+  /* The add flow under way, and then its outcome for the banner, until dismissed or another add starts. */
+  let adding = $state<AddingRoot | null>(null)
+  /* Where the directory to add is chosen; kept across adds, so the browser reopens where it was. */
+  let browser = $state<FolderBrowser | null>(null)
+  const added = $derived(adding?.step.kind === 'done' ? adding.step : null)
+
+  /**
+   * Opens the add dialog with a fresh flow, the browser where it was but without a refusal from before.
+   * The flow names an overlapped Root by its path from the live list.
+   */
+  function startAdding() {
+    const failure = (e: unknown) => failureText(e, onSessionEnded)
+    browser ??= new FolderBrowser(failure)
+    browser.startOver()
+    adding = new AddingRoot(failure, (id) => roots.find((r) => r.id === id))
+  }
+
+  onMount(() => {
+    if (addFirst) startAdding()
+  })
 </script>
 
 <section class="page" aria-labelledby="roots-title">
-  <h1 id="roots-title">{strings.roots.title}</h1>
+  <div class="top">
+    <h1 id="roots-title">{strings.roots.title}</h1>
+    <button type="button" onclick={startAdding}>{strings.roots.add}</button>
+  </div>
+  {#if added}
+    <AddedBanner root={added.root} maintenance={added.maintenance} {onOpen} onDismiss={() => (adding = null)} />
+  {/if}
   {#if roots.length === 0}
     <p class="muted">{strings.noRoots}</p>
   {:else}
@@ -44,6 +86,10 @@
   {/if}
 </section>
 
+{#if adding && browser && !added}
+  <AddDialog {adding} {browser} onClose={() => (adding = null)} />
+{/if}
+
 <style>
   .page {
     width: min(880px, 100%);
@@ -53,6 +99,13 @@
   }
   h1 {
     font-size: 15px;
+    margin: 0;
+  }
+  .top {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
     margin: 0 0 12px;
   }
   ul {

@@ -6,10 +6,13 @@ import {
   fileContent,
   fileDiff,
   entryAt,
+  listDirectories,
   listRoots,
   newestTouching,
   previousSnapshot,
   readPreferences,
+  readStatus,
+  registerRoot,
   restore,
   searchContent,
   searchPaths,
@@ -281,6 +284,79 @@ describe('the /v1 client', () => {
       )
 
       await expect(searchPaths('txt')).resolves.toMatchObject({ hits: [{ path: odd }] })
+    })
+  })
+
+  describe('choosing and registering a directory', () => {
+    it('lists the home directory without a path, and an absolute directory by its path', async () => {
+      const asked = answer(() => json({ path: '/home/u', directories: [] }))
+
+      await listDirectories()
+      await listDirectories('/home/u/my src')
+
+      expect(asked).toEqual(['/v1/fs', '/v1/fs?path=/home/u/my%20src'])
+    })
+
+    it('posts the path to register, with the path mode only once one is chosen', async () => {
+      const sent: { url: string; init?: RequestInit }[] = []
+      const registered = { id: 'r1', path: '/home/u/src', state: 'watching' }
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push({ url, init })
+        return Promise.resolve(json(registered, 201))
+      })
+
+      await expect(registerRoot('/home/u/src')).resolves.toEqual({ kind: 'registered', root: registered })
+      await registerRoot('/home/u/src', 'link')
+
+      expect(sent.map((s) => [s.url, s.init?.method, s.init?.body])).toEqual([
+        ['/v1/roots', 'POST', JSON.stringify({ path: '/home/u/src' })],
+        ['/v1/roots', 'POST', JSON.stringify({ path: '/home/u/src', path_mode: 'link' })],
+      ])
+    })
+
+    it('answers a refusal asking which a path through a link is with the path and where it leads', async () => {
+      answer(() =>
+        json(
+          {
+            title: 'Bad Request',
+            status: 400,
+            detail: 'leads through a link',
+            code: 'confirmation_required',
+            details: { path: '/home/u/proj', real_path: '/mnt/work/proj', missing: 'path_mode' },
+          },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(registerRoot('/home/u/proj')).resolves.toEqual({
+        kind: 'throughLink',
+        path: '/home/u/proj',
+        realPath: '/mnt/work/proj',
+      })
+    })
+
+    it('reports any other refusal to register as a failure', async () => {
+      answer(() =>
+        json(
+          { title: 'Conflict', status: 409, detail: '/home/u/src overlaps the Root r0', code: 'root_overlaps' },
+          409,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(registerRoot('/home/u/src')).rejects.toMatchObject({
+        status: 409,
+        code: 'root_overlaps',
+        detail: '/home/u/src overlaps the Root r0',
+      })
+    })
+
+    it('reads the status', async () => {
+      const asked = answer(() => json({ daemon: { maintenance: 'available', git: { minimum: '2.30' } }, roots: [] }))
+
+      await expect(readStatus()).resolves.toMatchObject({ daemon: { maintenance: 'available' } })
+      expect(asked).toEqual(['/v1/status'])
     })
   })
 

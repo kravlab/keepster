@@ -32,6 +32,13 @@
   let ended = $state(false)
   /* Whether the Root management page is shown instead of the History screen. */
   let managing = $state(false)
+  /* Whether the management page opens with its add dialog: the empty state's way there asks for it. */
+  let addFirst = $state(false)
+  /*
+   * A Root opened before the live list holds it, as one just added is: until it arrives the screen says it
+   * is loading. Forgotten once it arrives, so a Root removed later reads as no Root chosen.
+   */
+  let awaited = $state<string | null>(null)
 
   let mode = $state<Mode>('rail')
   let selection = $state<Selection>({ path: null, snapshotId: null })
@@ -62,9 +69,16 @@
     ended = true
   }
 
+  /** Shows the Root management page, opening its add dialog first when `add` says so. */
+  function openRoots(add: boolean) {
+    managing = true
+    addFirst = add
+  }
+
   /** A Root chosen by hand: its history starts with nothing selected, in the mode already shown. */
   function chooseRoot(id: string) {
     rootId = id
+    awaited = roots?.some((r) => r.id === id) ? null : id
     managing = false
     selection = { path: null, snapshotId: null }
     arriving = false
@@ -130,6 +144,10 @@
     firstChosen = true
     rootId ??= roots[0]?.id ?? null
   })
+
+  $effect(() => {
+    if (awaited !== null && root?.id === awaited) awaited = null
+  })
 </script>
 
 <div class="app">
@@ -154,7 +172,14 @@
       {/if}
     {/if}
     {#if roots && !ended}
-      <button type="button" aria-pressed={managing} onclick={() => (managing = !managing)}>
+      <button
+        type="button"
+        aria-pressed={managing}
+        onclick={() => {
+          if (managing) managing = false
+          else openRoots(false)
+        }}
+      >
         {strings.roots.manage}
       </button>
     {/if}
@@ -201,7 +226,7 @@
       <p class="message">{strings.loading}</p>
     {/if}
   {:else if managing}
-    <RootsPage {roots} current={rootId} onOpen={chooseRoot} />
+    <RootsPage {roots} current={rootId} onOpen={chooseRoot} {addFirst} onSessionEnded={endSession} />
   {:else if shownId !== null}
     <!--
       Keyed: another Root is another history, and a picked search result must be opened by the mode
@@ -210,10 +235,13 @@
     {#key `${shownId}:${visit}`}
       <History rootId={shownId} bind:mode bind:selection bind:arriving onSessionEnded={endSession} />
     {/key}
+  {:else if awaited !== null && awaited === rootId}
+    <p class="message">{strings.loading}</p>
   {:else if roots.length === 0}
     <p class="message">
       {strings.noRoots}
-      <button type="button" onclick={() => (managing = true)}>{strings.roots.manage}</button>
+      <button type="button" onclick={() => openRoots(false)}>{strings.roots.manage}</button>
+      <button type="button" onclick={() => openRoots(true)}>{strings.roots.add}</button>
     </p>
   {:else}
     <p class="message">{strings.chooseRoot}</p>
