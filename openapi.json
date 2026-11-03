@@ -581,7 +581,7 @@
             }
           },
           "400": {
-            "description": "The path is not a directory, or cannot be resolved; or the body is not JSON.",
+            "description": "The path is not a directory, or cannot be resolved; or the body is not JSON; or the path passes through a link and `path_mode` is absent (`confirmation_required`, with `details.path`, `details.real_path` and `details.missing = path_mode`), in which case nothing is registered.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -767,7 +767,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RegisterRoot"
+                "$ref": "#/components/schemas/MoveRoot"
               }
             }
           },
@@ -785,7 +785,7 @@
             }
           },
           "400": {
-            "description": "The new path is not a directory; or the body is not JSON.",
+            "description": "The new path is not a directory; or the body is not JSON; or the new path passes through a link and `path_mode` is absent (`confirmation_required`, with `details.path`, `details.real_path` and `details.missing = path_mode`), in which case the Root is not moved.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1619,7 +1619,7 @@
             }
           },
           "409": {
-            "description": "The Root is unavailable, or its configuration has no valid version.",
+            "description": "The Root is unavailable, or its configuration has no valid version; or the Root follows its link, which leads inside another Root now (`root_overlaps`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1721,7 +1721,7 @@
             }
           },
           "409": {
-            "description": "The Root is unavailable, or its configuration has never been valid.",
+            "description": "The Root is unavailable, or its configuration has never been valid; or the Root follows its link, which leads inside another Root now (`root_overlaps`, with `details.path` and `details.root`), so nothing is written.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1924,7 +1924,7 @@
             }
           },
           "409": {
-            "description": "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules.",
+            "description": "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules; or the Root follows its link, which leads inside another Root now (`root_overlaps`).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5174,6 +5174,30 @@
           "keep"
         ]
       },
+      "MoveRoot": {
+        "type": "object",
+        "description": "What a client sends to record that a Root's directory has moved.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where the directory is now. Made absolute by the daemon. A path that passes through a link is\nrefused with `confirmation_required` unless `path_mode` says what the Root is; any other path is\ntaken as it is."
+          },
+          "path_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PathMode",
+                "description": "For a path through a link, whether the Root follows the link (`link`) or is where it leads now\n(`canonical`). Ignored for a path through no link."
+              }
+            ]
+          }
+        }
+      },
       "MuteRequest": {
         "type": "object",
         "description": "A mute of the notifications, which always ends: `PUT /v1/alarms/mute`.",
@@ -5294,6 +5318,14 @@
             "minimum": 0
           }
         }
+      },
+      "PathMode": {
+        "type": "string",
+        "description": "Which a Root registered through a link is (ticket 77): the link as typed, or where it led.\n\nA request naming any other value is refused as `body_invalid`: a guess at what the person meant would\nregister the wrong directory.",
+        "enum": [
+          "link",
+          "canonical"
+        ]
       },
       "PathResolution": {
         "type": "object",
@@ -5877,7 +5909,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered.\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: A path of the request needs a confirmation or a resolution, or cannot be restored: nothing was written, and `paths` says what each needs.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it.\n- `query_invalid`: The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.\n- `search_invalid`: A content search names no Root: give `roots`, or ask for `all`.\n- `unauthorized`: The loopback listener was asked without its token: no cookie a bootstrap code was exchanged for, no `Authorization: Bearer` with the token, or a bootstrap code already used.\n- `host_refused`: The request's `Host` is not the loopback listener's own address with its port, which is how a page rebinding its own name to the loopback is told apart.\n- `origin_refused`: The request's `Origin` is not the listener's own, nor one `ui.allowed_origins` names.\n- `log_level_invalid`: A raise of the log level names a level this build does not know, or no duration, or one shorter than a second or longer than seven days.\n- `token_failed`: A token or a bootstrap code could not be minted or written; the token in force is unchanged.\n- `listener_unavailable`: The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`.\n- `preference_invalid`: A preference names a value this build does not take: a `theme` other than `system`, `light` or `dark`, or a `syntax_line_limit` outside 1 to 10 000 000; nothing was stored.\n- `preferences_failed`: The preferences could not be written; the ones stored before are unchanged.\n- `mute_invalid`: A mute names a duration outside 1 to 1440 minutes; nothing was muted.\n- `tray_invalid`: A tray's instance is not 1 to 64 letters, digits, `.`, `_` or `-`; nothing was recorded."
+            "description": "The stable, machine-readable code of the problem. Contract, unlike the prose of `title` and `detail`.\n\nThe set is open: it may grow inside `/v1`, so a client must treat an unknown code as the problem's HTTP status. The codes this version knows:\n\n- `root_not_found`: No Root with this identity is registered.\n- `snapshot_not_found`: No Snapshot with this identity is in the Root's history.\n- `path_not_found`: The Snapshot holds nothing at this path.\n- `root_overlaps`: The directory is inside, or contains, a Root that is already registered; or the Root follows its link, which leads inside another Root now, so nothing is captured from it until the link is pointed back out (`details.root` names that Root).\n- `root_unavailable`: The Root cannot be served: its directory or its record is missing or unreadable.\n- `not_a_file`: The path names something other than a file, so it has no content to read.\n- `not_a_directory`: The path names something other than a directory, so it has no entries to list.\n- `path_invalid`: A path is malformed: not absolute where it must be, or not Root-relative where it must be.\n- `limit_invalid`: `limit` is not a positive whole number.\n- `cursor_invalid`: `cursor` is not a `next_cursor` this API returned.\n- `moment_invalid`: A moment is not an RFC 3339 timestamp.\n- `depth_invalid`: `depth` is neither `1` nor `infinity`.\n- `registry_failed`: The Registry of Watched Roots could not be read or written.\n- `capture_failed`: A Snapshot could not be written.\n- `clock_unusable`: The system clock is outside the range a Snapshot can record.\n- `history_unreadable`: The Root's history could not be read.\n- `body_invalid`: The request body is not the JSON this endpoint takes.\n- `purge_invalid`: `purge` is neither `true` nor `false`.\n- `config_invalid`: The Root's configuration cannot be read, so nothing is captured on terms it does not state.\n- `comparison_invalid`: `from` is not a Snapshot's identity, or `to` is neither one nor `working`.\n- `format_invalid`: `format` is neither `json` nor `unified`.\n- `confirmation_required`: The request needs a choice it does not make: nothing was written. For a Restore, a path needs a confirmation or a resolution, or cannot be restored, and `paths` says what each needs; for a Root whose path passes through a link, `details.missing` names the field to send (`path_mode`) and `details.real_path` where the link leads.\n- `resolution_invalid`: A resolution sets no answer or more than one, or names a new name that is not a bare name.\n- `withheld`: The Snapshot holds no content at this path on purpose, so there is none to read or restore; `details.reason` says why.\n- `job_not_found`: No job with this identity is known: none was started, or the daemon has restarted since, which forgets every job.\n- `maintenance_unavailable`: No `git` a Maintenance Pass can run with is usable; `GET /v1/status` says why and how to install one.\n- `maintenance_failed`: A Maintenance Pass ran and failed; `detail` holds what `git` said.\n- `job_interrupted`: The daemon stopped before the job could start; nothing was done.\n- `glob_invalid`: `glob` is not a pattern Forget can remove: malformed, or a negation, which names what to keep.\n- `secret_opted_in`: A path the glob matches is on the secret opt-in list, which says it is to be captured, so it cannot be excluded from now on; `details.path` names it.\n- `volume_mismatch`: The Root's directory is not on the volume it was registered on, so nothing is captured from or restored into it; its history is as readable as ever.\n- `store_unreachable`: The Root's History Store cannot be opened or written, so nothing is captured: there is no other store to write to instead.\n- `preview_busy`: A Capture Preview is already walking; one runs at a time, so this one was not started.\n- `preview_invalid`: `only` is not `captured`, `excluded`, `withheld` or `unreadable`, or the preview's query is otherwise malformed.\n- `preview_failed`: The Capture Preview could not be prepared; nothing was walked, and asking again may succeed.\n- `dest_in_store`: The Export's destination is inside a History Store, which nothing may write into; `details.path` names it.\n- `dest_unwritable`: The Export's destination cannot be written: it is not a directory, or cannot be made or written into; `details.path` names it.\n- `directory_unreadable`: The directory cannot be listed; `details.path` names it.\n- `query_invalid`: The search query is empty, or is not a pattern or a regular expression that can be compiled; `detail` says why.\n- `search_invalid`: A content search names no Root: give `roots`, or ask for `all`.\n- `unauthorized`: The loopback listener was asked without its token: no cookie a bootstrap code was exchanged for, no `Authorization: Bearer` with the token, or a bootstrap code already used.\n- `host_refused`: The request's `Host` is not the loopback listener's own address with its port, which is how a page rebinding its own name to the loopback is told apart.\n- `origin_refused`: The request's `Origin` is not the listener's own, nor one `ui.allowed_origins` names.\n- `log_level_invalid`: A raise of the log level names a level this build does not know, or no duration, or one shorter than a second or longer than seven days.\n- `token_failed`: A token or a bootstrap code could not be minted or written; the token in force is unchanged.\n- `listener_unavailable`: The daemon has no loopback listener — `ui.listener` is off, or it could not bind — so there is no browser session to open and no token to rotate; `details.reason` is `off` or `failed`.\n- `preference_invalid`: A preference names a value this build does not take: a `theme` other than `system`, `light` or `dark`, or a `syntax_line_limit` outside 1 to 10 000 000; nothing was stored.\n- `preferences_failed`: The preferences could not be written; the ones stored before are unchanged.\n- `mute_invalid`: A mute names a duration outside 1 to 1440 minutes; nothing was muted.\n- `tray_invalid`: A tray's instance is not 1 to 64 letters, digits, `.`, `_` or `-`; nothing was recorded."
           },
           "detail": {
             "type": "string",
@@ -5885,7 +5917,7 @@
           },
           "details": {
             "type": "object",
-            "description": "Machine-readable particulars — which path, which id, which limit — so a client composes its own\nmessage instead of parsing ours. A `path` that is not UTF-8 is joined by `path_bytes`, its exact\nbytes in base64url (ticket 74).",
+            "description": "Machine-readable particulars — which path, which id, which limit — so a client composes its own\nmessage instead of parsing ours. A `path` that is not UTF-8 is joined by `path_bytes`, its exact\nbytes in base64url (ticket 74).\n\nFor `confirmation_required` to a register or move whose `path` leads through a link and which\nnamed no `path_mode`: `path` as it was sent, `real_path` where the link leads now, and\n`missing` = `path_mode`, the choice to send again.",
             "additionalProperties": {
               "type": "string"
             },
@@ -5898,7 +5930,7 @@
             "items": {
               "$ref": "#/components/schemas/RestoredPath"
             },
-            "description": "With `confirmation_required`, every file of the Restore asked for and what it needs; absent\notherwise."
+            "description": "With `confirmation_required` from a Restore, every file of the Restore asked for and what it\nneeds; absent otherwise."
           },
           "status": {
             "type": "integer",
@@ -5976,7 +6008,18 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "The directory to watch. Made absolute by the daemon; not resolved through symlinks."
+            "description": "The directory to watch. Made absolute by the daemon. A path that passes through a link is\nrefused with `confirmation_required` unless `path_mode` says what the Root is; any other path is\ntaken as it is."
+          },
+          "path_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PathMode",
+                "description": "For a path through a link, whether the Root follows the link (`link`) or is where it leads now\n(`canonical`). Ignored for a path through no link."
+              }
+            ]
           }
         }
       },
@@ -6344,11 +6387,29 @@
             "type": "string",
             "description": "Where its directory is right now. A path is a mutable attribute of the registration."
           },
+          "path_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PathMode",
+                "description": "For a Root registered through a link, which the person chose: `link` follows the link, `canonical`\nstays where it led at registration. Absent for a Root whose path passes through no link."
+              }
+            ]
+          },
           "pending_paths": {
             "type": "integer",
             "format": "int64",
             "description": "How many paths changed since the last Snapshot and wait for their debounce window or the rate\nlimit. A count rather than a listing, because a listing of a debounce queue is stale as it prints\n(ticket 20).",
             "minimum": 0
+          },
+          "real_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `link` Root, the real path its link leads to as the request is answered; absent otherwise,\nor while the link leads nowhere, since the path of any other Root is its real path already."
           },
           "state": {
             "$ref": "#/components/schemas/RootState",

@@ -12,6 +12,7 @@ mod code;
 mod wire_path;
 
 pub use code::ErrorCode;
+pub use keepster_path::PathMode;
 pub use wire_path::{
     InvalidPathBytes, path_bytes, path_from_wire, path_text, paths_bytes, paths_from_wire,
     resolutions_from_wire, resolutions_to_wire,
@@ -407,6 +408,14 @@ pub struct Root {
     /// while there are none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unrecognized_records: Option<u64>,
+    /// For a Root registered through a link, which the person chose: `link` follows the link, `canonical`
+    /// stays where it led at registration. Absent for a Root whose path passes through no link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mode: Option<PathMode>,
+    /// For a `link` Root, the real path its link leads to as the request is answered; absent otherwise,
+    /// or while the link leads nowhere, since the path of any other Root is its real path already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_path: Option<String>,
 }
 
 /// How the targets of a Root's followed links are covered.
@@ -426,8 +435,28 @@ pub struct FollowTargets {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RegisterRoot {
-    /// The directory to watch. Made absolute by the daemon; not resolved through symlinks.
+    /// The directory to watch. Made absolute by the daemon. A path that passes through a link is
+    /// refused with `confirmation_required` unless `path_mode` says what the Root is; any other path is
+    /// taken as it is.
     pub path: String,
+    /// For a path through a link, whether the Root follows the link (`link`) or is where it leads now
+    /// (`canonical`). Ignored for a path through no link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mode: Option<PathMode>,
+}
+
+/// What a client sends to record that a Root's directory has moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MoveRoot {
+    /// Where the directory is now. Made absolute by the daemon. A path that passes through a link is
+    /// refused with `confirmation_required` unless `path_mode` says what the Root is; any other path is
+    /// taken as it is.
+    pub path: String,
+    /// For a path through a link, whether the Root follows the link (`link`) or is where it leads now
+    /// (`canonical`). Ignored for a path through no link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mode: Option<PathMode>,
 }
 
 /// A Root no longer watched whose history is kept (ticket 53), as `GET /v1/unwatched-roots` lists it.
@@ -1607,13 +1636,21 @@ pub struct Problem {
     /// Machine-readable particulars — which path, which id, which limit — so a client composes its own
     /// message instead of parsing ours. A `path` that is not UTF-8 is joined by `path_bytes`, its exact
     /// bytes in base64url (ticket 74).
+    ///
+    /// For `confirmation_required` to a register or move whose `path` leads through a link and which
+    /// named no `path_mode`: `path` as it was sent, `real_path` where the link leads now, and
+    /// `missing` = `path_mode`, the choice to send again.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub details: std::collections::BTreeMap<String, String>,
-    /// With `confirmation_required`, every file of the Restore asked for and what it needs; absent
-    /// otherwise.
+    /// With `confirmation_required` from a Restore, every file of the Restore asked for and what it
+    /// needs; absent otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<RestoredPath>,
 }
+
+/// The `missing` detail of a `confirmation_required` that asks which a path through a link is: the
+/// request must say its `path_mode`.
+pub const MISSING_PATH_MODE: &str = "path_mode";
 
 /// What a Root's state means for the insurance it provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

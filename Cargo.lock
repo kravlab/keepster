@@ -921,6 +921,7 @@ name = "keepster-api"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "keepster-path",
  "serde",
  "serde_json",
  "utoipa",
@@ -931,6 +932,7 @@ name = "keepster-app"
 version = "0.1.0"
 dependencies = [
  "keepster-core",
+ "keepster-path",
  "keepster-store",
  "serde",
  "tempfile",
@@ -949,6 +951,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "keepster-api",
+ "keepster-path",
  "serde",
  "serde_json",
  "thiserror",
@@ -960,6 +963,7 @@ name = "keepster-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "keepster-path",
  "regex",
  "thiserror",
  "ulid",
@@ -979,6 +983,7 @@ dependencies = [
  "keepster-app",
  "keepster-cli",
  "keepster-core",
+ "keepster-path",
  "keepster-service",
  "keepster-store",
  "keepster-testkit",
@@ -995,6 +1000,14 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "vergen-gitcl",
+]
+
+[[package]]
+name = "keepster-path"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "utoipa",
 ]
 
 [[package]]
@@ -1016,6 +1029,7 @@ version = "0.1.0"
 dependencies = [
  "git2",
  "keepster-core",
+ "keepster-path",
  "keepster-service",
  "libc",
  "memmap2",

@@ -61,6 +61,8 @@ fn root(id: &str, state: RootState) -> Root {
         oldest_pending_seconds: None,
         follow_targets: None,
         unrecognized_records: None,
+        path_mode: None,
+        real_path: None,
     }
 }
 
@@ -339,6 +341,21 @@ fn a_root_whose_disk_is_gone_says_its_history_still_reads_and_a_held_one_says_ho
         result.code, 10,
         "a Root that cannot be captured is the graver news"
     );
+}
+
+#[test]
+fn a_root_whose_link_leads_inside_another_root_says_to_point_the_link_elsewhere() {
+    let mut overlapping = root("01J0000000000000000000000A", RootState::Unavailable);
+    overlapping.state_code = Some("root_overlaps".to_owned());
+
+    let result = outcome(served(&status_with(vec![overlapping])), false, None);
+
+    let printed = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        printed.contains("its link now leads inside another Root"),
+        "{printed}"
+    );
+    assert!(printed.contains("point the link elsewhere"), "{printed}");
 }
 
 #[test]

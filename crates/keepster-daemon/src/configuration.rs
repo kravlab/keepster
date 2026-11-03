@@ -144,8 +144,10 @@ pub(crate) fn reload(state: &DaemonState) {
 }
 
 /// The reload pass over a Registry the caller already holds — which a handler that has just changed it
-/// does, so that a Root registered or moved is watched at once rather than at the next tick.
+/// does, so that a Root registered or moved is watched at once rather than at the next tick. A Root
+/// following its link has where the link leads now recorded first (ticket 77).
 pub(crate) fn reload_with(state: &DaemonState, registry: &keepster_store::Registry) {
+    crate::volumes::retarget_every_root(state, registry);
     let records = match registry.readable() {
         Ok(records) => records,
         Err(error) => {

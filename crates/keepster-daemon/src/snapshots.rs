@@ -51,7 +51,7 @@ const MAX_LIMIT: usize = 1_000;
     responses(
         (status = 201, description = "The Snapshot just taken. It may be incomplete: some files could not be read, and `omitted` names them.", body = Snapshot),
         (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable: its directory or its record is missing or unreadable — or its configuration cannot be read, which refuses the capture rather than dropping the user's rules; or the Root follows its link, which leads inside another Root now (`root_overlaps`).", body = Problem, content_type = "application/problem+json"),
         (status = 500, description = "The Snapshot could not be written, or the clock cannot be recorded.", body = Problem, content_type = "application/problem+json"),
     ),
 )]
@@ -103,7 +103,7 @@ pub(crate) enum VerifyMode {
         (status = 200, description = "The pass ran; `snapshot` is the one it wrote, absent when nothing had changed.", body = Reconciled),
         (status = 400, description = "The body is not JSON.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such Root is registered.", body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "The Root is unavailable, or its configuration has no valid version.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or its configuration has no valid version; or the Root follows its link, which leads inside another Root now (`root_overlaps`).", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "The body is JSON of the wrong shape, such as an unknown `verify`.", body = Problem, content_type = "application/problem+json"),
         (status = 500, description = "The Snapshot could not be written, or the clock cannot be recorded.", body = Problem, content_type = "application/problem+json"),
@@ -170,16 +170,21 @@ fn run_pass(
         return Err(roots::not_found(&id.to_string()));
     }
     // Holding the store, so the Root cannot move under the capture once its volume is followed.
-    let hold = match crate::volumes::gate(state, id, trigger) {
-        crate::volumes::Gate::Capture { hold } => hold,
+    let (hold, walked) = match crate::volumes::gate(state, id, trigger) {
+        crate::volumes::Gate::Capture { hold, path } => (hold, path),
         crate::volumes::Gate::Elsewhere => {
             let path = roots::record(&state.registry(), id)?.path;
             return Err(crate::volumes::elsewhere(&path));
+        }
+        crate::volumes::Gate::Overlaps { root } => {
+            let path = roots::record(&state.registry(), id)?.path;
+            return Err(crate::volumes::overlapping(&path, root));
         }
     };
     // Resolved only now, holding the store: a Forget this capture waited behind may have excluded a
     // path from now on, and rules read before it would capture the secret straight back (ticket 81).
     let (root, location, loaded) = prepare(state, id)?;
+    let root = walked_at(root, walked);
 
     let request = CaptureRequest {
         trigger,
@@ -213,6 +218,15 @@ fn run_pass(
     state.runtimes.passed(id, trigger, &pass);
 
     Ok(pass)
+}
+
+/// The Root `root` as its capture walks it: at `walked`, the directory its gate judged, where the gate
+/// had a record to judge (ticket 77).
+pub(crate) fn walked_at(root: RootRecord, walked: Option<std::path::PathBuf>) -> RootRecord {
+    match walked {
+        Some(path) => RootRecord { path, ..root },
+        None => root,
+    }
 }
 
 /// Say what of the previous Snapshot's own records a pass over the Root `id` could not carry forward,

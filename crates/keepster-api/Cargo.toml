@@ -13,10 +13,11 @@ workspace = true
 # Schema generation for the `/v1` document (ticket 40). Default-off, because the orphan rule forces the
 # schemas into the crate that owns the types, and nothing but the daemon has a use for them: the CLI and
 # the tray parse the same types without it.
-openapi = ["dep:utoipa"]
+openapi = ["dep:utoipa", "keepster-path/utoipa"]
 
 [dependencies]
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+keepster-path = { workspace = true, features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 utoipa = { version = "5.5.0", default-features = false, features = ["macros"], optional = true }

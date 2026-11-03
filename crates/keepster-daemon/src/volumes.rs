@@ -69,43 +69,63 @@ pub(crate) fn blind(volumes: &dyn Volumes, path: &Path) -> bool {
         .is_ok_and(|volume| watch_blind(crate::git::platform(), &volume.filesystem, volume.remote))
 }
 
-/// What a capture of the Root `id` by `trigger` may do, as its volume says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a capture of the Root `id` by `trigger` may do, as its volume — and, for a Root following its
+/// link, where the link leads (ticket 77) — says.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Gate {
     /// Capture, holding a pass that would delete every path when `hold` says so.
     Capture {
         /// Whether nothing proves the tree is the one registered, so a total deletion is held.
         hold: bool,
+        /// The directory the capture walks: the one judged here — for a Root following its link, where
+        /// the link led as it was judged, so a link pointed elsewhere meanwhile is not walked through
+        /// unjudged (ticket 77). `None` where there was no record to judge, which the capture's own
+        /// lookup refuses.
+        path: Option<PathBuf>,
     },
     /// Capture nothing: the volume at the Root's path is not the one registered.
     Elsewhere,
+    /// Capture nothing: the Root follows its link, which is pointed inside the Root `root` now, and
+    /// capturing would capture that Root's files a second time.
+    Overlaps {
+        /// The Root the link leads inside.
+        root: RootId,
+    },
 }
 
 /// Whether the Root `id` may be captured by `trigger` — following its volume first, if it is mounted
 /// somewhere else now.
 ///
+/// Every capture passes here holding the store's lock, so this is also where a Root whose link is
+/// pointed inside another Root is refused, whatever the reload tick has seen of it yet (ticket 77).
+///
 /// The caller holds the store's lock, so no other capture of this Root moves it meanwhile.
 pub(crate) fn gate(state: &DaemonState, id: RootId, trigger: Trigger) -> Gate {
-    let Some(record) = state
-        .registry()
-        .readable()
-        .ok()
-        .and_then(|records| records.into_iter().find(|record| record.id == id))
-    else {
+    let records = state.registry().readable().unwrap_or_default();
+    let Some(record) = records.iter().find(|record| record.id == id).cloned() else {
         // No record to compare: the capture's own lookup says why.
-        return Gate::Capture { hold: false };
+        return Gate::Capture {
+            hold: false,
+            path: None,
+        };
     };
     let record = follow(state, record);
+    // Resolved once: the directory judged to overlap no other Root is the one walked.
+    let path = match keepster_app::roots::walk_path(&record, &records) {
+        Ok(path) => Some(path),
+        Err(root) => return Gate::Overlaps { root },
+    };
 
     match verdict(&*state.volumes, &record) {
-        VolumeVerdict::Ours => Gate::Capture { hold: false },
+        VolumeVerdict::Ours => Gate::Capture { hold: false, path },
         // A capture someone asked for is their confirmation that an empty tree is what they mean.
         VolumeVerdict::Unproven => Gate::Capture {
             hold: trigger != Trigger::Manual,
+            path,
         },
         // A missing directory is the capture's own `root_unavailable`; a directory on another volume is
         // this refusal.
-        VolumeVerdict::Elsewhere if !record.path.is_dir() => Gate::Capture { hold: false },
+        VolumeVerdict::Elsewhere if !record.path.is_dir() => Gate::Capture { hold: false, path },
         VolumeVerdict::Elsewhere => Gate::Elsewhere,
     }
 }
@@ -113,8 +133,18 @@ pub(crate) fn gate(state: &DaemonState, id: RootId, trigger: Trigger) -> Gate {
 /// The Root `record`, at the path its volume puts it now: moved there when its volume is mounted
 /// somewhere else with the Root at the same place within it — and unmoved otherwise.
 ///
+/// A Root following its link has where the link leads now recorded first (ticket 77), since it goes
+/// wherever its link is pointed, as the reload tick records it: an action right after the link is
+/// pointed elsewhere judges the new target's volume, never the old one's, so it sees no false
+/// `volume_mismatch`. Such a Root is never moved after its volume: where it is, is where its link
+/// leads, and the link is the person's to point.
+///
 /// The caller holds the Root's store lock, so no capture of it walks the old path meanwhile.
 pub(crate) fn follow(state: &DaemonState, record: RootRecord) -> RootRecord {
+    let record = retargeted(state, record);
+    if record.path_mode == Some(keepster_core::PathMode::Link) {
+        return record;
+    }
     let Some(place) = record.volume.clone() else {
         return record;
     };
@@ -150,6 +180,56 @@ pub(crate) fn follow(state: &DaemonState, record: RootRecord) -> RootRecord {
             tracing::warn!(root = %record.id, to = %path.display(), %error, "the Root's volume is mounted somewhere else, but the Root cannot follow it there");
             record
         }
+    }
+}
+
+/// The Root `record` with where its link leads now recorded, if it follows a link pointed elsewhere
+/// since — and as it was otherwise, a failure to record it said in the log.
+fn retargeted(state: &DaemonState, record: RootRecord) -> RootRecord {
+    if record.path_mode != Some(keepster_core::PathMode::Link) {
+        return record;
+    }
+    let registry = state.registry();
+    retarget_one(state, &registry, &record).unwrap_or(record)
+}
+
+/// Record anew where the Root `record`'s link leads, through `registry`, when it leads elsewhere now:
+/// the record as re-recorded, or `None` when nothing was, a failure said in the log.
+fn retarget_one(
+    state: &DaemonState,
+    registry: &keepster_store::Registry,
+    record: &RootRecord,
+) -> Option<RootRecord> {
+    match keepster_app::roots::retarget(registry, record.id, &|path| {
+        place_of(&*state.volumes, path)
+    }) {
+        Ok(Some(retargeted)) => {
+            tracing::info!(root = %record.id, path = %record.path.display(), to = ?retargeted.target, "the Root's link leads elsewhere now; followed it");
+            Some(retargeted)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(root = %record.id, %error, "the Root's link leads elsewhere now, but where could not be recorded");
+            None
+        }
+    }
+}
+
+/// Record anew where each Root following its link is led now, with its place on its volume, wherever
+/// the link has been pointed somewhere other than recorded (ticket 77): such a Root goes wherever its
+/// link is pointed.
+///
+/// Done by the reload tick, holding the Registry, before the runtimes are brought in line with it: so a
+/// runtime is started afresh on the new target in the same pass, and the state the pass announces is
+/// the one that follows from the new record. Silent, as the person agreed to it by choosing to follow
+/// the link; a Root whose link leads inside another Root is left as recorded, `Unavailable` instead.
+pub(crate) fn retarget_every_root(state: &DaemonState, registry: &keepster_store::Registry) {
+    let records = registry.readable().unwrap_or_default();
+    let linked = records
+        .iter()
+        .filter(|record| record.path_mode == Some(keepster_core::PathMode::Link));
+    for record in linked {
+        retarget_one(state, registry, record);
     }
 }
 
@@ -228,6 +308,22 @@ impl Outcomes {
 
 fn lock(set: &Mutex<HashSet<RootId>>) -> std::sync::MutexGuard<'_, HashSet<RootId>> {
     set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The refusal a capture of the Root at `path`, whose link is pointed inside the Root `root`, earns
+/// (ticket 77).
+pub(crate) fn overlapping(path: &Path, root: RootId) -> crate::problem::ProblemResponse {
+    crate::problem::ProblemResponse::new(
+        axum::http::StatusCode::CONFLICT,
+        keepster_api::ErrorCode::RootOverlaps,
+        format!(
+            "{} leads inside the Root {root} now, so nothing is captured from it until the link is \
+             pointed back out of it",
+            path.display()
+        ),
+    )
+    .with_detail("path", path.to_string_lossy())
+    .with_detail("root", root.to_string())
 }
 
 /// The refusal a capture or a Restore of a Root on a volume other than the one registered earns.

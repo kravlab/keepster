@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
-use keepster_core::RootId;
+use keepster_core::{PathMode, RootId};
 use keepster_store::{Registry, RegistryError, RootRecord, Standing};
 
 #[test]
@@ -21,6 +21,8 @@ fn a_record_being_rewritten_is_never_read_half_written() {
             id,
             path: PathBuf::from("/start"),
             volume: None,
+            path_mode: None,
+            target: None,
         })
         .expect("the first record");
 
@@ -35,6 +37,8 @@ fn a_record_being_rewritten_is_never_read_half_written() {
                         id,
                         path: PathBuf::from(format!("/moved/{round}")),
                         volume: None,
+                        path_mode: None,
+                        target: None,
                     })
                     .expect("a rewrite");
             }
@@ -96,6 +100,8 @@ fn a_record_from_an_older_container_is_rewritten_in_this_one_and_read_as_it_was(
             id,
             path: PathBuf::from("/project"),
             volume: None,
+            path_mode: None,
+            target: None,
         }
     );
     assert!(
@@ -138,11 +144,15 @@ fn a_root_s_place_on_its_volume_is_recorded_and_survives_an_unwatch() {
             identity: "uuid:1234-ABCD".to_owned(),
             within: "projects/app".to_owned(),
         }),
+        path_mode: None,
+        target: None,
     };
     let unplaced = RootRecord {
         id: RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
         path: PathBuf::from("/tmp/app"),
         volume: None,
+        path_mode: None,
+        target: None,
     };
     registry.insert(&placed).expect("written");
     registry.insert(&unplaced).expect("written");
@@ -179,11 +189,15 @@ fn every_root_the_registry_holds_is_reported_watched_unwatched_or_unreadable() {
         id: RootId::generate(SystemTime::UNIX_EPOCH),
         path: PathBuf::from("/code/watched"),
         volume: None,
+        path_mode: None,
+        target: None,
     };
     let unwatched = RootRecord {
         id: RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
         path: PathBuf::from("/code/unwatched"),
         volume: None,
+        path_mode: None,
+        target: None,
     };
     let broken = RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2));
     registry.insert(&watched).expect("written");
@@ -215,4 +229,58 @@ fn every_root_the_registry_holds_is_reported_watched_unwatched_or_unreadable() {
         matches!(held[2].record, Err(RegistryError::Unreadable { .. })),
         "a record this build cannot read is reported, not dropped"
     );
+}
+
+#[test]
+fn how_a_root_registered_through_a_link_resolves_it_is_recorded_and_read_back() {
+    // Ticket 77: a Root registered through a link records whether it follows the link or its target,
+    // and, following the link, where that led when last recorded.
+    let base = tempfile::tempdir().expect("a temporary store base");
+    let registry = Registry::open(base.path()).expect("an empty registry");
+    let linked = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH),
+        path: PathBuf::from("/home/dev/current"),
+        volume: None,
+        path_mode: Some(PathMode::Link),
+        target: Some(PathBuf::from("/srv/releases/7")),
+    };
+    let canonical = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+        path: PathBuf::from("/srv/releases/6"),
+        volume: None,
+        path_mode: Some(PathMode::Canonical),
+        target: None,
+    };
+    registry.insert(&linked).expect("written");
+    registry.insert(&canonical).expect("written");
+
+    assert_eq!(
+        registry.readable().expect("read"),
+        vec![linked.clone(), canonical]
+    );
+    let text = std::fs::read_to_string(registry.root_dir(linked.id).join("root.toml"))
+        .expect("the record");
+    assert!(text.contains(r#"path_mode = "link""#), "{text}");
+}
+
+#[test]
+fn a_record_without_a_path_mode_reads_as_a_root_registered_without_a_link() {
+    let base = tempfile::tempdir().expect("a temporary store base");
+    let registry = Registry::open(base.path()).expect("an empty registry");
+    let plain = RootRecord {
+        id: RootId::generate(SystemTime::UNIX_EPOCH),
+        path: PathBuf::from("/code/plain"),
+        volume: None,
+        path_mode: None,
+        target: None,
+    };
+    registry.insert(&plain).expect("written");
+
+    let text =
+        std::fs::read_to_string(registry.root_dir(plain.id).join("root.toml")).expect("the record");
+    assert!(
+        !text.contains("path_mode") && !text.contains("target"),
+        "nothing is written for a Root with no link, so an older build reads it as it always did: {text}"
+    );
+    assert_eq!(registry.readable().expect("read"), vec![plain]);
 }

@@ -61,7 +61,7 @@ pub async fn restore(args: &RestoreArgs, control_path: &Path, now: SystemTime) -
     };
 
     let url = format!("/v1/roots/{}/restore", root.id);
-    let interactive = !args.resolving.no_input && !args.json && io::stdin().is_terminal();
+    let interactive = may_ask(args.resolving.no_input) && !args.json;
     loop {
         let (resolutions, resolutions_bytes) = resolutions_to_wire(&answers.resolutions);
         let request = RestoreRequest {
@@ -600,6 +600,13 @@ pub(crate) fn ask(request: &mut Answers, paths: &[RestoredPath], operation: Oper
 
 fn parse_confirmation(name: &str) -> Option<Confirmation> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+/// Whether the person can be asked anything: not forbidden by `--no-input`, and there is a terminal to
+/// ask at. One rule for every question a command puts; a command that must not ask in some other case
+/// (`--json`) adds that term to this one.
+pub(crate) fn may_ask(no_input: bool) -> bool {
+    !no_input && io::stdin().is_terminal()
 }
 
 /// A yes-or-no answer from the terminal, no unless said. The question is bytes: it may name a path

@@ -12,10 +12,9 @@ use keepster_api::{
     RestoreOutcome, RestoreRequest, Restored, RestoredPath,
 };
 use keepster_app::restore::{self, RestoreError};
-use keepster_core::VolumeVerdict;
 use keepster_core::{
     Confirmation, Confirmed, Issue, ModeChoice, NameCase, PathPlan, Plan, Resolution, RootPath,
-    SnapshotId, Step,
+    SnapshotId, Step, Trigger,
 };
 use keepster_store::Written;
 
@@ -23,6 +22,7 @@ use crate::DaemonState;
 use crate::problem::ProblemResponse;
 use crate::roots::{self, RootAddress};
 use crate::snapshots::{announce, capture_problem, prepare, store_problem};
+use crate::volumes::Gate;
 
 /// Put a Snapshot's versions back over the Working Tree.
 #[utoipa::path(
@@ -36,7 +36,7 @@ use crate::snapshots::{announce, capture_problem, prepare, store_problem};
         (status = 200, description = "Every file of the request, in path order, with what happened to it — or, for a dry run, what would — and the Safety Snapshot that undoes it. Restore overwrites and creates; it never deletes, so a file it created stays after an undo. Each file is written to a temporary name beside it and renamed into place, with the Snapshot's permission bits — or, where those on disk differ, the ones `modes` chose; a file whose content already matches has only its bits set. Windows keeps no permission bits, and sets none. A file that changed between the plan and its write fails without being touched.", body = Restored),
         (status = 400, description = "`confirmation_required`: some file needs a confirmation (`create_parents`, `replace_type`, `break_hardlinks`, `overwrite_unrecoverable`, or `\"all\"` for every one) or a resolution (`write`, `rename_to`, `name_case`, `modes`, which the blanket force never gives — `modes` defaults to the Root's `restore.modes` setting, which by default asks), or cannot be restored (`type_conflict`, `link_check_failed`). Nothing was written and no Safety Snapshot taken; `paths` says what each file needs. Otherwise a malformed path or resolution.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such Root, Snapshot or path in the Snapshot — or a path asked for by name is Withheld there (`withheld`), so there is nothing to restore.", body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "The Root is unavailable, or its configuration has never been valid.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The Root is unavailable, or its configuration has never been valid; or the Root follows its link, which leads inside another Root now (`root_overlaps`, with `details.path` and `details.root`), so nothing is written.", body = Problem, content_type = "application/problem+json"),
         (status = 415, description = "The body is not declared as `application/json`.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "The body is JSON of the wrong shape.", body = Problem, content_type = "application/problem+json"),
         (status = 500, description = "The history could not be read, or the Safety Snapshot could not be taken — in which case nothing was written.", body = Problem, content_type = "application/problem+json"),
@@ -77,9 +77,15 @@ pub(crate) async fn restore(
             if !state.registry().contains(id) {
                 return Err(roots::not_found(&id.to_string()));
             }
-            // Followed first, holding the store as a capture does, if its volume is mounted somewhere
-            // else now (ADR 0011).
-            let root = crate::volumes::follow(&state, root);
+            // Judged first, holding the store as a capture is: followed if its volume is mounted
+            // somewhere else now (ADR 0011), and refused if it follows a link that leads inside another
+            // Root, whose files the Restore would write into (ticket 77).
+            let gate = crate::volumes::gate(&state, id, Trigger::Manual);
+            if let Gate::Overlaps { root: inside } = gate {
+                return Err(crate::volumes::overlapping(&root.path, inside));
+            }
+            // The record as the gate left it: moved, if its volume was followed.
+            let root = roots::record(&state.registry(), id)?;
             // The Safety Snapshot is a capture: its rules are read holding the store, so a Forget this
             // waited behind cannot have excluded a path it then takes back (ticket 81).
             let loaded = state.effective(id, &root.path)?;
@@ -92,7 +98,7 @@ pub(crate) async fn restore(
                 .with_detail("path", root.path.to_string_lossy()));
             }
             // Nothing is written into a tree that is not the one registered (ADR 0011).
-            if crate::volumes::verdict(&*state.volumes, &root) == VolumeVerdict::Elsewhere {
+            if gate == Gate::Elsewhere {
                 return Err(crate::volumes::elsewhere(&root.path));
             }
 

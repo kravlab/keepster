@@ -44,14 +44,12 @@ const STILL_ON_DISK: &str = "Forget never touches your files: the secret is stil
 /// The daemon never asks (ticket 07): what the request must carry — the confirmation, and whether the
 /// path is excluded from now on — is asked here, at a terminal, or refused when nothing can be asked.
 pub async fn forget(args: &ForgetArgs, control_path: &Path) -> u8 {
-    use std::io::IsTerminal;
-
     let client = DaemonClient::new(control_path);
     let root = match crate::resolve::resolve(&client, args.root.as_deref()).await {
         Ok(root) => root,
         Err(code) => return code,
     };
-    let can_ask = !args.no_input && io::stdin().is_terminal();
+    let can_ask = crate::restore::may_ask(args.no_input);
 
     let exclude = match (args.exclude, args.keep_watching) {
         (true, _) => true,

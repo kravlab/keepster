@@ -14,8 +14,9 @@ use crate::roots::answered;
 /// Find the Root a command should act on.
 ///
 /// With no selector the working directory decides, which is the common case — a person standing in
-/// their project does not want to name it. A selector may be a full identity, an unambiguous prefix of
-/// one, or a path, and each is tried in that order at the cost of at most one request.
+/// their project does not want to name it. The working directory is resolved to where it really is
+/// first. A selector may be a full identity, an unambiguous prefix of one, or a path, and each is tried
+/// in that order at the cost of at most one request.
 pub async fn resolve(client: &DaemonClient, selector: Option<&str>) -> Result<Root, u8> {
     match selector {
         Some(selector) => by_selector(client, selector).await,
@@ -24,6 +25,9 @@ pub async fn resolve(client: &DaemonClient, selector: Option<&str>) -> Result<Ro
                 eprintln!("keepster: the working directory could not be read: {error}");
                 exit::OTHER
             })?;
+            // Where it really is, every link resolved (ticket 77), so a working directory reached
+            // through a link finds the Root registered at its target; as it is when it cannot resolve.
+            let directory = keepster_path::real_path(&directory).unwrap_or(directory);
 
             by_path(client, &directory.to_string_lossy()).await
         }

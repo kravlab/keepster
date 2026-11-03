@@ -37,6 +37,8 @@ const ROOT_STATES: Partial<Record<string, string>> = {
 const ROOT_REASONS: Partial<Record<string, string>> = {
   root_missing: 'Its directory is not found at this path. Was it moved?',
   volume_mismatch: 'Its disk is not mounted there, so nothing is captured; its history reads as ever.',
+  root_overlaps:
+    'Its link now leads inside another Root, so nothing is captured; point the link elsewhere. Its history reads as ever.',
   store_unreachable: 'Its history store cannot be written, so nothing is captured, and nowhere else instead.',
   store_too_new: 'Its history was written by a newer Keepster, which this one cannot open.',
   record_unreadable: 'Its registration cannot be read.',
