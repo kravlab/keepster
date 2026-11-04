@@ -1,21 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './api'
+import type { RefusalWording } from './failures'
 import { sendRootPath } from './link'
 import type { Root } from './wire'
 
 const root: Root = { id: 'r1', path: '/home/u/src', state: 'watching' }
 const known: Root = { id: '0190a3c4', path: '/home/u/work', state: 'watching' }
-const rootById = (id: string) => (id === known.id ? known : undefined)
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e))
+/** The daemon's explanation, the live list knowing only `known`. */
+const wording: RefusalWording = { failure: reason, rootById: (id) => (id === known.id ? known : undefined) }
 
 describe('sending a path for a Root', () => {
   it('hands the daemon’s answer on as it is', async () => {
-    const outcome = await sendRootPath(
-      '/home/u/src',
-      () => Promise.resolve({ kind: 'moved' as const, root }),
-      reason,
-      rootById,
-    )
+    const outcome = await sendRootPath('/home/u/src', () => Promise.resolve({ kind: 'moved' as const, root }), wording)
 
     expect(outcome).toEqual({ kind: 'moved', root })
   })
@@ -24,8 +21,7 @@ describe('sending a path for a Root', () => {
     const outcome = await sendRootPath(
       '/home/u/proj',
       () => Promise.resolve({ kind: 'throughLink' as const, path: '/home/u/proj', realPath: '/mnt/work/proj' }),
-      reason,
-      rootById,
+      wording,
     )
 
     expect(outcome).toEqual({ kind: 'askingLink', path: '/home/u/proj', realPath: '/mnt/work/proj' })
@@ -36,7 +32,7 @@ describe('sending a path for a Root', () => {
       root: '0190a3c4',
     })
 
-    const outcome = await sendRootPath('/home/u/work/app', () => Promise.reject(overlap), reason, rootById)
+    const outcome = await sendRootPath('/home/u/work/app', () => Promise.reject(overlap), wording)
 
     expect(outcome).toEqual({
       kind: 'failed',
@@ -49,8 +45,7 @@ describe('sending a path for a Root', () => {
     const outcome = await sendRootPath(
       '/home/u/notes.txt',
       () => Promise.reject(new ApiError(400, '/home/u/notes.txt is not a directory', 'path_invalid')),
-      reason,
-      rootById,
+      wording,
     )
 
     expect(outcome).toEqual({

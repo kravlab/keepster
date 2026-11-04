@@ -47,8 +47,8 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   Move dialogs share (`LinkQuestion.svelte`).
 - `src/banners/`: the skeleton every banner shares (`Banner.svelte`), the added Root's and the erased
   history's.
-- `src/dialogs/`: the shell every modal dialog shares (`ModalDialog.svelte`) and a dialog's focused refusal
-  (`FailureAlert.svelte`).
+- `src/dialogs/`: the shell every modal dialog shares (`ModalDialog.svelte`), a dialog's focused refusal
+  (`FailureAlert.svelte`), and handing the keyboard back once a dialog backs out of a step (`focus.ts`).
 - `src/folders/`: the folder picker that chooses a directory on the daemon's machine (`FolderPicker.svelte`).
 - `src/editor/`: the CodeMirror adapter, its colors read from the theme's variables (`palette.ts`), and the
   curated grammars, loaded lazily.

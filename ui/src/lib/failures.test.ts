@@ -51,18 +51,21 @@ describe('pathRefusalText', () => {
   const detail = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
   it('names an overlapped Root by its path when it is known', () => {
-    expect(pathRefusalText('/home/u/src/app', overlaps, detail, (id) => (id === known.id ? known : undefined))).toBe(
-      '/home/u/src/app overlaps the Root at /home/u/src',
-    )
+    expect(
+      pathRefusalText('/home/u/src/app', overlaps, {
+        failure: detail,
+        rootById: (id) => (id === known.id ? known : undefined),
+      }),
+    ).toBe('/home/u/src/app overlaps the Root at /home/u/src')
   })
 
   it("keeps the daemon's reason for an overlapped Root it does not know, and for any other refusal", () => {
     const invalid = new ApiError(400, '/home/u/notes.txt is not a directory', 'path_invalid')
 
-    expect(pathRefusalText('/home/u/src/app', overlaps, detail, () => undefined)).toBe(
+    expect(pathRefusalText('/home/u/src/app', overlaps, { failure: detail, rootById: () => undefined })).toBe(
       '/home/u/src/app overlaps the Root 0190a3c4',
     )
-    expect(pathRefusalText('/home/u/notes.txt', invalid, detail, () => known)).toBe(
+    expect(pathRefusalText('/home/u/notes.txt', invalid, { failure: detail, rootById: () => known })).toBe(
       '/home/u/notes.txt is not a directory',
     )
   })

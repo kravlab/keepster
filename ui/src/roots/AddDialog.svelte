@@ -1,11 +1,11 @@
 <script lang="ts">
   /*
-   * The add dialog (ticket 93): a modal, as Restore's is, that draws the add flow of `lib/adding`. The
+   * The add dialog (#29): a modal, as Restore's is, that draws the add flow of `lib/adding`. The
    * person chooses a directory with the folder picker and adds it; a refusal is shown with the daemon's
    * reason and the dialog stays open, to try again, choose another directory, or back out. A path through
    * a link asks which the Root is, as `keepster watch` does, and cancelling that question adds nothing.
    *
-   * Before registering, the Capture Preview walks the directory (ticket 94): the dialog shows the walk is
+   * Before registering, the Capture Preview walks the directory (#30): the dialog shows the walk is
    * alive with its count of paths so far, and Cancel or Escape stops it. A directory past what one Root is
    * claimed to hold shows the preview's whole summary, as `keepster watch` does, and asks; declining adds
    * nothing. Leaving the dialog any other way while the walk runs stops it too, so no walk outlives the
@@ -15,13 +15,14 @@
    * outcome; closing it before then is backing out. While the request is on its way it cannot be closed:
    * the directory may be added whatever the dialog does, and the page must still say so.
    */
-  import { onMount, tick } from 'svelte'
+  import { onMount } from 'svelte'
   import type { AddingRoot } from '../lib/adding.svelte'
   import type { FolderBrowser } from '../lib/folders.svelte'
   import { shownPath } from '../lib/paths'
   import { strings } from '../lib/strings'
   import type { PreviewSize } from '../lib/wire'
   import FailureAlert from '../dialogs/FailureAlert.svelte'
+  import { cancelThenFocus } from '../dialogs/focus'
   import ModalDialog from '../dialogs/ModalDialog.svelte'
   import FolderPicker from '../folders/FolderPicker.svelte'
   import LinkQuestion from './LinkQuestion.svelte'
@@ -56,10 +57,11 @@
    * Stops the walk, or declines the claim or link question, and hands the keyboard back to Add: the
    * controls that had it are gone once the person is choosing again.
    */
-  async function backOut() {
-    adding.cancel()
-    await tick()
-    addButton?.focus()
+  function backOut() {
+    return cancelThenFocus(
+      () => adding.cancel(),
+      () => addButton,
+    )
   }
 
   /**
@@ -103,7 +105,7 @@
     />
   {:else if step.kind === 'askingClaim'}
     {@const summary = step.summary}
-    <p class="question">{strings.adding.claim.question(step.path, summary.past_ceiling)}</p>
+    <p class="dialog-text question">{strings.adding.claim.question(step.path, summary.past_ceiling)}</p>
     <dl class="summary">
       <dt>{strings.adding.claim.captured}</dt>
       <dd>{strings.adding.claim.capturedTotals(summary.captured)}</dd>
@@ -135,7 +137,7 @@
     {/if}
     {@render largest(strings.adding.claim.largest, summary.largest_captured)}
     {@render largest(strings.adding.claim.largestLeftOut, summary.largest_left_out)}
-    <p class="note">{strings.adding.claim.noGrowth}</p>
+    <p class="dialog-text note">{strings.adding.claim.noGrowth}</p>
     <div class="actions">
       <!-- Declining is the safe answer, so the keyboard starts there. -->
       <button type="button" onclick={() => void backOut()} {@attach (node) => node.focus()}>
@@ -149,17 +151,19 @@
     <FolderPicker {browser} disabled={held} />
 
     {#if browser.path !== null}
-      <p class="chosen">{strings.adding.chosen} <code>{browser.path}</code></p>
+      <p class="dialog-text chosen">{strings.adding.chosen} <code>{browser.path}</code></p>
     {/if}
     {#if step.kind === 'failed'}
       <FailureAlert lead={strings.adding.failed} reason={step.reason} />
+    {:else if step.kind === 'previewBusy'}
+      <FailureAlert lead={strings.adding.failed} reason={strings.adding.preview.busy} />
     {/if}
 
     {#if step.kind === 'previewing'}
       <div class="walking">
-        <p role="status">{strings.adding.preview.looking(step.path)}</p>
+        <p class="dialog-text" role="status">{strings.adding.preview.looking(step.path)}</p>
         <progress aria-hidden="true"></progress>
-        <p class="count">{strings.adding.preview.walked(step.walked)}</p>
+        <p class="dialog-text count">{strings.adding.preview.walked(step.walked)}</p>
       </div>
       <div class="actions">
         <!-- Add, which started the walk, is gone: the keyboard goes on from what stops it. -->
@@ -185,9 +189,6 @@
 </ModalDialog>
 
 <style>
-  p {
-    margin: 8px 0 0;
-  }
   .chosen code,
   .question,
   .walking p,

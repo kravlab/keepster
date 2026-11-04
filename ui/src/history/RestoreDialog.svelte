@@ -3,7 +3,8 @@
    * The Restore dialog, the one face every view mode gives Restore (ticket 15). It opens on a dry run
    * that names what will be overwritten or created, asks every confirmation and resolution the daemon's
    * plan needs, and states the Safety Snapshot promise on the same panel; the Restore button is live only
-   * once everything is answered, and while the Root is still watched. What the questions are and when the request may go is `lib/restore.ts`.
+   * once everything is answered, and while the Root is still watched. What the questions are and when the
+   * request may go is `lib/restore.ts`.
    *
    * Two plans are kept. The questions come from a dry run made without answers, so a question stays on
    * screen once answered; each change of the answers runs the dry run again with them, which is what the

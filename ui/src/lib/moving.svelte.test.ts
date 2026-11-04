@@ -50,7 +50,7 @@ afterEach(() => {
 
 describe('recording a Move', () => {
   it('starts with the person choosing where the directory is now', () => {
-    const moving = new MovingRoot(missing, reason, unknown)
+    const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
     expect(moving.root).toEqual(missing)
     expect(moving.step).toEqual({ kind: 'choosing' })
@@ -58,7 +58,7 @@ describe('recording a Move', () => {
 
   it('patches the Root with the path chosen, and is done with the Root the daemon describes', async () => {
     const sent = serve(() => json(moved('/home/u/code/src')))
-    const moving = new MovingRoot(missing, reason, unknown)
+    const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
     await moving.move('/home/u/code/src')
 
@@ -77,7 +77,7 @@ describe('recording a Move', () => {
         () => problem(status, code, detail),
         () => json(moved('/home/u/code/src')),
       )
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
       await moving.move('/home/u/notes.txt')
       expect(moving.step).toEqual({ kind: 'failed', path: '/home/u/notes.txt', reason: detail })
@@ -96,7 +96,7 @@ describe('recording a Move', () => {
       }),
     )
     const known: Root = { id: '0190a3c4', path: '/home/u/work', state: 'watching' }
-    const moving = new MovingRoot(missing, reason, (id) => (id === known.id ? known : undefined))
+    const moving = new MovingRoot(missing, { failure: reason, rootById: (id) => (id === known.id ? known : undefined) })
 
     await moving.move('/home/u/work/app')
 
@@ -110,7 +110,7 @@ describe('recording a Move', () => {
   it('hands an ended session on', async () => {
     serve(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
     const failure = vi.fn((e: unknown) => (e instanceof SessionEnded ? 'ended' : 'other'))
-    const moving = new MovingRoot(missing, failure, unknown)
+    const moving = new MovingRoot(missing, { failure, rootById: unknown })
 
     await moving.move('/home/u/code/src')
 
@@ -125,7 +125,7 @@ describe('recording a Move', () => {
       sent.push(url)
       return new Promise<Response>((resolve) => (answer = resolve))
     })
-    const moving = new MovingRoot(missing, reason, unknown)
+    const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
     const first = moving.move('/home/u/code/src')
     expect(moving.step).toEqual({ kind: 'moving', path: '/home/u/code/src' })
@@ -140,7 +140,7 @@ describe('recording a Move', () => {
   describe('a path reached through a link', () => {
     it('asks whether the Root is the link or the real directory, recording nothing yet', async () => {
       const sent = serve(throughLink)
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
       await moving.move('/home/u/proj')
 
@@ -150,7 +150,7 @@ describe('recording a Move', () => {
 
     it.each(['link', 'canonical'] as const)('sends the same path again as the %s when told to', async (mode) => {
       const sent = serve(throughLink, () => json(moved('/home/u/proj')))
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
       await moving.move('/home/u/proj')
 
       await moving.choose(mode)
@@ -161,7 +161,7 @@ describe('recording a Move', () => {
 
     it('shows the reason when recording it as chosen is refused', async () => {
       serve(throughLink, () => problem(409, 'root_overlaps', '/mnt/work/proj overlaps the Root 0190a3c4'))
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
       await moving.move('/home/u/proj')
 
       await moving.choose('canonical')
@@ -175,7 +175,7 @@ describe('recording a Move', () => {
 
     it('records nothing when the question is cancelled, and goes back to choosing', async () => {
       const sent = serve(throughLink)
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
       await moving.move('/home/u/proj')
 
       moving.cancel()
@@ -186,7 +186,7 @@ describe('recording a Move', () => {
 
     it('sends nothing for an answer when no question is asked', async () => {
       const sent = serve()
-      const moving = new MovingRoot(missing, reason, unknown)
+      const moving = new MovingRoot(missing, { failure: reason, rootById: unknown })
 
       await moving.choose('link')
 

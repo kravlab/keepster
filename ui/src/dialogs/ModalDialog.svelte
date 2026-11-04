@@ -1,13 +1,14 @@
 <script lang="ts">
   /*
-   * The shell every modal dialog shares (Restore's, the add dialog, the unwatch dialog): a `<dialog>` card
-   * opened with `showModal()` as it mounts, labelled by its title, over a dimmed page. Closing it any way —
-   * Escape, a dialog's own Cancel through `dialog.close()` — is `onClose`; while `held`, Escape does
-   * nothing, so a request on its way cannot be left unseen.
+   * The shell every modal dialog shares (Restore's, the add dialog, the unwatch dialog, the Move dialog): a
+   * `<dialog>` card opened with `showModal()` as it mounts, labelled by its title, over a dimmed page.
+   * Closing it any way — Escape, a dialog's own Cancel through `dialog.close()` — is `onClose`; while
+   * `held`, Escape does nothing, so a request on its way cannot be left unseen.
    *
    * The shell's styles for what a dialog draws inside it (its `.actions` row, the `.go` button, a disabled
-   * button in that row) weigh no more than an element selector, so a dialog's own style of them wins; a
-   * component nested in the dialog, such as the folder picker, keeps its own buttons' looks.
+   * button in that row, a `.dialog-text` paragraph) weigh no more than an element selector, so a dialog's
+   * own style of them wins; a component nested in the dialog, such as the folder picker, keeps its own
+   * buttons' looks, and a paragraph without the class, such as Restore's, its own spacing.
    */
   import { onMount, type Snippet } from 'svelte'
 
@@ -72,6 +73,9 @@
     margin: 0 0 6px;
     font-size: 15px;
     overflow-wrap: anywhere;
+  }
+  dialog :global(:where(p.dialog-text)) {
+    margin: 8px 0 0;
   }
   dialog :global(:where(.actions)) {
     display: flex;

@@ -29,9 +29,9 @@ export type Outlook = 'kept' | 'nothingToKeep' | 'unknown' | 'erasing'
  * was, to try again or back out; a request on its way holds every further one back.
  */
 export class UnwatchingRoot {
-  /** What the person has chosen and acknowledged so far. */
   /** The id of the Root to unwatch. */
   readonly id: string
+  /** What the person has chosen and acknowledged so far. */
   consent = $state<Consent>(noConsent())
   /** Whether the request is on its way. */
   running = $state(false)

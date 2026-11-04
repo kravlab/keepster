@@ -8,7 +8,10 @@
    * They follow the daemon, but which Root is shown changes only by the person's hand or a search result
    * they picked: the first Root is chosen once, when the Roots are first known, and never by an event.
    * A shown Root unwatched or erased elsewhere stays shown (#33): marked no longer watched, kept in the
-   * picker until another is chosen, and with a banner once its history is erased.
+   * picker until another is chosen, and with a banner once its history is erased. The last add's outcome
+   * is kept here too, so the management page's banner for it outlives the page until it is dismissed, its
+   * history opened or another add started; it takes the focus only when it first appears, not each time
+   * the page is opened again. Nothing is opened for the person.
    *
    * It also owns the History screen's mode and selection (ticket 66), because a search result sets them:
    * picking one selects its file and Snapshot, switching the Root picker when the result is in another
@@ -23,6 +26,7 @@
   import History from './history/History.svelte'
   import RootsPage from './roots/RootsPage.svelte'
   import SearchOverlay from './search/SearchOverlay.svelte'
+  import type { AddingRoot } from './lib/adding.svelte'
   import { failureText } from './lib/failures'
   import { THEMES } from './lib/preferences'
   import { PreferencesState, providePreferences } from './lib/preferences.svelte'
@@ -42,6 +46,25 @@
    * is loading. Forgotten once it arrives, so a Root removed later reads as no Root chosen.
    */
   let awaited = $state<string | null>(null)
+  /*
+   * The last add whose directory is added, for the management page's banner: kept as the flow, so the
+   * maintenance notice that follows the outcome still arrives once the page is left.
+   */
+  let lastAdd = $state.raw<AddingRoot | null>(null)
+  const added = $derived(lastAdd?.step.kind === 'done' ? lastAdd.step : null)
+  /*
+   * Whether the kept add's banner has yet to appear: it takes the focus then, the dialog the keyboard was
+   * in being gone, and never again once the page is reopened. Not state: the banner reads it once, as it
+   * mounts, through `takeAddedFocus`.
+   */
+  let addedUnshown = false
+
+  /** Says whether the added banner mounting now appears for the first time, and so takes the focus. */
+  function takeAddedFocus(): boolean {
+    const first = addedUnshown
+    addedUnshown = false
+    return first
+  }
 
   let mode = $state<Mode>('rail')
   let selection = $state<Selection>({ path: null, snapshotId: null })
@@ -251,7 +274,23 @@
       <p class="message">{strings.loading}</p>
     {/if}
   {:else if managing}
-    <RootsPage roots={watched.roots} current={shown.id} onOpen={chooseRoot} {addFirst} onSessionEnded={endSession} />
+    <RootsPage
+      roots={watched.roots}
+      current={shown.id}
+      onOpen={chooseRoot}
+      {addFirst}
+      {added}
+      onAdded={(flow) => {
+        lastAdd = flow
+        addedUnshown = true
+      }}
+      onDismissAdded={() => {
+        lastAdd = null
+        addedUnshown = false
+      }}
+      {takeAddedFocus}
+      onSessionEnded={endSession}
+    />
   {:else if shownId !== null}
     {#if shown.erasure && shown.current}
       <ErasedBanner

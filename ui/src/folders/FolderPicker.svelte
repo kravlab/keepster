@@ -1,6 +1,6 @@
 <script lang="ts">
   /*
-   * Chooses a directory on the daemon's machine (ticket 93): the directory listed is the one chosen. The
+   * Chooses a directory on the daemon's machine (#29): the directory listed is the one chosen. The
    * path field shows it and takes an absolute path typed or pasted; Up goes to the parent; a folder is
    * gone into by its button, except one the daemon cannot list, which is shown as such and disabled.
    * Hidden folders are left out until asked for. Adding a directory and recording a Move use it, and so

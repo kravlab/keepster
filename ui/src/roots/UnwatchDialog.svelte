@@ -43,7 +43,7 @@
 </script>
 
 <ModalDialog bind:dialog title={strings.unwatch.title(root.path)} held={unwatching.running} {onClose}>
-  <p class="outlook" class:erasing={consent.erase}>{strings.unwatch.outlook[unwatching.outlook]}</p>
+  <p class="dialog-text outlook" class:erasing={consent.erase}>{strings.unwatch.outlook[unwatching.outlook]}</p>
 
   <fieldset>
     <label>
@@ -89,9 +89,6 @@
 </ModalDialog>
 
 <style>
-  p {
-    margin: 8px 0 0;
-  }
   .outlook {
     padding: 8px 10px;
     border-left: 3px solid var(--accent);

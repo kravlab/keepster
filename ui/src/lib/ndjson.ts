@@ -1,6 +1,6 @@
 /**
  * Newline-delimited JSON read off a streamed body, one record per line, as each line arrives: the shape of
- * `GET /v1/search/content` (ticket 59) and of `GET /v1/preview`, the Capture Preview (ticket 94).
+ * `GET /v1/search/content` (ticket 59) and of `GET /v1/preview`, the Capture Preview (#30).
  */
 
 /**

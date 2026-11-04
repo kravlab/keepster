@@ -6,13 +6,7 @@
   let { lead, reason }: { lead: string; reason: string } = $props()
 </script>
 
-<p class="error" role="alert" tabindex="-1" {@attach (node) => node.focus()}>
+<p class="dialog-text error" role="alert" tabindex="-1" {@attach (node) => node.focus()}>
   {lead}
   {reason}
 </p>
-
-<style>
-  p {
-    margin: 8px 0 0;
-  }
-</style>

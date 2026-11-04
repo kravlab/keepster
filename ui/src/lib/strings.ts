@@ -198,7 +198,7 @@ export const strings = {
     failed: 'Not unwatched:',
   },
 
-  /** The add dialog and the banner after it (ticket 93). */
+  /** The add dialog and the banner after it (#29). */
   adding: {
     /** Before the directory the browser has listed, the one that will be added. */
     chosen: 'Watch',
@@ -206,7 +206,7 @@ export const strings = {
     working: 'Adding…',
     /** Before the daemon's reason a directory was not added. */
     failed: 'Not added:',
-    /** The Capture Preview run before registering (ticket 94), while it walks. */
+    /** The Capture Preview run before registering (#30), while it walks. */
     preview: {
       looking: (path: string) => `Looking at what watching ${path} would capture…`,
       walked: (count: number) => `${counted(count, 'path', 'paths')} so far`,
@@ -288,7 +288,7 @@ export const strings = {
     install: 'Install it:',
   },
 
-  /** The folder browser over the daemon's machine (ticket 93), for adding a directory and recording a Move. */
+  /** The folder browser over the daemon's machine (#29), for adding a directory and recording a Move. */
   folders: {
     label: 'Folders',
     /** The field holding the directory listed, where an absolute path can be typed or pasted. */

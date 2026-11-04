@@ -20,17 +20,26 @@ export function failureText(e: unknown, onSessionEnded: () => void): string {
 }
 
 /**
- * Why sending `path` for a Root — registering a directory or recording a Move — was refused, as `failure`
- * words it. The daemon names an overlapped Root by its id, which a person cannot place; one `rootById`
- * finds is named by its path instead.
+ * What a flow that sends a path for a Root — registering a directory or recording a Move — words a failed
+ * request with. The two travel together, from the page that builds them once down to `pathRefusalText`.
  */
-export function pathRefusalText(
-  path: string,
-  e: unknown,
-  failure: (e: unknown) => string,
-  rootById: (id: string) => Root | undefined,
-): string {
+export interface RefusalWording {
+  /** The text a failed request shows, as `failureText` gives it; an ended session is handed to it too. */
+  failure: (e: unknown) => string
+  /**
+   * The live list's Root with an id, so that a refusal can name it by its path; one it does not find is
+   * named as the daemon names it.
+   */
+  rootById: (id: string) => Root | undefined
+}
+
+/**
+ * Why sending `path` for a Root — registering a directory or recording a Move — was refused, as
+ * `wording.failure` words it. The daemon names an overlapped Root by its id, which a person cannot place;
+ * one `wording.rootById` finds is named by its path instead.
+ */
+export function pathRefusalText(path: string, e: unknown, wording: RefusalWording): string {
   const overlapped = e instanceof ApiError && e.code === 'root_overlaps' ? e.details?.root : undefined
-  const root = overlapped === undefined ? undefined : rootById(overlapped)
-  return root ? strings.roots.overlaps(path, root.path) : failure(e)
+  const root = overlapped === undefined ? undefined : wording.rootById(overlapped)
+  return root ? strings.roots.overlaps(path, root.path) : wording.failure(e)
 }

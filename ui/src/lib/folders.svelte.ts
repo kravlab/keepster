@@ -1,5 +1,5 @@
 /**
- * A folder browser over the daemon's machine (ticket 93), through `GET /v1/fs`: the page can name no path
+ * A folder browser over the daemon's machine (#29), through `GET /v1/fs`: the page can name no path
  * of its own, so every directory it shows is one the daemon listed. Kept apart from Root management
  * because choosing where an Export writes (ticket 90) browses the same way.
  *

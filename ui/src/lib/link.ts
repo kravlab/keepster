@@ -6,8 +6,7 @@
  * request back while one is on its way; this gives it the step the answer leads to.
  */
 import type { ThroughLink } from './api'
-import { pathRefusalText } from './failures'
-import type { Root } from './wire'
+import { pathRefusalText, type RefusalWording } from './failures'
 
 /** `path` leads through a link to `realPath`: the person says which the Root is. Nothing is recorded. */
 export type AskingLink = { kind: 'askingLink'; path: string; realPath: string }
@@ -18,19 +17,18 @@ export type PathRefused = { kind: 'failed'; path: string; reason: string }
 /**
  * Sends `path` through `request` and says what it came to: the daemon's answer as it is, the link
  * question when the path leads through a link, or the refusal with its reason as `pathRefusalText` words
- * it, naming an overlapped Root that `rootById` finds by its path. It never throws.
+ * it with `wording`, naming an overlapped Root that it finds by its path. It never throws.
  */
 export async function sendRootPath<Answer extends { kind: string }>(
   path: string,
   request: () => Promise<Answer | ThroughLink>,
-  failure: (e: unknown) => string,
-  rootById: (id: string) => Root | undefined,
+  wording: RefusalWording,
 ): Promise<Answer | AskingLink | PathRefused> {
   try {
     const answer = await request()
     return isThroughLink(answer) ? { kind: 'askingLink', path, realPath: answer.realPath } : answer
   } catch (e) {
-    return { kind: 'failed', path, reason: pathRefusalText(path, e, failure, rootById) }
+    return { kind: 'failed', path, reason: pathRefusalText(path, e, wording) }
   }
 }
 

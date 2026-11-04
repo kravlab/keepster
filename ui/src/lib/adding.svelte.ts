@@ -1,15 +1,15 @@
 /**
- * Adding a directory as a Watched Root (tickets 93 and 94), the Root management page's add flow, as a
+ * Adding a directory as a Watched Root (#29 and #30), the Root management page's add flow, as a
  * small state machine the add dialog draws: `choosing` a directory, `previewing` what watching it would
- * capture, `askingClaim` when it is past what one Root is claimed to hold, `registering` it, `askingLink`
- * when the path leads through a link, and `done` or `failed`. It mirrors `keepster watch`: a directory is
- * never watched past the claim unseen, a preview that cannot be had does not stop registering, and the
- * daemon never guesses which a path through a link is — it refuses and names where the link leads, and
- * the person's answer is sent with the same path again.
+ * capture, `previewBusy` when another preview is walking, `askingClaim` when it is past what one Root is
+ * claimed to hold, `registering` it, `askingLink` when the path leads through a link, and `done` or
+ * `failed`. It mirrors `keepster watch`: a directory is never watched past the claim unseen, a preview
+ * that cannot be had does not stop registering, and the daemon never guesses which a path through a link
+ * is — it refuses and names where the link leads, and the person's answer is sent with the same path again.
  */
 import { ApiError, previewDirectory, readStatus, registerRoot, SessionEnded } from './api'
+import type { RefusalWording } from './failures'
 import { type AskingLink, type PathRefused, sendRootPath } from './link'
-import { strings } from './strings'
 import type { GitStatus, PathMode, PreviewSummary, Root } from './wire'
 
 /** The daemon's code for a preview refused because another one is walking. */
@@ -41,10 +41,18 @@ export type AddStep =
   /** The daemon refused `path`; the person may try again or choose another. */
   | PathRefused
   /**
+   * The preview of `path` was refused because another one is walking: nothing is registered, and the
+   * person may try again once it is done or choose another directory.
+   */
+  | { kind: 'previewBusy'; path: string }
+  /**
    * The directory is now `root`. `maintenance` is the daemon's `git` while store maintenance is
    * unavailable: `null` until the status answers, and after it unless maintenance is unavailable.
    */
   | { kind: 'done'; root: Root; maintenance: GitStatus | null }
+
+/** An add's outcome once the directory is added: what the banner says. */
+export type AddDone = Extract<AddStep, { kind: 'done' }>
 
 /**
  * One add, from choosing a directory to its outcome: `step` is what the dialog and the banner draw. A
@@ -58,21 +66,14 @@ export class AddingRoot {
   /** Stops the preview walking now; `null` while none is. */
   #walk: AbortController | null = null
 
-  /**
-   * @param failure the text a failed request shows, as `failureText` gives it
-   * @param rootById the live list's Root with an id, so that a refusal can name it by its path; one it
-   *   does not find is named as the daemon names it
-   */
-  constructor(
-    private readonly failure: (e: unknown) => string,
-    private readonly rootById: (id: string) => Root | undefined,
-  ) {}
+  /** @param wording what a failed request is worded with, and an overlapped Root named by */
+  constructor(private readonly wording: RefusalWording) {}
 
   /**
    * Adds the directory at `path`, the one the person chose, once its Capture Preview says it is within
    * what one Root is claimed to hold; past it, the person is asked first (`askingClaim`). A refusal —
-   * overlapping a Root, not a directory, another preview walking, … — is `failed` with its reason, from
-   * which adding may start again. Nothing starts while a preview or a request is on its way.
+   * overlapping a Root, not a directory, … — is `failed` with its reason, and another preview walking is
+   * `previewBusy`; adding may start again from either. Nothing starts while a preview or a request is on its way.
    */
   async add(path: string): Promise<void> {
     if (this.step.kind === 'previewing' || this.step.kind === 'registering') return
@@ -124,11 +125,11 @@ export class AddingRoot {
     } catch (e) {
       if (walk.signal.aborted) return { kind: 'stop' }
       if (e instanceof ApiError && e.status === 409 && e.code === PREVIEW_BUSY) {
-        this.step = { kind: 'failed', path, reason: strings.adding.preview.busy }
+        this.step = { kind: 'previewBusy', path }
         return { kind: 'stop' }
       }
       if (e instanceof SessionEnded) {
-        this.step = { kind: 'failed', path, reason: this.failure(e) }
+        this.step = { kind: 'failed', path, reason: this.wording.failure(e) }
         return { kind: 'stop' }
       }
     } finally {
@@ -146,7 +147,7 @@ export class AddingRoot {
   async #register(path: string, mode?: PathMode): Promise<void> {
     if (this.step.kind === 'registering') return
     this.step = { kind: 'registering', path }
-    const outcome = await sendRootPath(path, () => registerRoot(path, mode), this.failure, this.rootById)
+    const outcome = await sendRootPath(path, () => registerRoot(path, mode), this.wording)
     if (outcome.kind !== 'registered') {
       this.step = outcome
       return
@@ -160,7 +161,7 @@ export class AddingRoot {
    * not waited for: the directory is added whatever the status says, so the outcome shows at once.
    */
   async #noticeFor(root: Root): Promise<void> {
-    const git = await gitIfUnmaintained(this.failure)
+    const git = await gitIfUnmaintained(this.wording.failure)
     if (git && this.step.kind === 'done' && this.step.root.id === root.id)
       this.step = { ...this.step, maintenance: git }
   }

@@ -12,12 +12,12 @@
    * state the daemon reports. While the request is on its way the dialog cannot be closed, or a refusal
    * would go unseen.
    */
-  import { tick } from 'svelte'
   import type { FolderBrowser } from '../lib/folders.svelte'
   import type { MovingRoot } from '../lib/moving.svelte'
   import { strings } from '../lib/strings'
   import type { PathMode, Root } from '../lib/wire'
   import FailureAlert from '../dialogs/FailureAlert.svelte'
+  import { cancelThenFocus } from '../dialogs/focus'
   import ModalDialog from '../dialogs/ModalDialog.svelte'
   import FolderPicker from '../folders/FolderPicker.svelte'
   import LinkQuestion from './LinkQuestion.svelte'
@@ -66,15 +66,16 @@
   }
 
   /** Declines the link question and hands the keyboard back to the button that asked it. */
-  async function backOut() {
-    moving.cancel()
-    await tick()
-    goButton?.focus()
+  function backOut() {
+    return cancelThenFocus(
+      () => moving.cancel(),
+      () => goButton,
+    )
   }
 </script>
 
 <ModalDialog bind:dialog title={strings.move.title(root.path)} width={600} titleGap={10} held={sending} {onClose}>
-  <p class="note">{strings.move.note}</p>
+  <p class="dialog-text note">{strings.move.note}</p>
 
   {#if step.kind === 'askingLink'}
     <LinkQuestion
@@ -89,7 +90,7 @@
     <FolderPicker {browser} disabled={sending} />
 
     {#if browser.path !== null}
-      <p class="chosen">{strings.move.chosen} <code>{browser.path}</code></p>
+      <p class="dialog-text chosen">{strings.move.chosen} <code>{browser.path}</code></p>
     {/if}
     {#if step.kind === 'failed'}
       <FailureAlert lead={strings.move.failed} reason={step.reason} />
@@ -111,9 +112,6 @@
 </ModalDialog>
 
 <style>
-  p {
-    margin: 8px 0 0;
-  }
   .note {
     margin: 0 0 10px;
     padding: 8px 10px;

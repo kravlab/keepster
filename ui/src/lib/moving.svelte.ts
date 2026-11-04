@@ -7,6 +7,7 @@
  * the link leads, and the person's answer is sent with the same path again.
  */
 import { moveRoot } from './api'
+import type { RefusalWording } from './failures'
 import { type AskingLink, type PathRefused, sendRootPath } from './link'
 import type { PathMode, Root } from './wire'
 
@@ -35,15 +36,11 @@ export class MovingRoot {
   /**
    * @param root the Root to move, as the list shows it when the Move begins: its id is the one sent, and
    *   the dialog names it by it once the list has dropped it
-   * @param failure the text a failed request shows, as `failureText` gives it; an ended session is
-   *   handed to it too, since it ends every screen
-   * @param rootById the live list's Root with an id, so that a refusal can name it by its path; one it
-   *   does not find is named as the daemon names it
+   * @param wording what a failed request is worded with, and an overlapped Root named by
    */
   constructor(
     readonly root: Root,
-    private readonly failure: (e: unknown) => string,
-    private readonly rootById: (id: string) => Root | undefined,
+    private readonly wording: RefusalWording,
   ) {}
 
   /**
@@ -55,7 +52,7 @@ export class MovingRoot {
   async move(path: string, mode?: PathMode): Promise<void> {
     if (this.step.kind === 'moving') return
     this.step = { kind: 'moving', path }
-    const outcome = await sendRootPath(path, () => moveRoot(this.root.id, path, mode), this.failure, this.rootById)
+    const outcome = await sendRootPath(path, () => moveRoot(this.root.id, path, mode), this.wording)
     this.step = outcome.kind === 'moved' ? { kind: 'done', root: outcome.root } : outcome
   }
 

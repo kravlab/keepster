@@ -5,9 +5,11 @@
    * registered, unwatched or moved elsewhere shows here as it happens. Opening a Root's history is the
    * person's choice, from its row; the page never goes anywhere by itself.
    *
-   * It adds a directory too (ticket 93), through the add dialog. Once added, the page stays as it is: the
+   * It adds a directory too (#29), through the add dialog. Once added, the page stays as it is: the
    * new Root shows in the list as the live list brings it, and a banner says it was added, with the way to
-   * its history and, while store maintenance cannot run, what `keepster watch` would warn of.
+   * its history and, while store maintenance cannot run, what `keepster watch` would warn of. The shell
+   * keeps that outcome, so the banner is still here after leaving the page and coming back, until it is
+   * dismissed, its history opened, or another add starts. It takes the focus only when it first appears.
    *
    * A Root's row can stop watching it too (#31), through the unwatch dialog. The page stays as it is once
    * the Root is unwatched: the live list drops it, and the dialog, which the page holds, closes by itself.
@@ -20,8 +22,8 @@
    */
   import { onMount } from 'svelte'
   import { rootActions } from '../lib/actions'
-  import { AddingRoot } from '../lib/adding.svelte'
-  import { failureText } from '../lib/failures'
+  import { type AddDone, AddingRoot } from '../lib/adding.svelte'
+  import { failureText, type RefusalWording } from '../lib/failures'
   import { FolderBrowser, parentDirectory } from '../lib/folders.svelte'
   import { MovingRoot } from '../lib/moving.svelte'
   import { strings } from '../lib/strings'
@@ -37,6 +39,10 @@
     current,
     onOpen,
     addFirst = false,
+    added,
+    onAdded,
+    onDismissAdded,
+    takeAddedFocus,
     onSessionEnded,
   }: {
     roots: Root[]
@@ -46,10 +52,25 @@
     onOpen: (id: string) => void
     /** Whether the page opens with the add dialog, as the empty state's way here asks. Read once. */
     addFirst?: boolean
+    /** The outcome of the last add, which the shell keeps for its banner; `null` once the banner is gone. */
+    added: AddDone | null
+    /** Called with an add once its directory is added; its outcome comes back as `added`, kept current. */
+    onAdded: (flow: AddingRoot) => void
+    /** Called when the banner goes: dismissed, the added Root's history opened, or another add started. */
+    onDismissAdded: () => void
+    /** Whether the banner, as it mounts, takes the focus: only the first time it appears, once asked. */
+    takeAddedFocus: () => boolean
     onSessionEnded: () => void
   } = $props()
 
-  /* The add flow under way, and then its outcome for the banner, until dismissed or another add starts. */
+  /* What a failed request shows; an ended session is handed to the shell. */
+  const failure = (e: unknown) => failureText(e, onSessionEnded)
+  /* The live list's Root with `id`, if it holds one. */
+  const rootById = (id: string) => roots.find((r) => r.id === id)
+  /* What the add and Move flows word a refused path with, an overlapped Root named by its path. */
+  const wording: RefusalWording = { failure, rootById }
+
+  /* The add flow under way, until its directory is added and the shell takes its outcome, or it is left. */
   let adding = $state<AddingRoot | null>(null)
   /* Where the directory to add is chosen; kept across adds, so the browser reopens where it was. */
   let browser = $state<FolderBrowser | null>(null)
@@ -60,37 +81,41 @@
    * now, and the last one seen once the list drops it, so the dialog stays while a refusal or the close
    * it waits for is still to come.
    */
-  const unwatchedRoot = $derived(
-    unwatching ? (roots.find((r) => r.id === unwatching!.id) ?? unwatching.lastSeen) : null,
-  )
-  const added = $derived(adding?.step.kind === 'done' ? adding.step : null)
+  const unwatchedRoot = $derived(unwatching ? (rootById(unwatching.id) ?? unwatching.lastSeen) : null)
   /* The Move under way, and where its new path is chosen; a browser of its own, starting near the Root. */
   let moving = $state.raw<{ flow: MovingRoot; browser: FolderBrowser } | null>(null)
   /** The Root the Move dialog names: the live one, or the one the Move began with once the list drops it. */
-  const movedRoot = $derived(moving ? (roots.find((r) => r.id === moving!.flow.root.id) ?? moving.flow.root) : null)
+  const movedRoot = $derived(moving ? (rootById(moving.flow.root.id) ?? moving.flow.root) : null)
 
   /* Keeps the unwatched Root's last seen state current, for the dialog once the list has dropped it. */
   $effect(() => {
     if (!unwatching) return
     const id = unwatching.id
-    const live = roots.find((r) => r.id === id)
+    const live = rootById(id)
     if (live) unwatching.lastSeen = live
   })
 
+  /* Hands an add to the shell once its directory is added, which keeps the banner, and closes its dialog. */
+  $effect(() => {
+    if (adding?.step.kind !== 'done') return
+    onAdded(adding)
+    adding = null
+  })
+
   /**
-   * Opens the add dialog with a fresh flow, the browser where it was but without a refusal from before.
-   * The flow names an overlapped Root by its path from the live list.
+   * Opens the add dialog with a fresh flow, the browser where it was but without a refusal from before,
+   * and the banner of the add before gone. The flow names an overlapped Root by its path from the live list.
    */
   function startAdding() {
-    const failure = (e: unknown) => failureText(e, onSessionEnded)
+    onDismissAdded()
     browser ??= new FolderBrowser(failure)
     browser.startOver()
-    adding = new AddingRoot(failure, (id) => roots.find((r) => r.id === id))
+    adding = new AddingRoot(wording)
   }
 
   /** Opens the unwatch dialog for `root`, which is the Root the dialog names until the list changes it. */
   function startUnwatching(root: Root) {
-    unwatching = new UnwatchingRoot(root, (e) => failureText(e, onSessionEnded))
+    unwatching = new UnwatchingRoot(root, failure)
   }
 
   /**
@@ -99,9 +124,8 @@
    * can be listed, or at home when none can. The Move names an overlapped Root by its path from the live list.
    */
   function startMoving(root: Root) {
-    const failure = (e: unknown) => failureText(e, onSessionEnded)
     moving = {
-      flow: new MovingRoot(root, failure, (id) => roots.find((r) => r.id === id)),
+      flow: new MovingRoot(root, wording),
       browser: new FolderBrowser(failure, parentDirectory(root.path) ?? undefined),
     }
   }
@@ -117,7 +141,16 @@
     <button type="button" onclick={startAdding}>{strings.roots.add}</button>
   </div>
   {#if added}
-    <AddedBanner root={added.root} maintenance={added.maintenance} {onOpen} onDismiss={() => (adding = null)} />
+    <AddedBanner
+      root={added.root}
+      maintenance={added.maintenance}
+      focused={takeAddedFocus()}
+      onOpen={(id) => {
+        onDismissAdded()
+        onOpen(id)
+      }}
+      onDismiss={onDismissAdded}
+    />
   {/if}
   {#if roots.length === 0}
     <p class="muted">{strings.noRoots}</p>
@@ -158,7 +191,7 @@
   <MoveDialog moving={moving.flow} root={movedRoot} browser={moving.browser} onClose={() => (moving = null)} />
 {/if}
 
-{#if adding && browser && !added}
+{#if adding && browser && adding.step.kind !== 'done'}
   <AddDialog {adding} {browser} onClose={() => (adding = null)} />
 {/if}
 
