@@ -2,8 +2,10 @@
   /*
    * The banner once a directory is added (ticket 93): it says so, offers the way to the new Root's history,
    * and, while store maintenance cannot run, what `keepster watch` would warn of. The page stays where it
-   * is; the new Root shows in its list as the live list brings it.
+   * is; the new Root shows in its list as the live list brings it. It is edged in the color a watched
+   * Root's state has.
    */
+  import Banner from '../banners/Banner.svelte'
   import { maintenanceNotice } from '../lib/maintenance'
   import { strings } from '../lib/strings'
   import type { GitStatus, Root } from '../lib/wire'
@@ -26,58 +28,37 @@
 </script>
 
 <!-- Focused as it appears: the dialog the keyboard was in is gone. -->
-<div class="banner" role="status" tabindex="-1" {@attach (node) => node.focus()}>
-  <div class="row">
-    <p>{strings.adding.added(root.path)}</p>
-    <span class="spacer"></span>
+<Banner tone="added" margin="0 0 12px" focused>
+  {#snippet message()}{strings.adding.added(root.path)}{/snippet}
+  {#snippet actions()}
     <button type="button" onclick={() => onOpen(root.id)}>{strings.adding.open}</button>
     <button type="button" onclick={onDismiss}>{strings.adding.dismiss}</button>
-  </div>
-  {#if maintenance}
-    {@const notice = maintenanceNotice(maintenance)}
-    <div class="maintenance">
-      <p><strong>{notice.title}</strong></p>
-      {#if notice.git}<p>{notice.git}</p>{/if}
-      {#if notice.why}<p>{notice.why}</p>{/if}
-      {#if notice.gitSaid}<p>{notice.gitSaid}</p>{/if}
-      {#if notice.install}
-        {#if notice.install.command}
-          <p>{strings.maintenance.install} <code>{notice.install.command}</code></p>
+  {/snippet}
+  {#snippet details()}
+    {#if maintenance}
+      {@const notice = maintenanceNotice(maintenance)}
+      <div class="maintenance">
+        <p><strong>{notice.title}</strong></p>
+        {#if notice.git}<p>{notice.git}</p>{/if}
+        {#if notice.why}<p>{notice.why}</p>{/if}
+        {#if notice.gitSaid}<p>{notice.gitSaid}</p>{/if}
+        {#if notice.install}
+          {#if notice.install.command}
+            <p>{strings.maintenance.install} <code>{notice.install.command}</code></p>
+          {/if}
+          {#if notice.install.note}<p>{notice.install.note}</p>{/if}
+          <p><a href={notice.install.link} target="_blank" rel="noreferrer">{notice.install.link}</a></p>
         {/if}
-        {#if notice.install.note}<p>{notice.install.note}</p>{/if}
-        <p><a href={notice.install.link} target="_blank" rel="noreferrer">{notice.install.link}</a></p>
-      {/if}
-    </div>
-  {/if}
-</div>
+      </div>
+    {/if}
+  {/snippet}
+</Banner>
 
 <style>
-  /* What just happened, apart from the list, edged in the color a watched Root's state has. */
-  .banner {
-    margin: 0 0 12px;
-    padding: 8px 12px;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-left: 3px solid var(--added);
-    border-radius: 6px;
-  }
-  .banner p {
+  /* Drawn here, below the banner's row: the banner's own paragraph rule does not reach it. */
+  .maintenance p {
     margin: 0;
     overflow-wrap: anywhere;
-  }
-  .banner:focus-visible {
-    outline-offset: 0;
-  }
-  .row {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-  .spacer {
-    flex: 1;
-  }
-  button {
-    white-space: nowrap;
   }
   .maintenance {
     margin-top: 8px;

@@ -2,6 +2,7 @@
  * Every text the SPA shows, in one place. The project has no i18n system; keeping the strings out of the
  * components is what lets one be added without touching them.
  */
+import type { Erasure } from './erasure'
 import { TOO_LARGE_BYTES, type Card } from './files'
 import type { Theme } from './preferences'
 import type { ChangeShape } from './summary'
@@ -138,6 +139,9 @@ export const strings = {
      * `rootPath`, a Root the page knows.
      */
     overlaps: (path: string, rootPath: string) => `${path} overlaps the Root at ${rootPath}`,
+    /** In the header and the Root picker, for the Root shown once it is no longer watched (#33). */
+    noLongerWatched: 'No longer watched',
+    unwatchedOption: (path: string) => `${path} (no longer watched)`,
     /**
      * The question a path through a link needs, adding a directory or recording a Move, worded as
      * `keepster watch` and `keepster move` ask it.
@@ -388,9 +392,22 @@ export const strings = {
     absent: 'This Snapshot holds nothing at this path: the file did not exist then.',
   } satisfies Record<Card, string>,
 
+  /** The banner once the shown Root's history was erased (#33), by what the screen offers (`Erasure`). */
+  erased: {
+    title: (path: string) => `The history of ${path} was erased.`,
+    why: {
+      refresh: 'It is still watched, so its history starts over from its files as they are now.',
+      manage: 'It is no longer watched, so nothing will capture it again.',
+    } satisfies Record<Erasure, string>,
+    /** The banner's button, by the same key. */
+    go: { refresh: 'Show its history afresh', manage: 'Manage Roots' } satisfies Record<Erasure, string>,
+  },
+
   /** The Restore dialog: one for every view mode, so an irreversible action has one face (ticket 15). */
   restore: {
     open: 'Restore…',
+    /** Beside the disabled Restore while the Root shown is no longer watched (#33). */
+    unwatched: 'Restore writes only into a Watched Root, and this one is no longer watched.',
     title: (path: string) => `Restore ${path}`,
     version: (moment: Date) => `The version in the Snapshot of ${when(moment)}.`,
     beforeDeletion: (moment: Date) =>

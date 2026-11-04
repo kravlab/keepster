@@ -3,7 +3,7 @@
    * The Restore dialog, the one face every view mode gives Restore (ticket 15). It opens on a dry run
    * that names what will be overwritten or created, asks every confirmation and resolution the daemon's
    * plan needs, and states the Safety Snapshot promise on the same panel; the Restore button is live only
-   * once everything is answered. What the questions are and when the request may go is `lib/restore.ts`.
+   * once everything is answered, and while the Root is still watched. What the questions are and when the request may go is `lib/restore.ts`.
    *
    * Two plans are kept. The questions come from a dry run made without answers, so a question stays on
    * screen once answered; each change of the answers runs the dry run again with them, which is what the
@@ -35,6 +35,7 @@
     from,
     path,
     beforeDeletion,
+    unwatched,
     onClose,
     onSessionEnded,
   }: {
@@ -44,6 +45,12 @@
     path: string
     /** Whether `from` is the Snapshot before the one that deleted the file. */
     beforeDeletion: boolean
+    /**
+     * Whether the Root stopped being watched while the dialog is open (#33): the daemon restores only into
+     * a Watched Root, so the Restore button is disabled, with that reason, and the dialog stays to be
+     * cancelled.
+     */
+    unwatched: boolean
     onClose: () => void
     onSessionEnded: () => void
   } = $props()
@@ -65,9 +72,12 @@
       plan !== null &&
       ready(preflight, answers) &&
       !plan.some((file) => file.outcome === 'blocked') &&
-      !running,
+      !running &&
+      !unwatched,
   )
   const moment = $derived(momentOf(from))
+  /* Names the reason Restore is disabled once the Root is no longer watched, for the button to be described by it. */
+  const blockedId = $props.id()
 
   /** Asks the daemon what Restore would do with the answers `given`. */
   async function dryRun(given: Answers): Promise<RestoredPath[]> {
@@ -262,9 +272,12 @@
 
     <p class="safety">{strings.restore.safety}</p>
 
+    {#if unwatched}<p class="warn" id={blockedId}>{strings.restore.unwatched}</p>{/if}
+
     <div class="actions">
       <button onclick={() => dialog?.close()}>{strings.cancel}</button>
-      <button class="go" disabled={!canGo} onclick={go}>{running ? strings.restore.working : strings.restore.go}</button
+      <button class="go" disabled={!canGo} aria-describedby={unwatched ? blockedId : undefined} onclick={go}
+        >{running ? strings.restore.working : strings.restore.go}</button
       >
     </div>
   {/if}

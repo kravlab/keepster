@@ -26,12 +26,15 @@
 
   let {
     rootId,
+    unwatched,
     path = $bindable(),
     snapshotId = $bindable(),
     onSessionEnded,
   }: {
     /** Fixed for the life of the component: `History` mounts a new one for another Root. */
     rootId: string
+    /** Whether the Root is no longer watched: Restore is then disabled, with its reason (#33). */
+    unwatched: boolean
     /** The selected file, carried across view modes. */
     path: string | null
     /** The selected Snapshot, carried across view modes. */
@@ -192,7 +195,7 @@
         <p class="empty">{strings.noVersions}</p>
       {/if}
       {#if toId}
-        <DiffPane {rootId} {target} {onSessionEnded} />
+        <DiffPane {rootId} {unwatched} {target} {onSessionEnded} />
       {/if}
     {/if}
   </section>

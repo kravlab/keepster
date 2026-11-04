@@ -24,7 +24,9 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
 - `src/lib/`: everything that is not drawing, with unit tests beside it. The `/v1` client and its narrow
   types (`api.ts`, `wire.ts`), what a failure says on screen (`failures.ts`), daemon hunks to editor ranges
   (`hunks.ts`, and its failure in `mismatch.ts`), the live event stream, one per page (`events.ts`), the
-  Watched Roots kept current from it (`roots.svelte.ts`), adding a directory as a Root, after a Capture
+  Watched Roots kept current from it (`roots.svelte.ts`), the Root shown over them, kept once it is
+  unwatched and told once its history is erased (`showing.svelte.ts`, with what the screen then offers in
+  `erasure.ts`), adding a directory as a Root, after a Capture
   Preview of it (`adding.svelte.ts`), unwatching a Root, with its consent rule in `unwatch.ts` (`unwatching.svelte.ts`),
   recording a Move of a Root (`moving.svelte.ts`), sending a path for a Root and its link question, which
   adding and moving share (`link.ts`), the order of a Root row's actions (`actions.ts`)
@@ -43,6 +45,8 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   dialog (`AddDialog.svelte`), the banner once a directory is added (`AddedBanner.svelte`), the unwatch
   dialog (`UnwatchDialog.svelte`), the Move dialog (`MoveDialog.svelte`), and the link question the add and
   Move dialogs share (`LinkQuestion.svelte`).
+- `src/banners/`: the skeleton every banner shares (`Banner.svelte`), the added Root's and the erased
+  history's.
 - `src/dialogs/`: the shell every modal dialog shares (`ModalDialog.svelte`) and a dialog's focused refusal
   (`FailureAlert.svelte`).
 - `src/folders/`: the folder picker that chooses a directory on the daemon's machine (`FolderPicker.svelte`).
@@ -53,7 +57,8 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   the shell (`App.svelte`) keeps so that a search result can set it: the rail (`RailMode.svelte`), file first (`FileMode.svelte`) and the activity feed
   (`FeedMode.svelte`). The diff pane
   (`DiffPane.svelte`) is common to all three, and so is the Restore dialog it opens
-  (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show.
+  (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show. Over the screen,
+  the banner once the shown Root's history is erased (`ErasedBanner.svelte`).
 
 ## Budget
 

@@ -28,6 +28,7 @@
 
   let {
     rootId,
+    unwatched,
     path = $bindable(),
     snapshotId = $bindable(),
     arriving,
@@ -35,6 +36,8 @@
   }: {
     /** Fixed for the life of the component: `History` mounts a new one for another Root. */
     rootId: string
+    /** Whether the Root is no longer watched: Restore is then disabled, with its reason (#33). */
+    unwatched: boolean
     /** The selected file, carried across view modes; set when a path is opened. */
     path: string | null
     /** The selected Snapshot, carried across view modes; set when a path is opened. */
@@ -244,7 +247,7 @@
       <button onclick={(e) => e.currentTarget.closest('dialog')?.close()}>{strings.closeDiff}</button>
     </header>
     <div class="body">
-      <DiffPane {rootId} target={openTarget} {onSessionEnded} />
+      <DiffPane {rootId} {unwatched} target={openTarget} {onSessionEnded} />
     </div>
   </dialog>
 {/if}

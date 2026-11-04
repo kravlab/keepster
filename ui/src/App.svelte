@@ -7,6 +7,8 @@
    * It owns the Watched Roots too (ticket 92), which the picker, the management page and search share.
    * They follow the daemon, but which Root is shown changes only by the person's hand or a search result
    * they picked: the first Root is chosen once, when the Roots are first known, and never by an event.
+   * A shown Root unwatched or erased elsewhere stays shown (#33): marked no longer watched, kept in the
+   * picker until another is chosen, and with a banner once its history is erased.
    *
    * It also owns the History screen's mode and selection (ticket 66), because a search result sets them:
    * picking one selects its file and Snapshot, switching the Root picker when the result is in another
@@ -17,6 +19,7 @@
    * the code for the session cookie and redirected to `/` (ticket 60), so the address bar holds no secret.
    * When a request finds the session gone, every screen gives way to one that says how to get back.
    */
+  import ErasedBanner from './history/ErasedBanner.svelte'
   import History from './history/History.svelte'
   import RootsPage from './roots/RootsPage.svelte'
   import SearchOverlay from './search/SearchOverlay.svelte'
@@ -26,9 +29,9 @@
   import { WatchedRoots } from './lib/roots.svelte'
   import { SEARCH_PAUSE_MS, type SearchTarget } from './lib/search'
   import type { Mode, Selection } from './lib/selection'
+  import { ShownRoot } from './lib/showing.svelte'
   import { strings } from './lib/strings'
 
-  let rootId = $state<string | null>(null)
   let ended = $state(false)
   /* Whether the Root management page is shown instead of the History screen. */
   let managing = $state(false)
@@ -54,15 +57,19 @@
   let searching = $state<string | null>(null)
   let searchPause: ReturnType<typeof setTimeout> | undefined
 
+  /* The Registry, `watched.roots`: what the management page lists. */
   const watched = new WatchedRoots((e) => failureText(e, endSession))
-  const roots = $derived(watched.roots)
-  const root = $derived(roots?.find((r) => r.id === rootId) ?? null)
+  /*
+   * The Root shown, chosen only here, through `shown.show`. The picker offers `shown.listed`: the Registry,
+   * and the shown Root while it is kept no longer watched.
+   */
+  const shown = new ShownRoot(watched)
   /*
    * The shown Root's id, apart from its record. Every change to the Registry reloads the Roots as new
    * records, and the History screen must not take the shown Root's new record for another Root: what it
    * builds from the id would be built again, empty, while the Root stayed the same.
    */
-  const shownId = $derived(root?.id ?? null)
+  const shownId = $derived(shown.current?.id ?? null)
 
   /** Every screen calls this when the daemon answers 401. */
   function endSession() {
@@ -77,8 +84,8 @@
 
   /** A Root chosen by hand: its history starts with nothing selected, in the mode already shown. */
   function chooseRoot(id: string) {
-    rootId = id
-    awaited = roots?.some((r) => r.id === id) ? null : id
+    shown.show(id)
+    awaited = watched.roots?.some((r) => r.id === id) ? null : id
     managing = false
     selection = { path: null, snapshotId: null }
     arriving = false
@@ -108,17 +115,25 @@
    * removed since the search, leads nowhere, and the header says so.
    */
   function pick(target: SearchTarget) {
-    const into = roots?.find((r) => r.id === target.root)
+    const into = shown.listed?.find((r) => r.id === target.root)
     closeSearch()
     if (!into) {
       notice = strings.search.rootGone
       return
     }
-    notice = into.id === rootId ? '' : strings.search.switchedRoot(into.path)
-    rootId = into.id
+    notice = into.id === shown.id ? '' : strings.search.switchedRoot(into.path)
+    shown.show(into.id)
     managing = false
     selection = { path: target.path, snapshotId: target.snapshot }
     arriving = true
+    visit += 1
+  }
+
+  /** Shows the shown Root's history afresh, from nothing selected: what was selected may be erased. */
+  function refreshHistory() {
+    shown.acknowledgeErasure()
+    selection = { path: null, snapshotId: null }
+    arriving = false
     visit += 1
   }
 
@@ -131,7 +146,12 @@
 
   $effect(() => {
     void watched.load()
-    return watched.follow()
+    const stopRegistry = watched.follow()
+    const stopShown = shown.follow()
+    return () => {
+      stopShown()
+      stopRegistry()
+    }
   })
 
   /*
@@ -140,38 +160,43 @@
    */
   let firstChosen = false
   $effect(() => {
+    const roots = watched.roots
     if (firstChosen || roots === null) return
     firstChosen = true
-    rootId ??= roots[0]?.id ?? null
+    if (shown.id === null) shown.show(roots[0]?.id ?? null)
   })
 
   $effect(() => {
-    if (awaited !== null && root?.id === awaited) awaited = null
+    if (awaited !== null && shown.current?.id === awaited) awaited = null
   })
 </script>
 
 <div class="app">
   <header>
     <b>{strings.appName}</b>
-    {#if roots && roots.length > 0 && !ended}
+    {#if shown.listed && shown.listed.length > 0 && !ended}
       <label>
         {strings.rootLabel}
-        <select value={rootId ?? ''} onchange={(e) => chooseRoot(e.currentTarget.value)}>
-          {#if !root}<option value="" disabled>{strings.noRootChosen}</option>{/if}
-          {#each roots as r (r.id)}
-            <option value={r.id}>{r.path}</option>
+        <select value={shown.id ?? ''} onchange={(e) => chooseRoot(e.currentTarget.value)}>
+          {#if !shown.current}<option value="" disabled>{strings.noRootChosen}</option>{/if}
+          {#each shown.listed as r (r.id)}
+            <option value={r.id}>
+              {r.id === shown.id && shown.unwatched ? strings.roots.unwatchedOption(r.path) : r.path}
+            </option>
           {/each}
         </select>
       </label>
-      {#if root}
-        <span class="muted">{strings.roots.state(root.state)}</span>
-        {#if root.state_code}
-          {@const reason = strings.roots.reason(root.state_code)}
+      {#if shown.current && shown.unwatched}
+        <span class="unwatched">{strings.roots.noLongerWatched}</span>
+      {:else if shown.current}
+        <span class="muted">{strings.roots.state(shown.current.state)}</span>
+        {#if shown.current.state_code}
+          {@const reason = strings.roots.reason(shown.current.state_code)}
           <span class="muted reason" title={reason}>{reason}</span>
         {/if}
       {/if}
     {/if}
-    {#if roots && !ended}
+    {#if watched.roots && !ended}
       <button
         type="button"
         aria-pressed={managing}
@@ -183,7 +208,7 @@
         {strings.roots.manage}
       </button>
     {/if}
-    {#if roots && roots.length > 0 && !ended}
+    {#if shown.listed && shown.listed.length > 0 && !ended}
       <input
         class="search"
         type="search"
@@ -199,7 +224,7 @@
     <span class="muted" role="status">{notice}</span>
     <span class="spacer"></span>
     <span class="error" role="status">
-      {#if roots && watched.error}{watched.error}{/if}
+      {#if watched.roots && watched.error}{watched.error}{/if}
       {#if preferences.error}{strings.preferencesFailed[preferences.error.when]} {preferences.error.text}{/if}
     </span>
     <label>
@@ -219,25 +244,40 @@
     <p class="message">
       {strings.sessionEnded.before} <code>{strings.sessionEnded.command}</code>{strings.sessionEnded.after}
     </p>
-  {:else if roots === null}
+  {:else if watched.roots === null}
     {#if watched.error}
       <p class="message error">{strings.failed} {watched.error}</p>
     {:else}
       <p class="message">{strings.loading}</p>
     {/if}
   {:else if managing}
-    <RootsPage {roots} current={rootId} onOpen={chooseRoot} {addFirst} onSessionEnded={endSession} />
+    <RootsPage roots={watched.roots} current={shown.id} onOpen={chooseRoot} {addFirst} onSessionEnded={endSession} />
   {:else if shownId !== null}
+    {#if shown.erasure && shown.current}
+      <ErasedBanner
+        path={shown.current.path}
+        erasure={shown.erasure}
+        onRefresh={refreshHistory}
+        onManage={() => openRoots(false)}
+      />
+    {/if}
     <!--
       Keyed: another Root is another history, and a picked search result must be opened by the mode
       shown, which reads the selection only when it mounts.
     -->
     {#key `${shownId}:${visit}`}
-      <History rootId={shownId} bind:mode bind:selection bind:arriving onSessionEnded={endSession} />
+      <History
+        rootId={shownId}
+        unwatched={shown.unwatched}
+        bind:mode
+        bind:selection
+        bind:arriving
+        onSessionEnded={endSession}
+      />
     {/key}
-  {:else if awaited !== null && awaited === rootId}
+  {:else if awaited !== null && awaited === shown.id}
     <p class="message">{strings.loading}</p>
-  {:else if roots.length === 0}
+  {:else if watched.roots.length === 0}
     <p class="message">
       {strings.noRoots}
       <button type="button" onclick={() => openRoots(false)}>{strings.roots.manage}</button>
@@ -248,11 +288,11 @@
   {/if}
 </div>
 
-{#if searching !== null && roots}
+{#if searching !== null && shown.listed}
   <SearchOverlay
     query={searching}
-    {roots}
-    currentRoot={rootId}
+    roots={shown.listed}
+    currentRoot={shown.id}
     onPick={pick}
     onClose={closeSearch}
     onSessionEnded={endSession}
@@ -292,6 +332,11 @@
   /* The way to the Root management page reads as pressed while the page is shown. */
   header button[aria-pressed='true'] {
     background: var(--selected);
+  }
+  /* The shown Root's mark once it is no longer watched: its history is read-only from here on. */
+  .unwatched {
+    color: var(--warn);
+    white-space: nowrap;
   }
   .search {
     width: min(280px, 30vw);

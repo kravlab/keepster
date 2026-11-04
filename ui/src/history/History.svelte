@@ -18,6 +18,7 @@
 
   let {
     rootId,
+    unwatched,
     mode = $bindable(),
     selection = $bindable(),
     arriving = $bindable(),
@@ -25,6 +26,11 @@
   }: {
     /** Fixed for the life of the screen: the shell mounts a new one for another Root. */
     rootId: string
+    /**
+     * Whether the Root is no longer watched: its history reads as before, but Restore, which writes into
+     * a Watched Root only, is disabled in every mode (#33).
+     */
+    unwatched: boolean
     /** The view mode shown, kept by the shell across Roots. */
     mode: Mode
     /** The file and Snapshot carried across view modes. */
@@ -73,12 +79,25 @@
 
   <div class="body" role="tabpanel">
     {#if mode === 'rail'}
-      <RailMode {rootId} bind:path={selection.path} bind:snapshotId={selection.snapshotId} {onSessionEnded} />
+      <RailMode
+        {rootId}
+        {unwatched}
+        bind:path={selection.path}
+        bind:snapshotId={selection.snapshotId}
+        {onSessionEnded}
+      />
     {:else if mode === 'files'}
-      <FileMode {rootId} bind:path={selection.path} bind:snapshotId={selection.snapshotId} {onSessionEnded} />
+      <FileMode
+        {rootId}
+        {unwatched}
+        bind:path={selection.path}
+        bind:snapshotId={selection.snapshotId}
+        {onSessionEnded}
+      />
     {:else}
       <FeedMode
         {rootId}
+        {unwatched}
         bind:path={selection.path}
         bind:snapshotId={selection.snapshotId}
         {arriving}
