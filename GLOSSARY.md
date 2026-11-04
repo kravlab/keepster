@@ -218,3 +218,10 @@ _Avoid_: web server, HTTP port, TCP API
 A single-use code, handed out on the Control Channel alone, that the Loopback Listener exchanges once for a browser
 session — so the token itself never appears in a URL.
 _Avoid_: login link, magic link, one-time token
+
+**Update**:
+Replacing the installed Keepster with another release, newer or older, so that afterwards every part of Keepster
+that is running is that release; an Update whose daemon does not come up on the new release is undone. It never
+migrates history (ADR 0010); going back to an older release is an Update too, made only on the person's explicit
+word, since a newer store or Segment format stays unreadable to it.
+_Avoid_: upgrade, self-update, reinstall
