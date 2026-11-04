@@ -16,6 +16,7 @@ import type {
   PathMode,
   PathResolution,
   PathSearch,
+  Pins,
   Preferences,
   PreviewGroup,
   PreviewRecord,
@@ -197,11 +198,16 @@ function failure(response: Response, problem: Partial<Problem>): Error {
   return new ApiError(response.status, problem.detail, problem.code, problem.details)
 }
 
-/** GETs `target`, turning a failure into `SessionEnded` or `ApiError`; `signal` aborts the request. */
-async function get(target: string, signal?: AbortSignal): Promise<Response> {
-  const response = await fetch(target, signal ? { signal } : undefined)
+/** Sends `init` to `target` and hands back the OK answer, turning a failure into `SessionEnded` or `ApiError`. */
+async function request(target: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(target, init)
   if (response.ok) return response
   throw failure(response, await problemOf(response))
+}
+
+/** GETs `target`, turning a failure into `SessionEnded` or `ApiError`; `signal` aborts the request. */
+function get(target: string, signal?: AbortSignal): Promise<Response> {
+  return request(target, signal ? { signal } : undefined)
 }
 
 /** GETs `target` and parses its JSON body as `T`, which the caller names from the endpoint's contract. */
@@ -347,6 +353,19 @@ export async function registerRoot(path: string, pathMode?: PathMode): Promise<R
     return { kind: 'throughLink', path: details.path, realPath: details.real_path }
   }
   throw failure(response, problem)
+}
+
+/**
+ * Stops watching the Root `id`: its history is kept, its last state pinned. With `purge` the history is
+ * erased too, which cannot be undone; the query carries it only then. A refusal is thrown, as everywhere.
+ */
+export async function unwatchRoot(id: string, purge: boolean): Promise<void> {
+  await request(url(['roots', id], purge ? { purge: 'true' } : {}), { method: 'DELETE' })
+}
+
+/** The Root `id`'s pinned Snapshots, newest first; a Root that never captured anything has none. */
+export function readPins(id: string): Promise<Pins> {
+  return getJson(url(['roots', id, 'pins']))
 }
 
 /** The daemon's health surface; only its maintenance rows are read. */

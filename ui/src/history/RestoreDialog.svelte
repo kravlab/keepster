@@ -28,6 +28,7 @@
   } from '../lib/restore'
   import { strings } from '../lib/strings'
   import type { Confirmation, ModesChoice, NameCaseChoice, Restored, RestoredPath } from '../lib/wire'
+  import ModalDialog from '../dialogs/ModalDialog.svelte'
 
   let {
     rootId,
@@ -76,7 +77,6 @@
   }
 
   onMount(() => {
-    dialog?.showModal()
     void (async () => {
       try {
         preflight = await dryRun(emptyAnswers())
@@ -138,8 +138,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} onclose={onClose} aria-labelledby="restore-title">
-  <h2 id="restore-title">{strings.restore.title(shownPath(path))}</h2>
+<ModalDialog bind:dialog title={strings.restore.title(shownPath(path))} {onClose}>
   <p>{beforeDeletion ? strings.restore.beforeDeletion(moment) : strings.restore.version(moment)}</p>
 
   {#if error}
@@ -269,25 +268,9 @@
       >
     </div>
   {/if}
-</dialog>
+</ModalDialog>
 
 <style>
-  dialog {
-    width: min(560px, calc(100vw - 32px));
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 16px 18px;
-    background: var(--panel);
-    color: var(--fg);
-  }
-  dialog::backdrop {
-    background: rgb(0 0 0 / 0.35);
-  }
-  h2 {
-    margin: 0 0 6px;
-    font-size: 15px;
-    overflow-wrap: anywhere;
-  }
   p {
     margin: 6px 0;
   }
@@ -322,18 +305,8 @@
   .warn {
     color: var(--warn);
   }
-  .actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 12px;
-  }
   .go:not(:disabled) {
     border-color: var(--danger);
     color: var(--danger);
-  }
-  .go:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
   }
 </style>

@@ -18,6 +18,7 @@ import {
   searchContent,
   searchPaths,
   timeline,
+  unwatchRoot,
   writePreferences,
 } from './api'
 import { exactPath } from './paths'
@@ -359,6 +360,64 @@ describe('the /v1 client', () => {
 
       await expect(readStatus()).resolves.toMatchObject({ daemon: { maintenance: 'available' } })
       expect(asked).toEqual(['/v1/status'])
+    })
+  })
+
+  describe('unwatching a Root', () => {
+    /** Answers every request with `response`, recording the method and URL of each. */
+    const deleting = (response: () => Response) => {
+      const sent: [string | undefined, string][] = []
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push([init?.method, url])
+        return Promise.resolve(response())
+      })
+      return sent
+    }
+
+    it('deletes the Root without a purge, so its history is kept', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await expect(unwatchRoot('r1', false)).resolves.toBeUndefined()
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/r1']])
+    })
+
+    it('deletes the Root with purge=true only when erasing its history', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await unwatchRoot('r1', true)
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/r1?purge=true']])
+    })
+
+    it('escapes the Root’s id in the path', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await unwatchRoot('a/b c', false)
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/a%2Fb%20c']])
+    })
+
+    it('reports a refusal with the daemon’s reason', async () => {
+      deleting(() =>
+        json(
+          { title: 'Not Found', status: 404, detail: 'no Root r1 is watched', code: 'root_not_found' },
+          404,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(unwatchRoot('r1', true)).rejects.toMatchObject({
+        status: 404,
+        code: 'root_not_found',
+        detail: 'no Root r1 is watched',
+      })
+    })
+
+    it('reports a 401 as the session having ended', async () => {
+      deleting(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
+
+      await expect(unwatchRoot('r1', false)).rejects.toBeInstanceOf(SessionEnded)
     })
   })
 

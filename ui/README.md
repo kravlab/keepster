@@ -25,7 +25,8 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   types (`api.ts`, `wire.ts`), what a failure says on screen (`failures.ts`), daemon hunks to editor ranges
   (`hunks.ts`, and its failure in `mismatch.ts`), the live event stream, one per page (`events.ts`), the
   Watched Roots kept current from it (`roots.svelte.ts`), adding a directory as a Root, after a Capture
-  Preview of it (`adding.svelte.ts`) and the notice when store maintenance is unavailable (`maintenance.ts`), the folder browser over the
+  Preview of it (`adding.svelte.ts`), unwatching a Root, with its consent rule in `unwatch.ts` (`unwatching.svelte.ts`)
+  and the notice when store maintenance is unavailable (`maintenance.ts`), the folder browser over the
   daemon's machine (`folders.svelte.ts`), the rail's day headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
   Root-relative paths (`paths.ts`), the changed-file list and what the diff pane is given (`files.ts`), the
   pane's data loaded for one Snapshot and named by it (`shown.ts`), a
@@ -37,7 +38,10 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   a content search's stream folded (`search.ts`, and one search run at a time in `searching.svelte.ts`), and every user-facing text
   (`strings.ts`). `testing.ts` is test support only: a hand-driven event stream and a newline-delimited JSON answer.
 - `src/roots/`: the Root management page the header's Manage Roots opens (`RootsPage.svelte`), its add
-  dialog (`AddDialog.svelte`), and the banner once a directory is added (`AddedBanner.svelte`).
+  dialog (`AddDialog.svelte`), the banner once a directory is added (`AddedBanner.svelte`), and the unwatch
+  dialog (`UnwatchDialog.svelte`).
+- `src/dialogs/`: the shell every modal dialog shares (`ModalDialog.svelte`) and a dialog's focused refusal
+  (`FailureAlert.svelte`).
 - `src/folders/`: the folder picker that chooses a directory on the daemon's machine (`FolderPicker.svelte`).
 - `src/editor/`: the CodeMirror adapter, its colors read from the theme's variables (`palette.ts`), and the
   curated grammars, loaded lazily.

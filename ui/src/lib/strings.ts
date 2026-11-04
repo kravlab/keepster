@@ -127,6 +127,37 @@ export const strings = {
     reason: (code: string) => ROOT_REASONS[code] ?? code,
     /** Opens the add dialog, on the page and in the empty state, and heads it. */
     add: 'Add a directory',
+    /** Opens the unwatch dialog from a Root's row. */
+    unwatch: 'Unwatch…',
+  },
+
+  /** The unwatch dialog (#31), worded as `keepster unwatch` says it. */
+  unwatch: {
+    title: (path: string) => `Stop watching ${path}`,
+    /** What becomes of the history, by `Outlook` in `lib/unwatching.svelte`. */
+    outlook: {
+      /** The Root has a pinned Snapshot and the history is not to be erased. */
+      kept:
+        'Its history is kept: it decays down to its last state, which is pinned. Watching the directory ' +
+        'again resumes it.',
+      /** The Root has no pinned Snapshot: it never captured anything. */
+      nothingToKeep: 'It has no history to keep.',
+      /** The pins are not read yet, or could not be: claims neither. */
+      unknown: 'Its changes stop being captured; any history it has is kept unless you erase it.',
+      /** Erasing is chosen, as `acknowledge` words it. */
+      erasing: 'Its history is erased with it: every captured version of this Root is lost.',
+    },
+    /** The option that also erases the history. */
+    erase: 'Also erase its history',
+    /** The separate acknowledgement an erasing needs. */
+    acknowledge: 'I understand that erasing cannot be undone: every captured version of this Root is lost.',
+    /** The button, by the choice (a key of `wording` in `lib/unwatch`). */
+    go: 'Unwatch',
+    goErasing: 'Erase history and unwatch',
+    working: 'Working…',
+    cancel: 'Cancel',
+    /** Before the daemon's reason the Root was not unwatched. */
+    failed: 'Not unwatched:',
   },
 
   /** The add dialog and the banner after it (ticket 93). */

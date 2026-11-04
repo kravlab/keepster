@@ -21,6 +21,8 @@
   import { shownPath } from '../lib/paths'
   import { strings } from '../lib/strings'
   import type { PreviewSize } from '../lib/wire'
+  import FailureAlert from '../dialogs/FailureAlert.svelte'
+  import ModalDialog from '../dialogs/ModalDialog.svelte'
   import FolderPicker from '../folders/FolderPicker.svelte'
 
   let {
@@ -44,7 +46,6 @@
   const held = $derived(registering || previewing)
 
   onMount(() => {
-    dialog?.showModal()
     return () => {
       if (adding.step.kind === 'previewing') adding.cancel()
     }
@@ -81,17 +82,17 @@
   {/if}
 {/snippet}
 
-<dialog
-  bind:this={dialog}
-  onclose={onClose}
-  oncancel={(e) => {
-    if (held) e.preventDefault()
+<ModalDialog
+  bind:dialog
+  title={strings.roots.add}
+  width={600}
+  titleGap={10}
+  {held}
+  onCancel={() => {
     if (previewing) void backOut()
   }}
-  aria-labelledby="add-title"
+  {onClose}
 >
-  <h2 id="add-title">{strings.roots.add}</h2>
-
   {#if step.kind === 'askingLink'}
     <p class="question">{strings.adding.link.question(step.path, step.realPath)}</p>
     <div class="actions">
@@ -153,11 +154,7 @@
       <p class="chosen">{strings.adding.chosen} <code>{browser.path}</code></p>
     {/if}
     {#if step.kind === 'failed'}
-      <!-- Focused as it appears: the button that sent the request is still where the keyboard was. -->
-      <p class="error" role="alert" tabindex="-1" {@attach (node) => node.focus()}>
-        {strings.adding.failed}
-        {step.reason}
-      </p>
+      <FailureAlert lead={strings.adding.failed} reason={step.reason} />
     {/if}
 
     {#if step.kind === 'previewing'}
@@ -187,24 +184,9 @@
       </div>
     {/if}
   </div>
-</dialog>
+</ModalDialog>
 
 <style>
-  dialog {
-    width: min(600px, calc(100vw - 32px));
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 16px 18px;
-    background: var(--panel);
-    color: var(--fg);
-  }
-  dialog::backdrop {
-    background: rgb(0 0 0 / 0.35);
-  }
-  h2 {
-    margin: 0 0 10px;
-    font-size: 15px;
-  }
   p {
     margin: 8px 0 0;
   }
@@ -276,19 +258,5 @@
     padding: 6px 10px;
     border-left: 3px solid var(--accent);
     background: var(--bg);
-  }
-  .actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 12px;
-  }
-  .go:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  button:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
   }
 </style>

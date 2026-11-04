@@ -105,6 +105,11 @@ export interface Timeline {
   next_cursor?: string
 }
 
+/** A Root's pinned Snapshots, newest first (`keepster_api::Pins`); only `snapshots` is read. */
+export interface Pins {
+  snapshots: Snapshot[]
+}
+
 /** How a file changed (`keepster_api::FileChange`). */
 export type FileChange = 'added' | 'modified' | 'deleted' | 'renamed'
 
