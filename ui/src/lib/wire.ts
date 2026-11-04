@@ -382,3 +382,86 @@ export type ContentRecord =
   | SearchProgress
   | { type: 'error'; root: string; detail: string }
   | SearchSummary
+
+/** How many files and directories, and how many bytes of files (`keepster_api::PreviewTotals`). */
+export interface PreviewTotals {
+  /** Files, links and special files. */
+  files: number
+  directories: number
+  /** The files' apparent sizes, summed. */
+  bytes: number
+  /** Excluded directories not entered, and so not measured. */
+  pruned?: number
+}
+
+/** One path, relative to the directory previewed, and its apparent size (`keepster_api::PreviewSize`). */
+export interface PreviewSize {
+  path: string
+  path_bytes?: string | null
+  bytes: number
+}
+
+/**
+ * A rule, named the way a person wrote it, and where (`keepster_api::RuleReference`, whose `Origin` is
+ * flattened into it).
+ */
+export interface RuleReference {
+  /** The pattern as written, `!` included where it was written. */
+  pattern: string
+  effect: 'exclude' | 'include'
+  /** The level it was set at: `default`, `ignore-file`, `global`, `global-pattern`, `global-root`, `root` or `forget`. */
+  level: string
+  /** The file it was written in, or a description of a built-in value. */
+  source: string
+  /** Its line in that file, where it has one. */
+  line?: number | null
+}
+
+/** Everything one rule — or none — decided (`keepster_api::PreviewGroup`). */
+export interface PreviewGroup {
+  /** `captured`, `excluded`, `withheld` or `unreadable`. */
+  class: string
+  /** Why, for a Withheld group. */
+  reason?: string | null
+  /** The rule, absent where none decided. */
+  rule?: RuleReference | null
+  files: number
+  directories: number
+  /** The files' apparent sizes, summed. */
+  bytes: number
+  /** The directories it pruned, named and unmeasured; absent when there are none. */
+  pruned?: string[]
+  /** `pruned` as their exact bytes, base64url, `null` for each that is UTF-8; absent when every one is. */
+  pruned_bytes?: (string | null)[]
+}
+
+/**
+ * What a whole Capture Preview walk found (`keepster_api::PreviewRecord::Summary`): the totals, what each
+ * rule decided, the largest files on each side, and which of v1's claims for one Root — `files`,
+ * `directories`, `bytes`, an open set — the directory is past.
+ */
+export interface PreviewSummary {
+  type: 'summary'
+  captured: PreviewTotals
+  excluded: PreviewTotals
+  /** What would be recorded without its content, by the daemon's reason. */
+  withheld: Record<string, PreviewTotals>
+  /** How many paths could not be looked at. */
+  unreadable: number
+  /** Every rule that decided something, and what it decided, largest first. */
+  groups: PreviewGroup[]
+  largest_captured: PreviewSize[]
+  largest_left_out: PreviewSize[]
+  past_ceiling: string[]
+}
+
+/**
+ * One line of the `GET /v1/preview` stream at its default depth (`keepster_api::PreviewRecord`): what is
+ * previewed, how many paths the walk has classified so far, and then its summary or why it stopped.
+ * Only the fields the add flow reads are typed; an `entry`, sent only at a deeper depth, is not.
+ */
+export type PreviewRecord =
+  | { type: 'header'; path: string; root?: string | null }
+  | { type: 'progress'; walked: number }
+  | { type: 'error'; detail: string }
+  | PreviewSummary

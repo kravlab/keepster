@@ -9,6 +9,7 @@ import {
   listDirectories,
   listRoots,
   newestTouching,
+  previewDirectory,
   previousSnapshot,
   readPreferences,
   readStatus,
@@ -20,6 +21,7 @@ import {
   writePreferences,
 } from './api'
 import { exactPath } from './paths'
+import { ndjson } from './testing'
 
 /** Answers every request with `response`, recording the URLs asked for. */
 const answer = (response: () => Response) => {
@@ -403,10 +405,101 @@ describe('the /v1 client', () => {
     })
   })
 
-  describe('search', () => {
-    const ndjson = (...lines: string[]) =>
-      new Response(lines.map((l) => `${l}\n`).join(''), { headers: { 'content-type': 'application/x-ndjson' } })
+  describe('a Capture Preview', () => {
+    const totals = { files: 0, directories: 0, bytes: 0 }
+    const summary = {
+      type: 'summary',
+      captured: { files: 3, directories: 1, bytes: 2048 },
+      excluded: { ...totals, pruned: 2 },
+      withheld: {},
+      unreadable: 0,
+      groups: [],
+      largest_captured: [{ path: '\uFFFD.bin', path_bytes: '_y5iaW4', bytes: 2000 }],
+      largest_left_out: [],
+      past_ceiling: ['files'],
+    }
+    const read = async (path: string) => {
+      const records = []
+      for await (const record of previewDirectory(path)) records.push(record)
+      return records
+    }
 
+    it('asks for the summary alone of the directory, at its default depth, and yields its records', async () => {
+      const asked = answer(() =>
+        ndjson(
+          '{"type":"header","path":"/home/u/src","root":null}',
+          '{"type":"progress","walked":40}',
+          JSON.stringify(summary),
+        ),
+      )
+
+      const records = await read('/home/u/my src')
+
+      expect(asked).toEqual(['/v1/preview?path=/home/u/my%20src'])
+      expect(records).toEqual([
+        { type: 'header', path: '/home/u/src', root: null },
+        { type: 'progress', walked: 40 },
+        { ...summary, largest_captured: [{ path: exactPath('\uFFFD.bin', '_y5iaW4'), bytes: 2000 }] },
+      ])
+    })
+
+    it('makes the paths a rule pruned exact, and leaves the rest of its groups as they came', async () => {
+      const rule = { pattern: 'target/', effect: 'exclude', level: 'default', source: 'built-in' }
+      const group = { class: 'excluded', rule, files: 0, directories: 0, bytes: 0 }
+      const pruning = { ...group, pruned: ['cache\uFFFD', 'target'], pruned_bytes: ['Y2FjaGX_', null] }
+      answer(() => ndjson(JSON.stringify({ ...summary, groups: [pruning, group] })))
+
+      const [record] = await read('/home/u/src')
+
+      expect(record).toMatchObject({
+        groups: [{ pruned: [exactPath('cache\uFFFD', 'Y2FjaGX_'), 'target'], rule }, group],
+      })
+    })
+
+    it('passes over a record of a type it does not know, and yields the error that ends a walk', async () => {
+      answer(() =>
+        ndjson(
+          '{"type":"entry","path":"a","kind":"file","class":"captured","bytes":1}',
+          '{"type":"error","detail":"gone"}',
+        ),
+      )
+
+      expect(await read('/home/u/src')).toEqual([{ type: 'error', detail: 'gone' }])
+    })
+
+    it("reports a busy preview with the daemon's code", async () => {
+      answer(() =>
+        json(
+          { title: 'Conflict', status: 409, detail: 'a preview is walking', code: 'preview_busy' },
+          409,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(read('/home/u/src')).rejects.toMatchObject({ status: 409, code: 'preview_busy' })
+    })
+
+    it('reports a line that is not a record as an answer it cannot read', async () => {
+      answer(() => ndjson('{"type":"progress","walked":1}', 'garbage'))
+
+      await expect(read('/home/u/src')).rejects.toBeInstanceOf(UnexpectedAnswer)
+    })
+
+    it('hands the abort signal to the request', async () => {
+      let signal: AbortSignal | null | undefined
+      vi.stubGlobal('fetch', (_: string, init?: RequestInit) => {
+        signal = init?.signal
+        return Promise.resolve(ndjson(JSON.stringify(summary)))
+      })
+      const controller = new AbortController()
+
+      for await (const record of previewDirectory('/home/u/src', controller.signal)) void record
+
+      expect(signal).toBe(controller.signal)
+    })
+  })
+
+  describe('search', () => {
     it('asks for the paths a fragment finds in every Root', async () => {
       const found = { hits: [], truncated: false }
       const asked = answer(() => json(found))

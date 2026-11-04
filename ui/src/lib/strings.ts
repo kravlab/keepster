@@ -5,7 +5,16 @@
 import { TOO_LARGE_BYTES, type Card } from './files'
 import type { Theme } from './preferences'
 import type { ChangeShape } from './summary'
-import type { Confirmation, FileChange, ModesChoice, NameCaseChoice, RestoreOutcome } from './wire'
+import type {
+  Confirmation,
+  FileChange,
+  ModesChoice,
+  NameCaseChoice,
+  PreviewGroup,
+  PreviewTotals,
+  RestoreOutcome,
+  RuleReference,
+} from './wire'
 
 /** A moment as the page writes it out: date and time, where the user is. */
 const when = (moment: Date) => moment.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -13,6 +22,30 @@ const when = (moment: Date) => moment.toLocaleString(undefined, { dateStyle: 'me
 const octal = (mode: number) => mode.toString(8).padStart(4, '0')
 /** Paths, names or counts one after another. */
 const list = (items: readonly string[]) => items.join(', ')
+/** `count` of something, its noun singular for one: `1 file`, `2,048 files`. */
+const counted = (count: number, one: string, many: string) => `${count.toLocaleString()} ${count === 1 ? one : many}`
+/**
+ * v1's claims for one Root, as a Capture Preview's `past_ceiling` names them, in words. An open set: a
+ * claim without an entry is shown as it is.
+ */
+const CLAIMS: Partial<Record<string, string>> = {
+  files: 'files',
+  directories: 'directories',
+  bytes: 'size',
+}
+/** The binary units a size past 1023 bytes is written in, smallest first. */
+const SIZE_UNITS = ['KiB', 'MiB', 'GiB', 'TiB'] as const
+/** A size as a person reads it, in binary units with one decimal, as `keepster preview` writes it. */
+const byteSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit + 1 < SIZE_UNITS.length) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${SIZE_UNITS[unit]}`
+}
 /**
  * Why content in the Working Tree cannot go into the Safety Snapshot, by the daemon's reason code. The
  * codes are an open set: one this page does not know has no entry.
@@ -60,6 +93,7 @@ export const strings = {
   /** A moment written out in full: date and time, where the user is. */
   at: when,
   list,
+  byteSize,
   loading: 'Loading…',
   failed: 'Something went wrong:',
 
@@ -113,6 +147,49 @@ export const strings = {
         `elsewhere, or the real directory?`,
       link: 'Use the link',
       canonical: 'Use the real directory',
+    },
+    /** The Capture Preview run before registering (ticket 94), while it walks. */
+    preview: {
+      looking: (path: string) => `Looking at what watching ${path} would capture…`,
+      walked: (count: number) => `${counted(count, 'path', 'paths')} so far`,
+      /** Why nothing was added: the preview was refused because another one walks, as `keepster watch` says it. */
+      busy: 'Another Capture Preview is walking, and this directory must be looked at first; try again.',
+    },
+    /** The question a directory past what one Root is claimed to hold needs, and the summary it shows. */
+    claim: {
+      question: (path: string, past: readonly string[]) =>
+        `${path} is past what one Root is claimed to hold, in ${list(past.map((claim) => CLAIMS[claim] ?? claim))}. ` +
+        `Watch it anyway?`,
+      captured: 'Captured',
+      capturedTotals: (t: PreviewTotals) =>
+        `${counted(t.files, 'file', 'files')}, ${counted(t.directories, 'directory', 'directories')}, ${byteSize(t.bytes)}`,
+      excluded: 'Excluded',
+      excludedTotals: (t: PreviewTotals) =>
+        `${counted(t.files, 'file', 'files')}, ${byteSize(t.bytes)}` +
+        (t.pruned ? `, and ${counted(t.pruned, 'directory', 'directories')} not entered` : ''),
+      withheld: 'Without content',
+      /** What is recorded without its content for `reason`, the daemon's word for why. */
+      withheldTotals: (reason: string, t: PreviewTotals) =>
+        `${counted(t.files + t.directories, 'path', 'paths')}, ${byteSize(t.bytes)} — ${reason}`,
+      unreadable: 'Unreadable',
+      unreadableCount: (count: number) => counted(count, 'path', 'paths'),
+      /** What each rule decided, largest first: the title of the list `groupTotals` and `groupPruned` fill. */
+      groups: 'By the rule that decided',
+      /** A rule as a person reads it: the pattern, and where it was written. */
+      rule: (rule: RuleReference) =>
+        `${rule.pattern} (${rule.level}, ${rule.source}${rule.line == null ? '' : ` line ${rule.line}`})`,
+      /** What `rule` decided in `group`: the files it took, of the class it put them in. */
+      groupTotals: (group: PreviewGroup, rule: RuleReference) =>
+        `${group.class}: ${counted(group.files, 'file', 'files')}, ${byteSize(group.bytes)} — ${strings.adding.claim.rule(rule)}`,
+      /** A directory of `className` that `rule` excluded and the preview did not enter. */
+      groupPruned: (className: string, path: string, rule: RuleReference) =>
+        `${className}: ${path}/ not entered — ${strings.adding.claim.rule(rule)}`,
+      largest: 'Largest captured',
+      largestLeftOut: 'Largest left out',
+      /** The one number a preview never gives, said as `keepster watch` says it. */
+      noGrowth: 'Store growth is not estimated: only the capture itself can know what the history store will hold.',
+      watch: 'Watch it anyway',
+      decline: 'Don’t watch',
     },
     /** The banner once the directory is a Root; the page stays where it is. */
     added: (path: string) => `${path} is now watched.`,

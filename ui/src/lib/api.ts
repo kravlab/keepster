@@ -17,6 +17,9 @@ import type {
   PathResolution,
   PathSearch,
   Preferences,
+  PreviewGroup,
+  PreviewRecord,
+  PreviewSize,
   Problem,
   RegisterRoot,
   RestoreIssue,
@@ -128,6 +131,38 @@ function contentRecordIn(record: ContentRecord): ContentRecord {
   return record.type === 'match' || record.type === 'withheld'
     ? { ...record, path: exactPath(record.path, record.path_bytes) }
     : record
+}
+
+/** One of a preview's largest files, its path exact. */
+function sizeIn(size: PreviewSize): PreviewSize {
+  return { path: exactPath(size.path, size.path_bytes), bytes: size.bytes }
+}
+
+/** What one rule decided in a preview, the paths it pruned exact. */
+function groupIn(group: PreviewGroup): PreviewGroup {
+  return group.pruned === undefined ? group : { ...group, pruned: exactPaths(group.pruned, group.pruned_bytes) }
+}
+
+/**
+ * One line of a Capture Preview, its paths exact; `null` for a record of a type this page does not know,
+ * which the contract says to pass over.
+ */
+function previewRecordIn(record: PreviewRecord): PreviewRecord | null {
+  switch (record.type) {
+    case 'summary':
+      return {
+        ...record,
+        groups: record.groups.map(groupIn),
+        largest_captured: record.largest_captured.map(sizeIn),
+        largest_left_out: record.largest_left_out.map(sizeIn),
+      }
+    case 'header':
+    case 'progress':
+    case 'error':
+      return record
+    default:
+      return null
+  }
 }
 
 /** A Restore request as the wire takes it: each path that is not UTF-8 named by its bytes as well. */
@@ -341,6 +376,20 @@ export async function searchPaths(q: string, signal?: AbortSignal): Promise<Path
 }
 
 /**
+ * The records of a newline-delimited JSON answer, as they arrive. An answer with no body, or a line that
+ * is not JSON, is an `UnexpectedAnswer` that says `what` sent it.
+ */
+async function* streamedRecords(response: Response, what: string, signal?: AbortSignal): AsyncGenerator<unknown> {
+  if (!response.body) throw new UnexpectedAnswer(`${what} answered with no body`)
+  try {
+    yield* ndjsonRecords(response.body, signal)
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new UnexpectedAnswer(`${what} sent a line that is not JSON: ${e.message}`)
+    throw e
+  }
+}
+
+/**
  * The records of a content search for `q` in the Roots named, or in every Root, as the daemon finds them.
  * Leaving the loop early, or aborting `signal`, closes the connection, which stops the daemon's walk.
  */
@@ -351,12 +400,21 @@ export async function* searchContent(
 ): AsyncGenerator<ContentRecord> {
   const query = scope === 'all' ? { q, all: 'true' } : { q, roots: scope.roots.join(',') }
   const response = await get(url(['search', 'content'], query), signal)
-  if (!response.body) throw new UnexpectedAnswer('the content search answered with no body')
-  try {
-    for await (const record of ndjsonRecords(response.body, signal)) yield contentRecordIn(record as ContentRecord)
-  } catch (e) {
-    if (e instanceof SyntaxError)
-      throw new UnexpectedAnswer(`the content search sent a line that is not JSON: ${e.message}`)
-    throw e
+  for await (const record of streamedRecords(response, 'the content search', signal))
+    yield contentRecordIn(record as ContentRecord)
+}
+
+/**
+ * The records of a Capture Preview of the absolute directory `path` on the daemon's machine, at the
+ * default depth, which sends the summary alone: a `header`, `progress` now and then while the walk runs,
+ * then its `summary`, or an `error` in its place. A preview the daemon refuses — `preview_busy` while
+ * another one walks — is thrown as an `ApiError` with its code. Leaving the loop early, or aborting
+ * `signal`, closes the connection, which stops the daemon's walk.
+ */
+export async function* previewDirectory(path: string, signal?: AbortSignal): AsyncGenerator<PreviewRecord> {
+  const response = await get(url(['preview'], {}, path), signal)
+  for await (const line of streamedRecords(response, 'the preview', signal)) {
+    const record = previewRecordIn(line as PreviewRecord)
+    if (record) yield record
   }
 }
