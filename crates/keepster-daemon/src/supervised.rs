@@ -164,7 +164,13 @@ pub(crate) async fn install(args: &InstallArgs, control_path: &Path) -> u8 {
     let mut code = exit::SUCCESS;
     if !args.no_tray {
         match blocking(move || tray::install(&tray_exe)).await {
-            Ok(installed) => println!("{}", tray_installed(&installed)),
+            Ok(installed) => match tray_installed(&installed) {
+                Said::Done(said) => println!("{said}"),
+                Said::NotDone(said) => {
+                    eprintln!("keepster: {said}");
+                    code = exit::OTHER;
+                }
+            },
             Err(error) => {
                 eprintln!("keepster: the tray's autostart was not installed: {error}");
                 code = exit::OTHER;
@@ -205,19 +211,45 @@ pub(crate) async fn install(args: &InstallArgs, control_path: &Path) -> u8 {
     code
 }
 
-/// What installing the tray's autostart did, said honestly of a machine with no graphical session now.
-fn tray_installed(installed: &tray::TrayInstalled) -> String {
-    if installed.started {
-        format!(
+/// What a step of `keepster install` tells a person, and whether it did what was asked: what was not
+/// done goes to standard error, and makes the install's exit code say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Said {
+    /// Done as asked, or as far as the machine allows now — the rest at the next login.
+    Done(String),
+    /// Not done as asked.
+    NotDone(String),
+}
+
+/// What installing the tray's autostart did, said honestly of a machine with no graphical session now,
+/// and of a tray running from before that could not be ended: then the tray asked for is not the one
+/// running, which the install reports as not done.
+fn tray_installed(installed: &tray::TrayInstalled) -> Said {
+    match installed.start {
+        tray::TrayStart::Started => Said::Done(format!(
             "installed {}; the tray is running, and starts again at every graphical login",
             installed.entry
-        )
-    } else {
-        format!(
+        )),
+        tray::TrayStart::NextLogin => Said::Done(format!(
             "installed {}; there is no graphical session now, so the tray starts at the next \
              graphical login",
             installed.entry
-        )
+        )),
+        tray::TrayStart::NotReplaced(tray::TrayNotEnded { pid: Some(pid) }) => {
+            Said::NotDone(format!(
+                "installed {}, but the tray already running (pid {pid}) could not be ended within \
+                 {}s, so it was not replaced; quit it, then run `keepster install` again",
+                installed.entry,
+                tray::END_PATIENCE.as_secs()
+            ))
+        }
+        // Nothing was asked to end: no pid was there to ask by.
+        tray::TrayStart::NotReplaced(tray::TrayNotEnded { pid: None }) => Said::NotDone(format!(
+            "installed {}, but a tray already running holds its lock but named no pid within {}s, \
+             so it was not ended or replaced; quit it, then run `keepster install` again",
+            installed.entry,
+            tray::END_PATIENCE.as_secs()
+        )),
     }
 }
 
@@ -430,32 +462,74 @@ async fn answers_within(path: &Path, patience: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use keepster_service::autostart::tray::TrayInstalled;
+    use keepster_service::Pid;
+    use keepster_service::autostart::tray::{TrayInstalled, TrayNotEnded, TrayStart};
 
-    use super::tray_installed;
+    use super::{Said, tray_installed};
 
     #[test]
     fn a_tray_started_now_is_said_to_be_running() {
         let said = tray_installed(&TrayInstalled {
             entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
-            started: true,
+            start: TrayStart::Started,
         });
 
         assert_eq!(
             said,
-            "installed /home/u/.config/autostart/keepster-tray.desktop; the tray is running, and \
-             starts again at every graphical login"
+            Said::Done(
+                "installed /home/u/.config/autostart/keepster-tray.desktop; the tray is running, and \
+                 starts again at every graphical login"
+                    .to_owned()
+            )
         );
     }
 
     #[test]
     fn without_a_graphical_session_the_install_says_when_the_tray_will_start() {
-        let said = tray_installed(&TrayInstalled {
+        let Said::Done(said) = tray_installed(&TrayInstalled {
             entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
-            started: false,
-        });
+            start: TrayStart::NextLogin,
+        }) else {
+            panic!("nothing was left undone");
+        };
 
         assert!(said.contains("no graphical session now"), "{said}");
         assert!(said.contains("next graphical login"), "{said}");
+    }
+
+    #[test]
+    fn a_running_tray_that_was_not_ended_is_named_and_never_said_to_be_replaced() {
+        let Said::NotDone(said) = tray_installed(&TrayInstalled {
+            entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
+            start: TrayStart::NotReplaced(TrayNotEnded {
+                pid: Pid::new(4242),
+            }),
+        }) else {
+            panic!("the tray asked for is not the one running");
+        };
+
+        assert!(said.contains("(pid 4242)"), "{said}");
+        assert!(said.contains("could not be ended within 5s"), "{said}");
+        assert!(said.contains("`keepster install` again"), "{said}");
+        assert!(!said.contains("the tray is running"), "{said}");
+    }
+
+    #[test]
+    fn a_running_tray_that_named_no_pid_is_not_said_to_have_resisted_ending() {
+        let Said::NotDone(said) = tray_installed(&TrayInstalled {
+            entry: "/home/u/.config/autostart/keepster-tray.desktop".to_owned(),
+            start: TrayStart::NotReplaced(TrayNotEnded { pid: None }),
+        }) else {
+            panic!("the tray asked for is not the one running");
+        };
+
+        assert!(
+            said.contains("holds its lock but named no pid within 5s"),
+            "{said}"
+        );
+        assert!(said.contains("was not ended or replaced"), "{said}");
+        assert!(!said.contains("could not be ended"), "{said}");
+        assert!(said.contains("`keepster install` again"), "{said}");
+        assert!(!said.contains("the tray is running"), "{said}");
     }
 }

@@ -101,8 +101,14 @@ impl Sandbox {
     /// `keepster` with this sandbox's environment, no `--control-path`, and no session bus to reach —
     /// so a service manager it asks is the sandbox's, which does not exist.
     pub(crate) fn command(&self, args: &[&str]) -> tokio::process::Command {
+        self.command_of(Path::new(KEEPSTER), args)
+    }
+
+    /// `program` with this sandbox's environment, as [`Sandbox::command`] runs `keepster`: a copy of
+    /// `keepster` installed into the sandbox, or a process standing in for the tray (issue 49).
+    pub(crate) fn command_of(&self, program: &Path, args: &[&str]) -> tokio::process::Command {
         let base = self.base();
-        let mut command = tokio::process::Command::new(KEEPSTER);
+        let mut command = tokio::process::Command::new(program);
         command
             .args(args)
             .env("XDG_RUNTIME_DIR", base.join("r"))

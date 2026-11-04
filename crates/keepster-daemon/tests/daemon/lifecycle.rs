@@ -11,7 +11,11 @@ async fn a_second_daemon_is_refused_and_names_the_live_one() {
 
     match refused {
         Err(keepster_daemon::StartError::AlreadyRunning { pid }) => {
-            assert_eq!(pid, Some(std::process::id()), "the live daemon's pid");
+            assert_eq!(
+                pid,
+                keepster_service::Pid::new(std::process::id()),
+                "the live daemon's pid"
+            );
         }
         Err(other) => panic!("refused for another reason: {other}"),
         Ok(_) => panic!("two daemons over one runtime directory"),

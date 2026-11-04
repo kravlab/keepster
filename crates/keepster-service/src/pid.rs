@@ -2,16 +2,43 @@
 //! (ticket 05), and on `tray.pid` for the tray's (ticket 67). The pid written inside is for a person to
 //! read; the lock, not the content, decides.
 
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
+use std::num::NonZeroU32;
 use std::path::Path;
 
 /// The daemon's pid file's name in the runtime directory.
 pub const PID_FILE: &str = "daemon.pid";
 
 /// The tray's pid file's name in the runtime directory: its lock keeps one tray per user, so a second
-/// one, started by a reinstall or by hand, leaves at once.
+/// one, started by hand, leaves at once. `keepster install` ends the running one first (issue 49), so
+/// that the tray it starts is not the one to leave.
 pub const TRAY_PID_FILE: &str = "tray.pid";
+
+/// A process id, as a pid file holds one (issue 49). Never 0, which names no single process: on Unix
+/// it would reach a whole process group, so no pid read from a file can stand for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Pid(NonZeroU32);
+
+impl Pid {
+    /// `pid` as a process id, or `None` for 0.
+    pub fn new(pid: u32) -> Option<Self> {
+        NonZeroU32::new(pid).map(Self)
+    }
+
+    /// The number, as the platform's calls take it.
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for Pid {
+    /// The bare number, as a person reads it after "pid".
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// The lock on the pid file, held until this is dropped — or until the process dies, which the
 /// operating system turns into a release, so a crash never leaves a lock nobody holds.
@@ -26,7 +53,7 @@ pub enum PidLockError {
     /// Another process holds it: a daemon is running, and this is its pid, if it had written one yet.
     Held {
         /// What the live daemon wrote into the file.
-        pid: Option<u32>,
+        pid: Option<Pid>,
     },
     /// The file could not be opened, locked or written.
     Io(io::Error),
@@ -76,10 +103,10 @@ pub fn clear_runtime_dir(dir: &Path) -> io::Result<RuntimeDirCleared> {
     if !dir.exists() {
         return Ok(RuntimeDirCleared::Absent);
     }
-    if held(&dir.join(PID_FILE)) {
+    if pid_lock_holder(&dir.join(PID_FILE)) != PidLockHolder::Free {
         return Ok(RuntimeDirCleared::DaemonRunning);
     }
-    if !held(&dir.join(TRAY_PID_FILE)) {
+    if pid_lock_holder(&dir.join(TRAY_PID_FILE)) == PidLockHolder::Free {
         std::fs::remove_dir_all(dir)?;
         return Ok(RuntimeDirCleared::Removed);
     }
@@ -98,15 +125,41 @@ pub fn clear_runtime_dir(dir: &Path) -> io::Result<RuntimeDirCleared> {
     Ok(RuntimeDirCleared::TrayRunning)
 }
 
-/// Whether a live process holds the lock on the pid file at `path`. A file that cannot even be opened
-/// counts as held, so that what cannot be judged is kept.
-fn held(path: &Path) -> bool {
-    path.exists() && open_locked(path).is_err()
+/// Who holds the lock on a pid file, as [`pid_lock_holder`] found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PidLockHolder {
+    /// Nobody: there is no file, or its lock could be taken — whatever pid a process long gone wrote
+    /// into it.
+    Free,
+    /// A live process holds it, or the file could not even be opened to tell.
+    Held {
+        /// What the holder wrote into the file — `None` before it has written one, or when the file
+        /// could not be opened, so that no process is ever named on a guess.
+        pid: Option<Pid>,
+    },
 }
 
-/// The pid a live daemon wrote, for naming it.
-fn written_pid(path: &Path) -> Option<u32> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+/// Who holds the lock on the pid file at `path` (issue 49): what `keepster install` asks before it
+/// ends a running tray, and `keepster uninstall` before it clears the runtime directory.
+///
+/// The lock is taken and dropped at once to tell, so the answer holds for that moment only. A missing
+/// file is not created. A file that cannot even be opened counts as held, by nobody named, so that what
+/// cannot be judged is kept rather than cleared or ended.
+pub fn pid_lock_holder(path: &Path) -> PidLockHolder {
+    if !path.exists() {
+        return PidLockHolder::Free;
+    }
+    match open_locked(path) {
+        Ok(_) => PidLockHolder::Free,
+        Err(PidLockError::Held { pid }) => PidLockHolder::Held { pid },
+        Err(PidLockError::Io(_)) => PidLockHolder::Held { pid: None },
+    }
+}
+
+/// The pid a live daemon wrote, for naming it: `None` for none, or for anything that is no pid, 0
+/// among them.
+fn written_pid(path: &Path) -> Option<Pid> {
+    Pid::new(std::fs::read_to_string(path).ok()?.trim().parse().ok()?)
 }
 
 #[cfg(unix)]

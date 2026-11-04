@@ -16,6 +16,14 @@ path = "src/lib.rs"
 name = "keepster"
 path = "src/main.rs"
 
+# A tray standing in for `keepster-tray` in the daemon's own tests of `keepster install` (issue 49): it
+# holds the tray's lock as the tray does, with no session to show anything in. Never released: it is
+# built only with `test-stand-ins`, which `release.yml` never enables.
+[[bin]]
+name = "keepster-stand-in-tray"
+path = "src/bin/keepster-stand-in-tray.rs"
+required-features = ["test-stand-ins"]
+
 [lints]
 workspace = true
 
@@ -24,6 +32,10 @@ workspace = true
 # listener still serves `/v1`, whose clients need no UI, and its default is the same either way (ticket 24).
 default = ["embed-ui"]
 embed-ui = ["dep:keepster-ui"]
+# The stand-in binaries the daemon's own tests run in place of the released ones, never released:
+# `release.yml` builds `-p keepster-daemon` without `--features`, so it never builds them, and the merge
+# gate's `--all-features` runs the tests that need them.
+test-stand-ins = []
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }

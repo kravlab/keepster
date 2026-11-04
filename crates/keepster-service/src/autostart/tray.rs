@@ -6,6 +6,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+mod replace;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+use replace::replace_running_tray;
+pub use replace::{END_PATIENCE, TrayEnded, TrayNotEnded, end_running};
+
 /// The tray's binary, beside `keepster`.
 pub const BINARY: &str = "keepster-tray";
 
@@ -141,9 +147,28 @@ pub fn aqua_session(managername: &str) -> bool {
 pub struct TrayInstalled {
     /// What was written, for a person: the entry's file, or the registry value.
     pub entry: String,
-    /// Whether the tray was started now. `false` where there is no graphical session to show it in: it
-    /// starts at the next graphical login instead.
-    pub started: bool,
+    /// Whether the tray was started now, and if not, why.
+    pub start: TrayStart,
+}
+
+/// Whether installing the tray's autostart started the tray now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayStart {
+    /// The tray beside the new `keepster` was started, after any tray running before was ended.
+    Started,
+    /// There is no graphical session to show it in: it starts at the next graphical login instead.
+    NextLogin,
+    /// A tray already running was not ended — see [`TrayNotEnded`] — so none was started: the new one
+    /// would have found the lock held and left at once. The entry is written, so the next login starts
+    /// the new one.
+    NotReplaced(TrayNotEnded),
+}
+
+impl From<TrayNotEnded> for TrayStart {
+    /// A tray that was not ended is one the new tray could not replace.
+    fn from(not_ended: TrayNotEnded) -> Self {
+        Self::NotReplaced(not_ended)
+    }
 }
 
 /// Start `tray` on its own, outliving the command that started it, with nothing of the terminal's.
@@ -200,7 +225,7 @@ mod platform {
     }
 
     /// Write the autostart entry, and start the tray now when there is a graphical session to show it
-    /// in.
+    /// in, ending the tray already running there first.
     pub fn install(tray: &Path) -> Result<TrayInstalled, ServiceError> {
         existing(tray)?;
         let entry = entry_location().ok_or_else(|| {
@@ -214,20 +239,20 @@ mod platform {
             &entry,
             desktop_entry(tray).as_bytes(),
         )?;
-        let started = graphical_session_in(|name| std::env::var_os(name));
-        if started {
-            if let Err(error) = spawn_detached(tray) {
-                let _ = remove_file(&entry);
-                return Err(ServiceError::new(
-                    "start the tray",
-                    format!("{}: {error}", tray.display()),
-                ));
-            }
-        }
+        let start = if graphical_session_in(|name| std::env::var_os(name)) {
+            replace_running_tray(|| {
+                spawn_detached(tray).map_err(|error| {
+                    let _ = remove_file(&entry);
+                    ServiceError::new("start the tray", format!("{}: {error}", tray.display()))
+                })
+            })?
+        } else {
+            TrayStart::NextLogin
+        };
 
         Ok(TrayInstalled {
             entry: entry.display().to_string(),
-            started,
+            start,
         })
     }
 
@@ -256,7 +281,7 @@ mod platform {
 /// macOS: a LaunchAgent limited to the graphical session.
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::super::platform::{reload_agent, unload_agent};
+    use super::super::platform::{load_agent, unload_agent};
     use super::super::{ServiceError, remove_file, write_file};
     use super::*;
 
@@ -281,7 +306,13 @@ mod platform {
     }
 
     /// Write the agent, and load it — which starts the tray — when there is an Aqua session to load it
-    /// in. Without one, launchd loads it at the next login at the screen.
+    /// in, ending the tray already running there first. Without one, launchd loads it at the next login
+    /// at the screen.
+    ///
+    /// The agent an earlier install loaded is unloaded before the lock is looked at: its tray is ended
+    /// with it, and launchd, which restarts a tray that dies other than by quitting, cannot start the old
+    /// one again while the new one waits for its lock. What then still holds the lock is a tray started
+    /// outside launchd, which is ended by its pid.
     pub fn install(tray: &Path) -> Result<TrayInstalled, ServiceError> {
         existing(tray)?;
         let plist = entry_location().ok_or_else(|| {
@@ -293,17 +324,20 @@ mod platform {
             launch_agent(tray).as_bytes(),
         )?;
         let plist_text = plist.to_string_lossy().into_owned();
-        let started = in_aqua();
-        if started {
-            if let Err(error) = reload_agent(LAUNCH_AGENT, &plist_text) {
-                let _ = remove_file(&plist);
-                return Err(error);
-            }
-        }
+        let start = if in_aqua() {
+            unload_agent(LAUNCH_AGENT);
+            replace_running_tray(|| {
+                load_agent(&plist_text).inspect_err(|_| {
+                    let _ = remove_file(&plist);
+                })
+            })?
+        } else {
+            TrayStart::NextLogin
+        };
 
         Ok(TrayInstalled {
             entry: plist_text,
-            started,
+            start,
         })
     }
 
@@ -357,8 +391,9 @@ mod platform {
         )))
     }
 
-    /// Write the Start-menu shortcut and the `Run` value, then start the tray now. The shortcut comes
-    /// first, so that the tray started finds it and can show toasts from its first alarm.
+    /// Write the Start-menu shortcut and the `Run` value, then end the tray already running and start
+    /// the new one now. The shortcut comes first, so that the tray started finds it and can show toasts
+    /// from its first alarm.
     ///
     /// No graphical session is looked for: the `Run` key is read at an interactive logon, and a person
     /// running `keepster` on Windows is, short of an SSH login, in one.
@@ -382,17 +417,18 @@ mod platform {
                 error.to_string(),
             ));
         }
-        if let Err(error) = spawn_detached(tray) {
-            undo();
-            return Err(ServiceError::new(
-                "start the tray",
-                format!("{}: {error}", tray.display()),
-            ));
-        }
+        // The `Run` value and the shortcut stay when a running tray is not ended: the next logon starts
+        // the new one.
+        let start = replace_running_tray(|| {
+            spawn_detached(tray).map_err(|error| {
+                undo();
+                ServiceError::new("start the tray", format!("{}: {error}", tray.display()))
+            })
+        })?;
 
         Ok(TrayInstalled {
             entry: entries(&shortcut),
-            started: true,
+            start,
         })
     }
 

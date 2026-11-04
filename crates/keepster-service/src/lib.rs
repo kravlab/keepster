@@ -13,6 +13,7 @@ pub mod autostart;
 mod cloud;
 pub mod mountinfo;
 mod pid;
+mod process;
 pub mod rotating;
 mod volume;
 #[cfg(windows)]
@@ -20,9 +21,10 @@ mod windows;
 
 pub use cloud::guard_cloud_placeholders;
 pub use pid::{
-    PID_FILE, PidLock, PidLockError, RuntimeDirCleared, TRAY_PID_FILE, clear_runtime_dir,
-    lock_pid_file,
+    PID_FILE, Pid, PidLock, PidLockError, PidLockHolder, RuntimeDirCleared, TRAY_PID_FILE,
+    clear_runtime_dir, lock_pid_file, pid_lock_holder,
 };
+pub use process::end_process;
 pub use volume::{Volume, mount_points, volume_of};
 
 #[cfg(windows)]

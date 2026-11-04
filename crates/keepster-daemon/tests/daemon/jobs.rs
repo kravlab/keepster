@@ -167,7 +167,13 @@ pub(crate) fn install_script(path: &std::path::Path, body: &str) {
     std::fs::write(&written, body).expect("a script");
     std::fs::set_permissions(&written, std::fs::Permissions::from_mode(0o755)).expect("executable");
     std::fs::rename(&written, path).expect("in place");
-    // A file just written may still be open in a child another test forked (ETXTBSY): wait it out.
+    wait_until_runnable(path);
+}
+
+/// Wait until the executable just written at `path` can be run: a file just written may still be open in
+/// a child another test forked (ETXTBSY), so this waits that out by running it with `--version`.
+#[cfg(unix)]
+pub(crate) fn wait_until_runnable(path: &std::path::Path) {
     for _ in 0..200 {
         match std::process::Command::new(path).arg("--version").output() {
             Err(error) if error.raw_os_error() == Some(ETXTBSY) => {

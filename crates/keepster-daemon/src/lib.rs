@@ -366,7 +366,7 @@ pub enum StartError {
     /// `pid` is what it wrote there, if it had yet.
     AlreadyRunning {
         /// The live daemon's process id.
-        pid: Option<u32>,
+        pid: Option<keepster_service::Pid>,
     },
     /// Anything else that kept it from binding or reading its state.
     Io(io::Error),

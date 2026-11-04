@@ -491,11 +491,18 @@ mod platform {
 
     /// Load the agent `label` from `plist`, replacing whatever an earlier install loaded, so the agent
     /// just written is the one running.
+    pub(crate) fn reload_agent(label: &str, plist: &str) -> Result<(), ServiceError> {
+        unload_agent(label);
+        load_agent(plist)
+    }
+
+    /// Load the agent in `plist` into the user's GUI domain, which starts it. Apart from
+    /// [`reload_agent`] so that the tray's install can end a tray started outside launchd between the
+    /// unload and the load (issue 49).
     ///
     /// launchd tears an agent down after `bootout` returns, and a `bootstrap` arriving meanwhile fails
     /// with an I/O error: it is asked again, a moment later, a few times.
-    pub(crate) fn reload_agent(label: &str, plist: &str) -> Result<(), ServiceError> {
-        unload_agent(label);
+    pub(crate) fn load_agent(plist: &str) -> Result<(), ServiceError> {
         let load = || {
             run(
                 "load the agent",

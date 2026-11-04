@@ -1,6 +1,6 @@
 //! What only the Windows API can answer: the control channel's name and the access control that makes it
-//! the owner's alone, a file's hard-link names, where Git for Windows is installed (ticket 52), and how
-//! this process is shown cloud placeholders (ticket 75).
+//! the owner's alone, a file's hard-link names, where Git for Windows is installed (ticket 52), how
+//! this process is shown cloud placeholders (ticket 75), and how a running tray is ended (issue 49).
 //!
 //! Every `unsafe` block in the workspace that touches the Windows API lives in this crate — here, or,
 //! for which volume a path is on, in `volume/windows.rs` (ticket 56). Ticket 10 settled that shape when
@@ -231,6 +231,35 @@ impl Drop for OwnedToken {
         // SAFETY: the handle came from `OpenProcessToken` and is closed exactly once.
         unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
+}
+
+/// Terminate the process `pid` (issue 49), as [`crate::end_process`] does on Windows: it has no request
+/// to end a process that has no window to close, so the tray an older install started is ended outright.
+/// A pid no process has fails with [`io::ErrorKind::NotFound`].
+pub(crate) fn terminate_process(pid: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // SAFETY: no pointer is passed; a null handle is the documented failure, checked below.
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+        // What `OpenProcess` answers for a pid no process has: gone, as `crate::end_process` reports it.
+        if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no process has pid {pid}"),
+            ));
+        }
+        return Err(error);
+    }
+    // SAFETY: `process` is the live handle just opened with the access this call needs.
+    let terminated = unsafe { TerminateProcess(process, 1) };
+    let error = (terminated == 0).then(io::Error::last_os_error);
+    // SAFETY: the handle came from `OpenProcess` and is closed exactly once, after its last use.
+    unsafe { CloseHandle(process) };
+
+    error.map_or(Ok(()), Err)
 }
 
 /// `text` as a NUL-terminated UTF-16 string, as the wide Win32 calls take it.
