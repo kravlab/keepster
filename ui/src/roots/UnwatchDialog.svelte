@@ -74,7 +74,7 @@
 
   <div class="actions">
     <button type="button" disabled={unwatching.running} onclick={() => dialog?.close()}>
-      {strings.unwatch.cancel}
+      {strings.cancel}
     </button>
     <button
       type="button"

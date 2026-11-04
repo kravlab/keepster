@@ -11,16 +11,25 @@
    *
    * A Root's row can stop watching it too (#31), through the unwatch dialog. The page stays as it is once
    * the Root is unwatched: the live list drops it, and the dialog, which the page holds, closes by itself.
+   *
+   * A Root's row records a Move too (#32), through the Move dialog, its folder browser starting in the
+   * directory above the Root's recorded path. The row's actions come in the order `lib/actions` gives: a
+   * Root whose directory is missing (`root_missing`) offers the Move first, since that is most likely
+   * why; otherwise it comes after Open history and before Unwatch…, which stays last. The page stays as
+   * it is once the Move is recorded: the live list shows the new path and the state the daemon reports.
    */
   import { onMount } from 'svelte'
+  import { rootActions } from '../lib/actions'
   import { AddingRoot } from '../lib/adding.svelte'
   import { failureText } from '../lib/failures'
-  import { FolderBrowser } from '../lib/folders.svelte'
+  import { FolderBrowser, parentDirectory } from '../lib/folders.svelte'
+  import { MovingRoot } from '../lib/moving.svelte'
   import { strings } from '../lib/strings'
   import { UnwatchingRoot } from '../lib/unwatching.svelte'
   import type { Root } from '../lib/wire'
   import AddDialog from './AddDialog.svelte'
   import AddedBanner from './AddedBanner.svelte'
+  import MoveDialog from './MoveDialog.svelte'
   import UnwatchDialog from './UnwatchDialog.svelte'
 
   let {
@@ -55,6 +64,10 @@
     unwatching ? (roots.find((r) => r.id === unwatching!.id) ?? unwatching.lastSeen) : null,
   )
   const added = $derived(adding?.step.kind === 'done' ? adding.step : null)
+  /* The Move under way, and where its new path is chosen; a browser of its own, starting near the Root. */
+  let moving = $state.raw<{ flow: MovingRoot; browser: FolderBrowser } | null>(null)
+  /** The Root the Move dialog names: the live one, or the one the Move began with once the list drops it. */
+  const movedRoot = $derived(moving ? (roots.find((r) => r.id === moving!.flow.root.id) ?? moving.flow.root) : null)
 
   /* Keeps the unwatched Root's last seen state current, for the dialog once the list has dropped it. */
   $effect(() => {
@@ -80,6 +93,19 @@
     unwatching = new UnwatchingRoot(root, (e) => failureText(e, onSessionEnded))
   }
 
+  /**
+   * Opens the Move dialog for `root`, its folder browser starting in the directory above the Root's
+   * recorded path, which a Root whose directory is missing still has, or the nearest one above it that
+   * can be listed, or at home when none can. The Move names an overlapped Root by its path from the live list.
+   */
+  function startMoving(root: Root) {
+    const failure = (e: unknown) => failureText(e, onSessionEnded)
+    moving = {
+      flow: new MovingRoot(root, failure, (id) => roots.find((r) => r.id === id)),
+      browser: new FolderBrowser(failure, parentDirectory(root.path) ?? undefined),
+    }
+  }
+
   onMount(() => {
     if (addFirst) startAdding()
   })
@@ -103,8 +129,17 @@
             <code class="path">{r.path}</code>
             <span class="state {r.state}">{strings.roots.state(r.state)}</span>
             <span class="spacer"></span>
-            <button type="button" onclick={() => onOpen(r.id)}>{strings.roots.open}</button>
-            <button type="button" onclick={() => startUnwatching(r)}>{strings.roots.unwatch}</button>
+            {#each rootActions(r) as action, at (action)}
+              {#if action === 'move'}
+                <button type="button" class:first={at === 0} onclick={() => startMoving(r)}>
+                  {strings.roots.move}
+                </button>
+              {:else if action === 'history'}
+                <button type="button" onclick={() => onOpen(r.id)}>{strings.roots.open}</button>
+              {:else}
+                <button type="button" onclick={() => startUnwatching(r)}>{strings.roots.unwatch}</button>
+              {/if}
+            {/each}
           </div>
           {#if r.state_code}
             <p class="reason">{strings.roots.reason(r.state_code)}</p>
@@ -117,6 +152,10 @@
 
 {#if unwatching && unwatchedRoot}
   <UnwatchDialog {unwatching} root={unwatchedRoot} onClose={() => (unwatching = null)} />
+{/if}
+
+{#if moving && movedRoot}
+  <MoveDialog moving={moving.flow} root={movedRoot} browser={moving.browser} onClose={() => (moving = null)} />
 {/if}
 
 {#if adding && browser && !added}
@@ -171,6 +210,11 @@
   }
   button {
     white-space: nowrap;
+  }
+  /* The Move offered first, for a Root whose directory is missing: the way out of that state. */
+  button.first {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .state {
     font-size: 12px;

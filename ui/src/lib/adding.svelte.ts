@@ -8,6 +8,7 @@
  * the person's answer is sent with the same path again.
  */
 import { ApiError, previewDirectory, readStatus, registerRoot, SessionEnded } from './api'
+import { type AskingLink, type PathRefused, sendRootPath } from './link'
 import { strings } from './strings'
 import type { GitStatus, PathMode, PreviewSummary, Root } from './wire'
 
@@ -35,10 +36,10 @@ export type AddStep =
   | { kind: 'askingClaim'; path: string; summary: PreviewSummary }
   /** `POST /v1/roots` is on its way with `path`. */
   | { kind: 'registering'; path: string }
-  /** `path` leads through a link to `realPath`: the person says which the Root is. Nothing is registered. */
-  | { kind: 'askingLink'; path: string; realPath: string }
-  /** The daemon refused `path`, for `reason`; the person may try again or choose another. */
-  | { kind: 'failed'; path: string; reason: string }
+  /** `path` leads through a link: the person says which the Root is. Nothing is registered. */
+  | AskingLink
+  /** The daemon refused `path`; the person may try again or choose another. */
+  | PathRefused
   /**
    * The directory is now `root`. `maintenance` is the daemon's `git` while store maintenance is
    * unavailable: `null` until the status answers, and after it unless maintenance is unavailable.
@@ -59,12 +60,12 @@ export class AddingRoot {
 
   /**
    * @param failure the text a failed request shows, as `failureText` gives it
-   * @param rootById the live list's Root with an id, so that a refusal can name it by its path; without
-   *   it, the daemon's reason is shown as it is
+   * @param rootById the live list's Root with an id, so that a refusal can name it by its path; one it
+   *   does not find is named as the daemon names it
    */
   constructor(
     private readonly failure: (e: unknown) => string,
-    private readonly rootById: (id: string) => Root | undefined = () => undefined,
+    private readonly rootById: (id: string) => Root | undefined,
   ) {}
 
   /**
@@ -145,27 +146,13 @@ export class AddingRoot {
   async #register(path: string, mode?: PathMode): Promise<void> {
     if (this.step.kind === 'registering') return
     this.step = { kind: 'registering', path }
-    try {
-      const answer = await registerRoot(path, mode)
-      if (answer.kind === 'throughLink') {
-        this.step = { kind: 'askingLink', path, realPath: answer.realPath }
-        return
-      }
-      this.step = { kind: 'done', root: answer.root, maintenance: null }
-      void this.#noticeFor(answer.root)
-    } catch (e) {
-      this.step = { kind: 'failed', path, reason: this.#reason(path, e) }
+    const outcome = await sendRootPath(path, () => registerRoot(path, mode), this.failure, this.rootById)
+    if (outcome.kind !== 'registered') {
+      this.step = outcome
+      return
     }
-  }
-
-  /**
-   * Why registering `path` failed. The daemon names an overlapped Root by its id, which a person cannot
-   * place; one in the live list is named by its path instead.
-   */
-  #reason(path: string, e: unknown): string {
-    const overlapped = e instanceof ApiError && e.code === 'root_overlaps' ? e.details?.root : undefined
-    const root = overlapped === undefined ? undefined : this.rootById(overlapped)
-    return root ? strings.adding.overlaps(path, root.path) : this.failure(e)
+    this.step = { kind: 'done', root: outcome.root, maintenance: null }
+    void this.#noticeFor(outcome.root)
   }
 
   /**

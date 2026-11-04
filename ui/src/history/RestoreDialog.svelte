@@ -263,7 +263,7 @@
     <p class="safety">{strings.restore.safety}</p>
 
     <div class="actions">
-      <button onclick={() => dialog?.close()}>{strings.restore.cancel}</button>
+      <button onclick={() => dialog?.close()}>{strings.cancel}</button>
       <button class="go" disabled={!canGo} onclick={go}>{running ? strings.restore.working : strings.restore.go}</button
       >
     </div>

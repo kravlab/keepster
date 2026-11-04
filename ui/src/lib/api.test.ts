@@ -8,6 +8,7 @@ import {
   entryAt,
   listDirectories,
   listRoots,
+  moveRoot,
   newestTouching,
   previewDirectory,
   previousSnapshot,
@@ -418,6 +419,77 @@ describe('the /v1 client', () => {
       deleting(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
 
       await expect(unwatchRoot('r1', false)).rejects.toBeInstanceOf(SessionEnded)
+    })
+  })
+
+  describe('recording a Move', () => {
+    /** Answers every request with `response`, recording the method, URL and body of each. */
+    const patching = (response: () => Response) => {
+      const sent: [string | undefined, string, unknown][] = []
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push([init?.method, url, JSON.parse(String(init?.body))])
+        return Promise.resolve(response())
+      })
+      return sent
+    }
+    const moved = { id: 'r1', path: '/home/u/src', state: 'watching' }
+
+    it('patches the Root with where its directory is now, with the path mode only once one is chosen', async () => {
+      const sent = patching(() => json(moved))
+
+      await expect(moveRoot('r1', '/home/u/src')).resolves.toEqual({ kind: 'moved', root: moved })
+      await moveRoot('r1', '/home/u/src', 'canonical')
+
+      expect(sent).toEqual([
+        ['PATCH', '/v1/roots/r1', { path: '/home/u/src' }],
+        ['PATCH', '/v1/roots/r1', { path: '/home/u/src', path_mode: 'canonical' }],
+      ])
+    })
+
+    it('escapes the Root’s id in the path', async () => {
+      const sent = patching(() => json(moved))
+
+      await moveRoot('a/b c', '/home/u/src')
+
+      expect(sent[0]?.[1]).toBe('/v1/roots/a%2Fb%20c')
+    })
+
+    it('answers a refusal asking which a path through a link is with the path and where it leads', async () => {
+      patching(() =>
+        json(
+          {
+            title: 'Bad Request',
+            status: 400,
+            detail: 'leads through a link',
+            code: 'confirmation_required',
+            details: { path: '/home/u/proj', real_path: '/mnt/work/proj', missing: 'path_mode' },
+          },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(moveRoot('r1', '/home/u/proj')).resolves.toEqual({
+        kind: 'throughLink',
+        path: '/home/u/proj',
+        realPath: '/mnt/work/proj',
+      })
+    })
+
+    it.each([
+      [400, 'path_invalid', '/home/u/notes.txt is not a directory that can be watched'],
+      [409, 'root_overlaps', '/home/u/src overlaps the Root r0'],
+      [404, 'root_not_found', 'no Root with the identity r1 is registered'],
+    ])('reports a refusal (%i %s) with the daemon’s reason', async (status, code, detail) => {
+      patching(() => json({ title: 'Refused', status, detail, code }, status, 'application/problem+json'))
+
+      await expect(moveRoot('r1', '/home/u/src')).rejects.toMatchObject({ status, code, detail })
+    })
+
+    it('reports a 401 as the session having ended', async () => {
+      patching(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
+
+      await expect(moveRoot('r1', '/home/u/src')).rejects.toBeInstanceOf(SessionEnded)
     })
   })
 

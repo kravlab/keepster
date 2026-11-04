@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError, SessionEnded, UnexpectedAnswer } from './api'
-import { failureText } from './failures'
+import { failureText, pathRefusalText } from './failures'
 import { HunkMismatch } from './mismatch'
 import { strings } from './strings'
+import type { Root } from './wire'
 
 describe('failureText', () => {
   it('hands a dead session to the shell and still names it', () => {
@@ -38,5 +39,31 @@ describe('failureText', () => {
     failureText(new ApiError(500), ended)
 
     expect(ended).not.toHaveBeenCalled()
+  })
+})
+
+describe('pathRefusalText', () => {
+  const overlaps = new ApiError(409, '/home/u/src/app overlaps the Root 0190a3c4', 'root_overlaps', {
+    path: '/home/u/src/app',
+    root: '0190a3c4',
+  })
+  const known: Root = { id: '0190a3c4', path: '/home/u/src', state: 'watching' }
+  const detail = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+  it('names an overlapped Root by its path when it is known', () => {
+    expect(pathRefusalText('/home/u/src/app', overlaps, detail, (id) => (id === known.id ? known : undefined))).toBe(
+      '/home/u/src/app overlaps the Root at /home/u/src',
+    )
+  })
+
+  it("keeps the daemon's reason for an overlapped Root it does not know, and for any other refusal", () => {
+    const invalid = new ApiError(400, '/home/u/notes.txt is not a directory', 'path_invalid')
+
+    expect(pathRefusalText('/home/u/src/app', overlaps, detail, () => undefined)).toBe(
+      '/home/u/src/app overlaps the Root 0190a3c4',
+    )
+    expect(pathRefusalText('/home/u/notes.txt', invalid, detail, () => known)).toBe(
+      '/home/u/notes.txt is not a directory',
+    )
   })
 })

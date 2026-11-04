@@ -68,6 +68,9 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 0))
 /** The failure text the dialog shows: the daemon's explanation. */
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
+/** The live list's lookup when it knows no Root the daemon names. */
+const unknown = () => undefined
+
 afterEach(() => {
   stopFollowing()
   vi.unstubAllGlobals()
@@ -80,7 +83,7 @@ describe('adding a directory', () => {
       () => json(root('/home/u/src'), 201),
       () => status('available'),
     )
-    const adding = new AddingRoot(reason)
+    const adding = new AddingRoot(reason, unknown)
 
     await adding.add('/home/u/src')
 
@@ -102,7 +105,7 @@ describe('adding a directory', () => {
       () => json(root('/home/u/other'), 201),
       () => status('available'),
     )
-    const adding = new AddingRoot(reason)
+    const adding = new AddingRoot(reason, unknown)
 
     await adding.add('/home/u/src/app')
     expect(adding.step).toEqual({ kind: 'failed', path: '/home/u/src/app', reason: detail })
@@ -129,7 +132,7 @@ describe('adding a directory', () => {
     const watched = new WatchedRoots(reason)
     await watched.load()
     following(watched.follow())
-    const adding = new AddingRoot(reason)
+    const adding = new AddingRoot(reason, unknown)
 
     await adding.add('/home/u/src')
     stream().send('root.registered', { event: 'root.registered', root: 'r1' })
@@ -160,7 +163,7 @@ describe('adding a directory', () => {
 
     it("keeps the daemon's reason when the Root is not in the live list", async () => {
       serve(within, overlaps)
-      const adding = new AddingRoot(reason, () => undefined)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src/app')
 
@@ -178,7 +181,7 @@ describe('adding a directory', () => {
         ? new Promise<Response>((resolve) => (answer = resolve))
         : Promise.resolve(status('available'))
     })
-    const adding = new AddingRoot(reason)
+    const adding = new AddingRoot(reason, unknown)
 
     const first = adding.add('/home/u/src')
     await vi.waitFor(() => expect(adding.step.kind).toBe('registering'))
@@ -203,7 +206,7 @@ describe('adding a directory', () => {
         () => json(root('/home/u/src'), 201),
         () => status('unavailable', git),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src')
 
@@ -224,7 +227,7 @@ describe('adding a directory', () => {
             ? Promise.resolve(json(root('/home/u/src'), 201))
             : new Promise<Response>((resolve) => (answer = resolve)),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src')
       expect(adding.step).toEqual({ kind: 'done', root: root('/home/u/src'), maintenance: null })
@@ -243,7 +246,7 @@ describe('adding a directory', () => {
       const adding = new AddingRoot((e) => {
         failures.push(e)
         return reason(e)
-      })
+      }, unknown)
 
       await adding.add('/home/u/src')
       await vi.waitFor(() => expect(failures).toEqual([expect.any(SessionEnded)]))
@@ -257,7 +260,7 @@ describe('adding a directory', () => {
         () => json(root('/home/u/src'), 201),
         () => status(maintenance, git),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src')
       await settled()
@@ -272,7 +275,7 @@ describe('adding a directory', () => {
         () => problem(500, 'registry_failed', 'the Registry could not be read'),
       )
       const failure = vi.fn(reason)
-      const adding = new AddingRoot(failure)
+      const adding = new AddingRoot(failure, unknown)
 
       await adding.add('/home/u/src')
       await settled()
@@ -292,7 +295,7 @@ describe('adding a directory', () => {
 
     it('asks whether the Root is the link or the real directory, registering nothing yet', async () => {
       const sent = serve(within, throughLink)
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/proj')
 
@@ -307,7 +310,7 @@ describe('adding a directory', () => {
         () => json(root('/home/u/proj'), 201),
         () => status('available'),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
       await adding.add('/home/u/proj')
 
       await adding.choose(mode)
@@ -318,7 +321,7 @@ describe('adding a directory', () => {
 
     it('shows the reason when registering it as chosen is refused', async () => {
       serve(within, throughLink, () => problem(409, 'root_overlaps', '/mnt/work/proj overlaps the Root 0190a3c4'))
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
       await adding.add('/home/u/proj')
 
       await adding.choose('canonical')
@@ -332,7 +335,7 @@ describe('adding a directory', () => {
 
     it('registers nothing when the question is cancelled, and goes back to choosing', async () => {
       const sent = serve(within, throughLink)
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
       await adding.add('/home/u/proj')
 
       adding.cancel()
@@ -348,7 +351,7 @@ describe('adding a directory', () => {
 
     it('asks, registering nothing, when the directory is past the claim', async () => {
       const sent = serve(previewed({ type: 'progress', walked: 9 }, summary('files', 'bytes')))
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/huge')
 
@@ -362,7 +365,7 @@ describe('adding a directory', () => {
         () => json(root('/home/u/huge'), 201),
         () => status('available'),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
       await adding.add('/home/u/huge')
 
       await adding.watchAnyway()
@@ -373,7 +376,7 @@ describe('adding a directory', () => {
 
     it('registers nothing when told not to watch it, and goes back to choosing', async () => {
       const sent = serve(previewed(summary('files')))
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
       await adding.add('/home/u/huge')
 
       adding.cancel()
@@ -402,7 +405,7 @@ describe('adding a directory', () => {
         () => json(root('/home/u/src'), 201),
         () => status('available'),
       )
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src')
 
@@ -412,7 +415,7 @@ describe('adding a directory', () => {
 
     it('stops with "try again", registering nothing, while another preview is walking', async () => {
       const sent = serve(() => problem(409, 'preview_busy', 'A Capture Preview is already walking'))
-      const adding = new AddingRoot(reason)
+      const adding = new AddingRoot(reason, unknown)
 
       await adding.add('/home/u/src')
 
@@ -430,7 +433,7 @@ describe('adding a directory', () => {
       const adding = new AddingRoot((e) => {
         failures.push(e)
         return reason(e)
-      })
+      }, unknown)
 
       await adding.add('/home/u/src')
 
@@ -460,7 +463,7 @@ describe('adding a directory', () => {
 
       it('counts the paths walked so far as its progress comes', async () => {
         const { send } = walking()
-        const adding = new AddingRoot(reason)
+        const adding = new AddingRoot(reason, unknown)
 
         void adding.add('/home/u/src')
         await vi.waitFor(() => expect(adding.step).toEqual({ kind: 'previewing', path: '/home/u/src', walked: 0 }))
@@ -473,7 +476,7 @@ describe('adding a directory', () => {
 
       it('starts nothing else meanwhile', async () => {
         const { run } = walking()
-        const adding = new AddingRoot(reason)
+        const adding = new AddingRoot(reason, unknown)
 
         void adding.add('/home/u/src')
         await adding.add('/home/u/other')
@@ -483,7 +486,7 @@ describe('adding a directory', () => {
 
       it('is stopped by cancelling, which closes the stream and registers nothing', async () => {
         const { run, send } = walking()
-        const adding = new AddingRoot(reason)
+        const adding = new AddingRoot(reason, unknown)
         const walk = adding.add('/home/u/src')
         send({ type: 'progress', walked: 10 })
         await vi.waitFor(() => expect(adding.step).toMatchObject({ kind: 'previewing', walked: 10 }))

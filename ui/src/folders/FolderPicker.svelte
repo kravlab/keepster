@@ -3,9 +3,9 @@
    * Chooses a directory on the daemon's machine (ticket 93): the directory listed is the one chosen. The
    * path field shows it and takes an absolute path typed or pasted; Up goes to the parent; a folder is
    * gone into by its button, except one the daemon cannot list, which is shown as such and disabled.
-   * Hidden folders are left out until asked for. Adding a directory uses it, and so will recording a Move
-   * and choosing where an Export writes; what is listed, what the path field holds and why a place was
-   * refused is `lib/folders`.
+   * Hidden folders are left out until asked for. Adding a directory and recording a Move use it, and so
+   * will choosing where an Export writes; where it starts, what is listed, what the path field holds and
+   * why a place was refused is `lib/folders`.
    */
   import { onMount } from 'svelte'
   import type { FolderBrowser } from '../lib/folders.svelte'
@@ -22,7 +22,7 @@
   } = $props()
 
   onMount(() => {
-    if (browser.listing === null) void browser.open()
+    if (browser.listing === null) void browser.begin()
   })
 
   /** Lists the path typed or pasted, without the whitespace around it, unless the field is empty. */

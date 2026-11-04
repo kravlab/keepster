@@ -58,6 +58,14 @@ export interface RegisterRoot {
   path_mode?: PathMode
 }
 
+/** What a client sends to record a Move: where a Root's directory is now (`keepster_api::MoveRoot`). */
+export interface MoveRoot {
+  /** Where the directory is now. */
+  path: string
+  /** For a path through a link, which the Root is; without it, such a path is refused to ask. */
+  path_mode?: PathMode
+}
+
 /** One directory of a listing of the daemon's machine (`keepster_api::Subdirectory`). */
 export interface Subdirectory {
   name: string

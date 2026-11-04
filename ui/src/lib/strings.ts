@@ -96,6 +96,8 @@ export const strings = {
   byteSize,
   loading: 'Loading…',
   failed: 'Something went wrong:',
+  /** Backs out of a dialog, a question or a search under way, every one of them alike. */
+  cancel: 'Cancel',
 
   /** Shown after a 401: the daemon restarted or the cookie is gone. `command` is set as code. */
   sessionEnded: {
@@ -129,6 +131,39 @@ export const strings = {
     add: 'Add a directory',
     /** Opens the unwatch dialog from a Root's row. */
     unwatch: 'Unwatch…',
+    /** Opens the Move dialog from a Root's row. */
+    move: 'Move…',
+    /**
+     * Why `path` was not added, or not recorded as where a Root now is, when it overlaps the Root at
+     * `rootPath`, a Root the page knows.
+     */
+    overlaps: (path: string, rootPath: string) => `${path} overlaps the Root at ${rootPath}`,
+    /**
+     * The question a path through a link needs, adding a directory or recording a Move, worded as
+     * `keepster watch` and `keepster move` ask it.
+     */
+    link: {
+      question: (path: string, realPath: string) =>
+        `${path} leads through a link to ${realPath}. Use the link, following it when it is pointed ` +
+        `elsewhere, or the real directory?`,
+      asLink: 'Use the link',
+      asReal: 'Use the real directory',
+    },
+  },
+
+  /** The Move dialog (#32): recording where a Root's directory is now, as `keepster move` does. */
+  move: {
+    title: (path: string) => `Record a Move of ${path}`,
+    /** What a Move is and is not, said before anything is chosen. */
+    note:
+      'Keepster moves no files: it only records where this directory is now, once you have moved it. ' +
+      'The Root and its history stay the same.',
+    /** Before the directory the browser has listed, the one that will be recorded. */
+    chosen: 'Now at',
+    go: 'Record the Move',
+    working: 'Recording…',
+    /** Before the daemon's reason the Move was not recorded. */
+    failed: 'Not recorded:',
   },
 
   /** The unwatch dialog (#31), worded as `keepster unwatch` says it. */
@@ -155,7 +190,6 @@ export const strings = {
     go: 'Unwatch',
     goErasing: 'Erase history and unwatch',
     working: 'Working…',
-    cancel: 'Cancel',
     /** Before the daemon's reason the Root was not unwatched. */
     failed: 'Not unwatched:',
   },
@@ -166,19 +200,8 @@ export const strings = {
     chosen: 'Watch',
     go: 'Add',
     working: 'Adding…',
-    cancel: 'Cancel',
     /** Before the daemon's reason a directory was not added. */
     failed: 'Not added:',
-    /** Why `path` was not added when it overlaps the Root at `rootPath`, a Root the page knows. */
-    overlaps: (path: string, rootPath: string) => `${path} overlaps the Root at ${rootPath}`,
-    /** The question a path through a link needs, worded as `keepster watch` asks it. */
-    link: {
-      question: (path: string, realPath: string) =>
-        `${path} leads through a link to ${realPath}. Use the link, following it when it is pointed ` +
-        `elsewhere, or the real directory?`,
-      link: 'Use the link',
-      canonical: 'Use the real directory',
-    },
     /** The Capture Preview run before registering (ticket 94), while it walks. */
     preview: {
       looking: (path: string) => `Looking at what watching ${path} would capture…`,
@@ -431,7 +454,6 @@ export const strings = {
     changedSince: 'The files changed since this plan was made. This is the plan as it stands now.',
     go: 'Restore',
     working: 'Restoring…',
-    cancel: 'Cancel',
     close: 'Close',
     done: 'Done.',
     undo: (moment: Date, id: string) => `To undo it, restore from the Safety Snapshot of ${when(moment)} (${id}).`,
@@ -447,7 +469,6 @@ export const strings = {
     content: 'Content',
     everyRoot: 'Every Root',
     results: 'Results',
-    cancel: 'Cancel',
     close: 'Close',
     searching: 'Searching…',
     nothing: 'Nothing found.',

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FolderBrowser } from './folders.svelte'
+import { FolderBrowser, parentDirectory } from './folders.svelte'
 import type { DirectoryListing, Subdirectory } from './wire'
 
 const json = (body: unknown, status = 200, type = 'application/json') =>
@@ -267,5 +267,127 @@ describe('the folder browser', () => {
     await browser.up()
 
     expect(asked).toEqual(['/v1/fs'])
+  })
+})
+
+describe('where the folder browser starts', () => {
+  it('lists the place it was told to start at', async () => {
+    const asked = serve(() => json(listing('/home/u', [folder('/home/u/src')])))
+    const browser = new FolderBrowser(String, '/home/u')
+
+    await browser.begin()
+
+    expect(asked).toEqual(['/v1/fs?path=/home/u'])
+    expect(browser.path).toBe('/home/u')
+    expect(browser.error).toBe('')
+  })
+
+  it('lists the home directory instead, saying nothing of it, when a top it starts at cannot be listed', async () => {
+    const asked = serve(
+      () => problem(403, 'path_unreadable', '/ cannot be listed'),
+      () => json(listing('/home/u', [])),
+    )
+    const failure = vi.fn(String)
+    const browser = new FolderBrowser(failure, '/')
+
+    await browser.begin()
+
+    expect(asked).toEqual(['/v1/fs?path=/', '/v1/fs'])
+    expect(browser.path).toBe('/home/u')
+    expect(failure).not.toHaveBeenCalled()
+    expect(browser.error).toBe('')
+  })
+
+  it('climbs to the nearest place above it that can be listed, saying nothing of those that cannot', async () => {
+    const asked = serve(
+      () => problem(404, 'path_not_found', '/home/u/gone/src does not exist'),
+      () => problem(404, 'path_not_found', '/home/u/gone does not exist'),
+      () => json(listing('/home/u', [folder('/home/u/src')])),
+    )
+    const failure = vi.fn(String)
+    const browser = new FolderBrowser(failure, '/home/u/gone/src')
+
+    await browser.begin()
+
+    expect(asked).toEqual(['/v1/fs?path=/home/u/gone/src', '/v1/fs?path=/home/u/gone', '/v1/fs?path=/home/u'])
+    expect(browser.path).toBe('/home/u')
+    expect(failure).not.toHaveBeenCalled()
+    expect(browser.error).toBe('')
+  })
+
+  it('lists the home directory once nothing up to the top can be listed', async () => {
+    const asked = serve(
+      () => problem(404, 'path_not_found', '/mnt/gone/src does not exist'),
+      () => problem(404, 'path_not_found', '/mnt/gone does not exist'),
+      () => problem(403, 'path_unreadable', '/mnt cannot be listed'),
+      () => problem(403, 'path_unreadable', '/ cannot be listed'),
+      () => json(listing('/home/u', [])),
+    )
+    const failure = vi.fn(String)
+    const browser = new FolderBrowser(failure, '/mnt/gone/src')
+
+    await browser.begin()
+
+    expect(asked).toEqual([
+      '/v1/fs?path=/mnt/gone/src',
+      '/v1/fs?path=/mnt/gone',
+      '/v1/fs?path=/mnt',
+      '/v1/fs?path=/',
+      '/v1/fs',
+    ])
+    expect(browser.path).toBe('/home/u')
+    expect(failure).not.toHaveBeenCalled()
+    expect(browser.error).toBe('')
+  })
+
+  it('stops climbing once a newer listing is asked for, keeping that one', async () => {
+    const asked: string[] = []
+    const answers: (() => void)[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(url)
+      return new Promise<Response>((resolve) =>
+        answers.push(() =>
+          resolve(url.endsWith('gone') ? problem(404, 'path_not_found', 'gone') : json(listing('/home/u/b', []))),
+        ),
+      )
+    })
+    const browser = new FolderBrowser(String, '/home/u/gone')
+
+    const starting = browser.begin()
+    const opening = browser.open('/home/u/b')
+    answers[1]?.()
+    answers[0]?.()
+    await Promise.all([starting, opening])
+
+    expect(asked).toEqual(['/v1/fs?path=/home/u/gone', '/v1/fs?path=/home/u/b'])
+    expect(browser.path).toBe('/home/u/b')
+  })
+
+  it('lists the home directory when told nowhere to start', async () => {
+    const asked = serve(() => json(listing('/home/u', [])))
+    const browser = new FolderBrowser(String)
+
+    await browser.begin()
+
+    expect(asked).toEqual(['/v1/fs'])
+  })
+})
+
+describe('the directory above a path on the daemon’s machine', () => {
+  it.each([
+    ['/home/u/src', '/home/u'],
+    ['/home/u/src/', '/home/u'],
+    ['/src', '/'],
+    ['C:\\Users\\u\\src', 'C:\\Users\\u'],
+    ['C:\\src', 'C:\\'],
+    ['\\\\server\\share\\dir', '\\\\server\\share\\'],
+    ['\\\\server\\share\\dir\\', '\\\\server\\share\\'],
+    ['\\\\server\\share\\a\\b', '\\\\server\\share\\a'],
+  ])('is the parent of %s: %s', (path, parent) => {
+    expect(parentDirectory(path)).toBe(parent)
+  })
+
+  it.each(['/', 'C:\\', 'src', '\\\\server\\share', '\\\\server\\share\\', '\\\\server'])('is none for %s', (path) => {
+    expect(parentDirectory(path)).toBeNull()
   })
 })

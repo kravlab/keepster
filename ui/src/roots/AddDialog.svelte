@@ -24,6 +24,7 @@
   import FailureAlert from '../dialogs/FailureAlert.svelte'
   import ModalDialog from '../dialogs/ModalDialog.svelte'
   import FolderPicker from '../folders/FolderPicker.svelte'
+  import LinkQuestion from './LinkQuestion.svelte'
 
   let {
     adding,
@@ -52,8 +53,8 @@
   })
 
   /**
-   * Stops the walk, or declines the claim question, and hands the keyboard back to Add: the controls
-   * that had it are gone once the person is choosing again.
+   * Stops the walk, or declines the claim or link question, and hands the keyboard back to Add: the
+   * controls that had it are gone once the person is choosing again.
    */
   async function backOut() {
     adding.cancel()
@@ -94,15 +95,12 @@
   {onClose}
 >
   {#if step.kind === 'askingLink'}
-    <p class="question">{strings.adding.link.question(step.path, step.realPath)}</p>
-    <div class="actions">
-      <button type="button" onclick={() => adding.cancel()}>{strings.adding.cancel}</button>
-      <button type="button" onclick={() => void adding.choose('canonical')}>{strings.adding.link.canonical}</button>
-      <!-- The question replaces the button that asked it: the keyboard goes on from the first answer. -->
-      <button type="button" class="go" onclick={() => void adding.choose('link')} {@attach (node) => node.focus()}>
-        {strings.adding.link.link}
-      </button>
-    </div>
+    <LinkQuestion
+      path={step.path}
+      realPath={step.realPath}
+      onChoose={(mode) => void adding.choose(mode)}
+      onCancel={() => void backOut()}
+    />
   {:else if step.kind === 'askingClaim'}
     {@const summary = step.summary}
     <p class="question">{strings.adding.claim.question(step.path, summary.past_ceiling)}</p>
@@ -166,12 +164,12 @@
       <div class="actions">
         <!-- Add, which started the walk, is gone: the keyboard goes on from what stops it. -->
         <button type="button" onclick={() => void backOut()} {@attach (node) => node.focus()}>
-          {strings.adding.cancel}
+          {strings.cancel}
         </button>
       </div>
     {:else}
       <div class="actions">
-        <button type="button" disabled={registering} onclick={() => dialog?.close()}>{strings.adding.cancel}</button>
+        <button type="button" disabled={registering} onclick={() => dialog?.close()}>{strings.cancel}</button>
         <button
           type="button"
           class="go"

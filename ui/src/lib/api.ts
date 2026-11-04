@@ -12,6 +12,7 @@ import type {
   DirectoryListing,
   Entries,
   Entry,
+  MoveRoot,
   PathHit,
   PathMode,
   PathResolution,
@@ -216,7 +217,7 @@ async function getJson<T>(target: string, signal?: AbortSignal): Promise<T> {
 }
 
 /** Sends `body` as JSON to `target` with `method`, and hands back the answer whatever its status. */
-function sendJson(method: 'POST' | 'PUT', target: string, body: unknown): Promise<Response> {
+function sendJson(method: 'POST' | 'PUT' | 'PATCH', target: string, body: unknown): Promise<Response> {
   return fetch(target, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 }
 
@@ -330,17 +331,54 @@ export async function restore(root: string, request: RestoreRequest): Promise<Re
  * link is — `path` as it was sent and `realPath` where the link leads now — with nothing registered. Any
  * other refusal is thrown, as everywhere.
  */
-export type RegisterAnswer =
-  { kind: 'registered'; root: Root } | { kind: 'throughLink'; path: string; realPath: string }
+export type RegisterAnswer = { kind: 'registered'; root: Root } | ThroughLink
+
+/** A path sent for a Root leads through a link: `path` as it was sent, `realPath` where the link leads now. */
+export type ThroughLink = { kind: 'throughLink'; path: string; realPath: string }
 
 /**
  * Registers the directory at `path` as a Watched Root. A path through a link is refused until `pathMode`
  * says which the Root is; that refusal is answered as `throughLink`, so the person can be asked.
  */
 export async function registerRoot(path: string, pathMode?: PathMode): Promise<RegisterAnswer> {
-  const body: RegisterRoot = pathMode === undefined ? { path } : { path, path_mode: pathMode }
+  const body: RegisterRoot = rootPathBody(path, pathMode)
   const response = await sendJson('POST', url(['roots']), body)
   if (response.ok) return { kind: 'registered', root: (await response.json()) as Root }
+  return throughLink(response)
+}
+
+/**
+ * What recording a Move came to: the Root at its new path, as the daemon describes it now, or a refusal
+ * asking which a path through a link is, as for registering, with nothing recorded. Any other refusal is
+ * thrown, as everywhere.
+ */
+export type MoveAnswer = { kind: 'moved'; root: Root } | ThroughLink
+
+/**
+ * Records a Move: the Root `id`'s directory is now at `path`. No file is touched, and the identity, with
+ * it the history, stays. A path through a link is refused until `pathMode` says which the Root is; that
+ * refusal is answered as `throughLink`, as `registerRoot` answers it.
+ */
+export async function moveRoot(id: string, path: string, pathMode?: PathMode): Promise<MoveAnswer> {
+  const body: MoveRoot = rootPathBody(path, pathMode)
+  const response = await sendJson('PATCH', url(['roots', id]), body)
+  if (response.ok) return { kind: 'moved', root: (await response.json()) as Root }
+  return throughLink(response)
+}
+
+/**
+ * The body of a request that sends a path for a Root, registering or moving one: `path`, and `path_mode`
+ * only once the person has said which a path through a link is, so that the daemon asks until then.
+ */
+function rootPathBody(path: string, pathMode: PathMode | undefined): RegisterRoot & MoveRoot {
+  return pathMode === undefined ? { path } : { path, path_mode: pathMode }
+}
+
+/**
+ * A failed answer to a request that sends a path for a Root, registering or moving one: the refusal
+ * asking which a path through a link is, as a `ThroughLink`; any other refusal is thrown.
+ */
+async function throughLink(response: Response): Promise<ThroughLink> {
   const problem = await problemOf(response)
   const details = problem.details
   if (

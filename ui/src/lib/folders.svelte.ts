@@ -3,17 +3,21 @@
  * of its own, so every directory it shows is one the daemon listed. Kept apart from Root management
  * because choosing where an Export writes (ticket 90) browses the same way.
  *
- * It starts in the home directory, goes into a subdirectory, up to the parent, or to an absolute path
- * typed or pasted. The directory chosen is always the one listed: a place that cannot be listed is
- * refused with the daemon's reason and leaves the browser where it was.
+ * It starts where it is told to start, or the nearest directory above that can be listed, or else in the
+ * home directory; it goes into a subdirectory, up to the parent, or to an absolute path typed or pasted.
+ * The directory chosen is always the one listed: a place that cannot be listed is refused with the
+ * daemon's reason and leaves the browser where it was.
  */
 import { listDirectories } from './api'
 import type { DirectoryListing, Subdirectory } from './wire'
 
+/** How one listing went: now the one listed, refused for `error`, or overtaken by a newer listing. */
+type ListOutcome = { kind: 'listed' } | { kind: 'refused'; error: unknown } | { kind: 'overtaken' }
+
 /**
  * The browser's place on the daemon's machine: the directory listed, the path field over it, and why the
- * newest listing was refused. Only the newest listing asked for is kept, and the directory added is only
- * ever one listed, as the path field shows it.
+ * newest listing was refused. Only the newest listing asked for is kept, and the directory chosen, to add
+ * a Root or to record where one has moved, is only ever one listed, as the path field shows it.
  */
 export class FolderBrowser {
   /** The directory listed, as the daemon answered; `null` until a listing first succeeds. */
@@ -43,8 +47,31 @@ export class FolderBrowser {
   /* Counts the listings asked for, so an answer to an earlier one, arriving late, is dropped. */
   #generation = 0
 
-  /** @param failure the text a failed request shows, as `failureText` gives it */
-  constructor(private readonly failure: (e: unknown) => string) {}
+  /**
+   * @param failure the text a failed request shows, as `failureText` gives it
+   * @param start the absolute directory to list first, such as the one above a Root being moved; when
+   *   it cannot be listed, the nearest directory above it that can, and the home directory without it or
+   *   when none can
+   */
+  constructor(
+    private readonly failure: (e: unknown) => string,
+    private readonly start?: string,
+  ) {}
+
+  /**
+   * Lists where the browser starts: `start`, when given and it can be listed, else the nearest directory
+   * above it that can, climbing one level at a time, and the home directory when none can. A place
+   * refused here is not the person's choice, so its refusal is passed over unsaid. The climb ends: each
+   * `parentDirectory` is shorter than the path it is taken from, and a top has none. A newer listing
+   * asked for meanwhile ends it too, as it is then the one kept.
+   */
+  async begin(): Promise<void> {
+    for (let place = this.start ?? null; place !== null; place = parentDirectory(place)) {
+      const outcome = await this.#list(place)
+      if (outcome.kind !== 'refused') return
+    }
+    await this.open()
+  }
 
   /**
    * Lists the absolute directory `path`, typed, pasted or picked, or the home directory without one; only
@@ -52,17 +79,27 @@ export class FolderBrowser {
    * Resolves to whether this listing is now the one listed: not when refused or overtaken by a newer one.
    */
   async open(path?: string): Promise<boolean> {
+    const outcome = await this.#list(path)
+    if (outcome.kind === 'refused') this.error = this.failure(outcome.error)
+    return outcome.kind === 'listed'
+  }
+
+  /**
+   * Lists `path`, or the home directory without one, keeping the answer only while this is the newest
+   * listing asked for. Says how it went and leaves a refusal to the caller, to show or pass over: a
+   * refusal of a listing a newer one overtook is `overtaken`, as its answer is.
+   */
+  async #list(path: string | undefined): Promise<ListOutcome> {
     const mine = ++this.#generation
     try {
       const listing = await listDirectories(path)
-      if (mine !== this.#generation) return false
+      if (mine !== this.#generation) return { kind: 'overtaken' }
       this.listing = listing
       this.typed = listing.path
       this.error = ''
-      return true
-    } catch (e) {
-      if (mine === this.#generation) this.error = this.failure(e)
-      return false
+      return { kind: 'listed' }
+    } catch (error) {
+      return mine === this.#generation ? { kind: 'refused', error } : { kind: 'overtaken' }
     }
   }
 
@@ -97,4 +134,25 @@ export class FolderBrowser {
     const parent = this.listing?.parent
     if (parent) await this.open(parent)
   }
+}
+
+/** A Windows network share, `\\server\share`, or a server alone, with no trailing separator: a top. */
+const UNC_SHARE = /^\\\\[^\\]+(\\[^\\]+)?$/
+
+/** A top with its separator, as `parentDirectory` gives one: `/`, `C:\` or `\\server\share\`. */
+const TOP = /^(\/|[A-Za-z]:[/\\]|\\\\[^\\]+\\[^\\]+\\)$/
+
+/**
+ * The directory above the absolute `path` on the daemon's machine, whose separator is `/`, or `\` on
+ * Windows; `null` for a top such as `/`, `C:\` or the network share `\\server\share`, or a path with no
+ * separator. A top is given with its separator, as `C:\` and `\\server\share\` are; a trailing
+ * separator is not a level.
+ */
+export function parentDirectory(path: string): string | null {
+  const trimmed = path.replace(/[/\\]+$/, '')
+  if (UNC_SHARE.test(trimmed)) return null
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  if (cut < 0) return null
+  const parent = trimmed.slice(0, cut + 1)
+  return TOP.test(parent) ? parent : parent.slice(0, -1)
 }
