@@ -6,17 +6,24 @@ import {
   fileContent,
   fileDiff,
   entryAt,
+  listDirectories,
   listRoots,
+  moveRoot,
   newestTouching,
+  previewDirectory,
   previousSnapshot,
   readPreferences,
+  readStatus,
+  registerRoot,
   restore,
   searchContent,
   searchPaths,
   timeline,
+  unwatchRoot,
   writePreferences,
 } from './api'
 import { exactPath } from './paths'
+import { ndjson } from './testing'
 
 /** Answers every request with `response`, recording the URLs asked for. */
 const answer = (response: () => Response) => {
@@ -284,6 +291,208 @@ describe('the /v1 client', () => {
     })
   })
 
+  describe('choosing and registering a directory', () => {
+    it('lists the home directory without a path, and an absolute directory by its path', async () => {
+      const asked = answer(() => json({ path: '/home/u', directories: [] }))
+
+      await listDirectories()
+      await listDirectories('/home/u/my src')
+
+      expect(asked).toEqual(['/v1/fs', '/v1/fs?path=/home/u/my%20src'])
+    })
+
+    it('posts the path to register, with the path mode only once one is chosen', async () => {
+      const sent: { url: string; init?: RequestInit }[] = []
+      const registered = { id: 'r1', path: '/home/u/src', state: 'watching' }
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push({ url, init })
+        return Promise.resolve(json(registered, 201))
+      })
+
+      await expect(registerRoot('/home/u/src')).resolves.toEqual({ kind: 'registered', root: registered })
+      await registerRoot('/home/u/src', 'link')
+
+      expect(sent.map((s) => [s.url, s.init?.method, s.init?.body])).toEqual([
+        ['/v1/roots', 'POST', JSON.stringify({ path: '/home/u/src' })],
+        ['/v1/roots', 'POST', JSON.stringify({ path: '/home/u/src', path_mode: 'link' })],
+      ])
+    })
+
+    it('answers a refusal asking which a path through a link is with the path and where it leads', async () => {
+      answer(() =>
+        json(
+          {
+            title: 'Bad Request',
+            status: 400,
+            detail: 'leads through a link',
+            code: 'confirmation_required',
+            details: { path: '/home/u/proj', real_path: '/mnt/work/proj', missing: 'path_mode' },
+          },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(registerRoot('/home/u/proj')).resolves.toEqual({
+        kind: 'throughLink',
+        path: '/home/u/proj',
+        realPath: '/mnt/work/proj',
+      })
+    })
+
+    it('reports any other refusal to register as a failure', async () => {
+      answer(() =>
+        json(
+          { title: 'Conflict', status: 409, detail: '/home/u/src overlaps the Root r0', code: 'root_overlaps' },
+          409,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(registerRoot('/home/u/src')).rejects.toMatchObject({
+        status: 409,
+        code: 'root_overlaps',
+        detail: '/home/u/src overlaps the Root r0',
+      })
+    })
+
+    it('reads the status', async () => {
+      const asked = answer(() => json({ daemon: { maintenance: 'available', git: { minimum: '2.30' } }, roots: [] }))
+
+      await expect(readStatus()).resolves.toMatchObject({ daemon: { maintenance: 'available' } })
+      expect(asked).toEqual(['/v1/status'])
+    })
+  })
+
+  describe('unwatching a Root', () => {
+    /** Answers every request with `response`, recording the method and URL of each. */
+    const deleting = (response: () => Response) => {
+      const sent: [string | undefined, string][] = []
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push([init?.method, url])
+        return Promise.resolve(response())
+      })
+      return sent
+    }
+
+    it('deletes the Root without a purge, so its history is kept', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await expect(unwatchRoot('r1', false)).resolves.toBeUndefined()
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/r1']])
+    })
+
+    it('deletes the Root with purge=true only when erasing its history', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await unwatchRoot('r1', true)
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/r1?purge=true']])
+    })
+
+    it('escapes the Root’s id in the path', async () => {
+      const sent = deleting(() => new Response(null, { status: 204 }))
+
+      await unwatchRoot('a/b c', false)
+
+      expect(sent).toEqual([['DELETE', '/v1/roots/a%2Fb%20c']])
+    })
+
+    it('reports a refusal with the daemon’s reason', async () => {
+      deleting(() =>
+        json(
+          { title: 'Not Found', status: 404, detail: 'no Root r1 is watched', code: 'root_not_found' },
+          404,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(unwatchRoot('r1', true)).rejects.toMatchObject({
+        status: 404,
+        code: 'root_not_found',
+        detail: 'no Root r1 is watched',
+      })
+    })
+
+    it('reports a 401 as the session having ended', async () => {
+      deleting(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
+
+      await expect(unwatchRoot('r1', false)).rejects.toBeInstanceOf(SessionEnded)
+    })
+  })
+
+  describe('recording a Move', () => {
+    /** Answers every request with `response`, recording the method, URL and body of each. */
+    const patching = (response: () => Response) => {
+      const sent: [string | undefined, string, unknown][] = []
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        sent.push([init?.method, url, JSON.parse(String(init?.body))])
+        return Promise.resolve(response())
+      })
+      return sent
+    }
+    const moved = { id: 'r1', path: '/home/u/src', state: 'watching' }
+
+    it('patches the Root with where its directory is now, with the path mode only once one is chosen', async () => {
+      const sent = patching(() => json(moved))
+
+      await expect(moveRoot('r1', '/home/u/src')).resolves.toEqual({ kind: 'moved', root: moved })
+      await moveRoot('r1', '/home/u/src', 'canonical')
+
+      expect(sent).toEqual([
+        ['PATCH', '/v1/roots/r1', { path: '/home/u/src' }],
+        ['PATCH', '/v1/roots/r1', { path: '/home/u/src', path_mode: 'canonical' }],
+      ])
+    })
+
+    it('escapes the Root’s id in the path', async () => {
+      const sent = patching(() => json(moved))
+
+      await moveRoot('a/b c', '/home/u/src')
+
+      expect(sent[0]?.[1]).toBe('/v1/roots/a%2Fb%20c')
+    })
+
+    it('answers a refusal asking which a path through a link is with the path and where it leads', async () => {
+      patching(() =>
+        json(
+          {
+            title: 'Bad Request',
+            status: 400,
+            detail: 'leads through a link',
+            code: 'confirmation_required',
+            details: { path: '/home/u/proj', real_path: '/mnt/work/proj', missing: 'path_mode' },
+          },
+          400,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(moveRoot('r1', '/home/u/proj')).resolves.toEqual({
+        kind: 'throughLink',
+        path: '/home/u/proj',
+        realPath: '/mnt/work/proj',
+      })
+    })
+
+    it.each([
+      [400, 'path_invalid', '/home/u/notes.txt is not a directory that can be watched'],
+      [409, 'root_overlaps', '/home/u/src overlaps the Root r0'],
+      [404, 'root_not_found', 'no Root with the identity r1 is registered'],
+    ])('reports a refusal (%i %s) with the daemon’s reason', async (status, code, detail) => {
+      patching(() => json({ title: 'Refused', status, detail, code }, status, 'application/problem+json'))
+
+      await expect(moveRoot('r1', '/home/u/src')).rejects.toMatchObject({ status, code, detail })
+    })
+
+    it('reports a 401 as the session having ended', async () => {
+      patching(() => json({ title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401))
+
+      await expect(moveRoot('r1', '/home/u/src')).rejects.toBeInstanceOf(SessionEnded)
+    })
+  })
+
   describe('preferences', () => {
     const chosen = { theme: 'dark', syntax_line_limit: 5000, wrap_lines: true }
 
@@ -327,10 +536,101 @@ describe('the /v1 client', () => {
     })
   })
 
-  describe('search', () => {
-    const ndjson = (...lines: string[]) =>
-      new Response(lines.map((l) => `${l}\n`).join(''), { headers: { 'content-type': 'application/x-ndjson' } })
+  describe('a Capture Preview', () => {
+    const totals = { files: 0, directories: 0, bytes: 0 }
+    const summary = {
+      type: 'summary',
+      captured: { files: 3, directories: 1, bytes: 2048 },
+      excluded: { ...totals, pruned: 2 },
+      withheld: {},
+      unreadable: 0,
+      groups: [],
+      largest_captured: [{ path: '\uFFFD.bin', path_bytes: '_y5iaW4', bytes: 2000 }],
+      largest_left_out: [],
+      past_ceiling: ['files'],
+    }
+    const read = async (path: string) => {
+      const records = []
+      for await (const record of previewDirectory(path)) records.push(record)
+      return records
+    }
 
+    it('asks for the summary alone of the directory, at its default depth, and yields its records', async () => {
+      const asked = answer(() =>
+        ndjson(
+          '{"type":"header","path":"/home/u/src","root":null}',
+          '{"type":"progress","walked":40}',
+          JSON.stringify(summary),
+        ),
+      )
+
+      const records = await read('/home/u/my src')
+
+      expect(asked).toEqual(['/v1/preview?path=/home/u/my%20src'])
+      expect(records).toEqual([
+        { type: 'header', path: '/home/u/src', root: null },
+        { type: 'progress', walked: 40 },
+        { ...summary, largest_captured: [{ path: exactPath('\uFFFD.bin', '_y5iaW4'), bytes: 2000 }] },
+      ])
+    })
+
+    it('makes the paths a rule pruned exact, and leaves the rest of its groups as they came', async () => {
+      const rule = { pattern: 'target/', effect: 'exclude', level: 'default', source: 'built-in' }
+      const group = { class: 'excluded', rule, files: 0, directories: 0, bytes: 0 }
+      const pruning = { ...group, pruned: ['cache\uFFFD', 'target'], pruned_bytes: ['Y2FjaGX_', null] }
+      answer(() => ndjson(JSON.stringify({ ...summary, groups: [pruning, group] })))
+
+      const [record] = await read('/home/u/src')
+
+      expect(record).toMatchObject({
+        groups: [{ pruned: [exactPath('cache\uFFFD', 'Y2FjaGX_'), 'target'], rule }, group],
+      })
+    })
+
+    it('passes over a record of a type it does not know, and yields the error that ends a walk', async () => {
+      answer(() =>
+        ndjson(
+          '{"type":"entry","path":"a","kind":"file","class":"captured","bytes":1}',
+          '{"type":"error","detail":"gone"}',
+        ),
+      )
+
+      expect(await read('/home/u/src')).toEqual([{ type: 'error', detail: 'gone' }])
+    })
+
+    it("reports a busy preview with the daemon's code", async () => {
+      answer(() =>
+        json(
+          { title: 'Conflict', status: 409, detail: 'a preview is walking', code: 'preview_busy' },
+          409,
+          'application/problem+json',
+        ),
+      )
+
+      await expect(read('/home/u/src')).rejects.toMatchObject({ status: 409, code: 'preview_busy' })
+    })
+
+    it('reports a line that is not a record as an answer it cannot read', async () => {
+      answer(() => ndjson('{"type":"progress","walked":1}', 'garbage'))
+
+      await expect(read('/home/u/src')).rejects.toBeInstanceOf(UnexpectedAnswer)
+    })
+
+    it('hands the abort signal to the request', async () => {
+      let signal: AbortSignal | null | undefined
+      vi.stubGlobal('fetch', (_: string, init?: RequestInit) => {
+        signal = init?.signal
+        return Promise.resolve(ndjson(JSON.stringify(summary)))
+      })
+      const controller = new AbortController()
+
+      for await (const record of previewDirectory('/home/u/src', controller.signal)) void record
+
+      expect(signal).toBe(controller.signal)
+    })
+  })
+
+  describe('search', () => {
     it('asks for the paths a fragment finds in every Root', async () => {
       const found = { hits: [], truncated: false }
       const asked = answer(() => json(found))

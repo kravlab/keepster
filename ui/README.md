@@ -24,18 +24,32 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
 - `src/lib/`: everything that is not drawing, with unit tests beside it. The `/v1` client and its narrow
   types (`api.ts`, `wire.ts`), what a failure says on screen (`failures.ts`), daemon hunks to editor ranges
   (`hunks.ts`, and its failure in `mismatch.ts`), the live event stream, one per page (`events.ts`), the
-  Watched Roots kept current from it (`roots.svelte.ts`), the rail's day
-  headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
+  Watched Roots kept current from it (`roots.svelte.ts`), the Root shown over them, kept once it is
+  unwatched and told once its history is erased (`showing.svelte.ts`, with what the screen then offers in
+  `erasure.ts`), adding a directory as a Root, after a Capture
+  Preview of it (`adding.svelte.ts`), unwatching a Root, with its consent rule in `unwatch.ts` (`unwatching.svelte.ts`),
+  recording a Move of a Root (`moving.svelte.ts`), sending a path for a Root and its link question, which
+  adding and moving share (`link.ts`), the order of a Root row's actions (`actions.ts`)
+  and the notice when store maintenance is unavailable (`maintenance.ts`), the folder browser over the
+  daemon's machine (`folders.svelte.ts`), the rail's day headings (`rail.ts`), a view mode's pages of the timeline kept current (`pages.svelte.ts`, `timeline.ts`),
   Root-relative paths (`paths.ts`), the changed-file list and what the diff pane is given (`files.ts`), the
   pane's data loaded for one Snapshot and named by it (`shown.ts`), a
   Snapshot's changes in words and what counts as routine (`summary.ts`), the selection carried across view
   modes (`selection.ts`), the lazy file tree (`tree.ts`), Snapshot ids as moments (`ids.ts`), Restore's
   questions and request (`restore.ts`), the long-line threshold (`lines.ts`), the preferences and their
   paint cache (`preferences.ts`, and the page's copy kept with the daemon in `preferences.svelte.ts`),
-  newline-delimited JSON off a stream (`ndjson.ts`), search results and a content search's stream folded
-  (`search.ts`, and one search run at a time in `searching.svelte.ts`), and every user-facing text
-  (`strings.ts`). `testing.ts` is test support only: a hand-driven event stream.
-- `src/roots/`: the Root management page the header's Manage Roots opens (`RootsPage.svelte`).
+  newline-delimited JSON off a stream, a content search's or a preview's (`ndjson.ts`), search results and
+  a content search's stream folded (`search.ts`, and one search run at a time in `searching.svelte.ts`), and every user-facing text
+  (`strings.ts`). `testing.ts` is test support only: a hand-driven event stream and a newline-delimited JSON answer.
+- `src/roots/`: the Root management page the header's Manage Roots opens (`RootsPage.svelte`), its add
+  dialog (`AddDialog.svelte`), the banner once a directory is added (`AddedBanner.svelte`), the unwatch
+  dialog (`UnwatchDialog.svelte`), the Move dialog (`MoveDialog.svelte`), and the link question the add and
+  Move dialogs share (`LinkQuestion.svelte`).
+- `src/banners/`: the skeleton every banner shares (`Banner.svelte`), the added Root's and the erased
+  history's.
+- `src/dialogs/`: the shell every modal dialog shares (`ModalDialog.svelte`), a dialog's focused refusal
+  (`FailureAlert.svelte`), and handing the keyboard back once a dialog backs out of a step (`focus.ts`).
+- `src/folders/`: the folder picker that chooses a directory on the daemon's machine (`FolderPicker.svelte`).
 - `src/editor/`: the CodeMirror adapter, its colors read from the theme's variables (`palette.ts`), and the
   curated grammars, loaded lazily.
 - `src/search/`: the search overlay the header's field opens (`SearchOverlay.svelte`).
@@ -43,7 +57,8 @@ Or here, with `pnpm install` first: `pnpm build`, `pnpm check`, `pnpm format`, `
   the shell (`App.svelte`) keeps so that a search result can set it: the rail (`RailMode.svelte`), file first (`FileMode.svelte`) and the activity feed
   (`FeedMode.svelte`). The diff pane
   (`DiffPane.svelte`) is common to all three, and so is the Restore dialog it opens
-  (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show.
+  (`RestoreDialog.svelte`); `FileTree.svelte` is the tree the rail and file first both show. Over the screen,
+  the banner once the shown Root's history is erased (`ErasedBanner.svelte`).
 
 ## Budget
 

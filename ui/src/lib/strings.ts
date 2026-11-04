@@ -2,10 +2,20 @@
  * Every text the SPA shows, in one place. The project has no i18n system; keeping the strings out of the
  * components is what lets one be added without touching them.
  */
+import type { Erasure } from './erasure'
 import { TOO_LARGE_BYTES, type Card } from './files'
 import type { Theme } from './preferences'
 import type { ChangeShape } from './summary'
-import type { Confirmation, FileChange, ModesChoice, NameCaseChoice, RestoreOutcome } from './wire'
+import type {
+  Confirmation,
+  FileChange,
+  ModesChoice,
+  NameCaseChoice,
+  PreviewGroup,
+  PreviewTotals,
+  RestoreOutcome,
+  RuleReference,
+} from './wire'
 
 /** A moment as the page writes it out: date and time, where the user is. */
 const when = (moment: Date) => moment.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -13,6 +23,30 @@ const when = (moment: Date) => moment.toLocaleString(undefined, { dateStyle: 'me
 const octal = (mode: number) => mode.toString(8).padStart(4, '0')
 /** Paths, names or counts one after another. */
 const list = (items: readonly string[]) => items.join(', ')
+/** `count` of something, its noun singular for one: `1 file`, `2,048 files`. */
+const counted = (count: number, one: string, many: string) => `${count.toLocaleString()} ${count === 1 ? one : many}`
+/**
+ * v1's claims for one Root, as a Capture Preview's `past_ceiling` names them, in words. An open set: a
+ * claim without an entry is shown as it is.
+ */
+const CLAIMS: Partial<Record<string, string>> = {
+  files: 'files',
+  directories: 'directories',
+  bytes: 'size',
+}
+/** The binary units a size past 1023 bytes is written in, smallest first. */
+const SIZE_UNITS = ['KiB', 'MiB', 'GiB', 'TiB'] as const
+/** A size as a person reads it, in binary units with one decimal, as `keepster preview` writes it. */
+const byteSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit + 1 < SIZE_UNITS.length) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${SIZE_UNITS[unit]}`
+}
 /**
  * Why content in the Working Tree cannot go into the Safety Snapshot, by the daemon's reason code. The
  * codes are an open set: one this page does not know has no entry.
@@ -60,8 +94,11 @@ export const strings = {
   /** A moment written out in full: date and time, where the user is. */
   at: when,
   list,
+  byteSize,
   loading: 'Loading…',
   failed: 'Something went wrong:',
+  /** Backs out of a dialog, a question or a search under way, every one of them alike. */
+  cancel: 'Cancel',
 
   /** Shown after a 401: the daemon restarted or the cookie is gone. `command` is set as code. */
   sessionEnded: {
@@ -91,6 +128,177 @@ export const strings = {
     state: (state: string) => ROOT_STATES[state] ?? state,
     /** Why a Root is not `watching`, by its `state_code`. */
     reason: (code: string) => ROOT_REASONS[code] ?? code,
+    /** Opens the add dialog, on the page and in the empty state, and heads it. */
+    add: 'Add a directory',
+    /** Opens the unwatch dialog from a Root's row. */
+    unwatch: 'Unwatch…',
+    /** Opens the Move dialog from a Root's row. */
+    move: 'Move…',
+    /**
+     * Why `path` was not added, or not recorded as where a Root now is, when it overlaps the Root at
+     * `rootPath`, a Root the page knows.
+     */
+    overlaps: (path: string, rootPath: string) => `${path} overlaps the Root at ${rootPath}`,
+    /** In the header and the Root picker, for the Root shown once it is no longer watched (#33). */
+    noLongerWatched: 'No longer watched',
+    unwatchedOption: (path: string) => `${path} (no longer watched)`,
+    /**
+     * The question a path through a link needs, adding a directory or recording a Move, worded as
+     * `keepster watch` and `keepster move` ask it.
+     */
+    link: {
+      question: (path: string, realPath: string) =>
+        `${path} leads through a link to ${realPath}. Use the link, following it when it is pointed ` +
+        `elsewhere, or the real directory?`,
+      asLink: 'Use the link',
+      asReal: 'Use the real directory',
+    },
+  },
+
+  /** The Move dialog (#32): recording where a Root's directory is now, as `keepster move` does. */
+  move: {
+    title: (path: string) => `Record a Move of ${path}`,
+    /** What a Move is and is not, said before anything is chosen. */
+    note:
+      'Keepster moves no files: it only records where this directory is now, once you have moved it. ' +
+      'The Root and its history stay the same.',
+    /** Before the directory the browser has listed, the one that will be recorded. */
+    chosen: 'Now at',
+    go: 'Record the Move',
+    working: 'Recording…',
+    /** Before the daemon's reason the Move was not recorded. */
+    failed: 'Not recorded:',
+  },
+
+  /** The unwatch dialog (#31), worded as `keepster unwatch` says it. */
+  unwatch: {
+    title: (path: string) => `Stop watching ${path}`,
+    /** What becomes of the history, by `Outlook` in `lib/unwatching.svelte`. */
+    outlook: {
+      /** The Root has a pinned Snapshot and the history is not to be erased. */
+      kept:
+        'Its history is kept: it decays down to its last state, which is pinned. Watching the directory ' +
+        'again resumes it.',
+      /** The Root has no pinned Snapshot: it never captured anything. */
+      nothingToKeep: 'It has no history to keep.',
+      /** The pins are not read yet, or could not be: claims neither. */
+      unknown: 'Its changes stop being captured; any history it has is kept unless you erase it.',
+      /** Erasing is chosen, as `acknowledge` words it. */
+      erasing: 'Its history is erased with it: every captured version of this Root is lost.',
+    },
+    /** The option that also erases the history. */
+    erase: 'Also erase its history',
+    /** The separate acknowledgement an erasing needs. */
+    acknowledge: 'I understand that erasing cannot be undone: every captured version of this Root is lost.',
+    /** The button, by the choice (a key of `wording` in `lib/unwatch`). */
+    go: 'Unwatch',
+    goErasing: 'Erase history and unwatch',
+    working: 'Working…',
+    /** Before the daemon's reason the Root was not unwatched. */
+    failed: 'Not unwatched:',
+  },
+
+  /** The add dialog and the banner after it (#29). */
+  adding: {
+    /** Before the directory the browser has listed, the one that will be added. */
+    chosen: 'Watch',
+    go: 'Add',
+    working: 'Adding…',
+    /** Before the daemon's reason a directory was not added. */
+    failed: 'Not added:',
+    /** The Capture Preview run before registering (#30), while it walks. */
+    preview: {
+      looking: (path: string) => `Looking at what watching ${path} would capture…`,
+      walked: (count: number) => `${counted(count, 'path', 'paths')} so far`,
+      /** Why nothing was added: the preview was refused because another one walks, as `keepster watch` says it. */
+      busy: 'Another Capture Preview is walking, and this directory must be looked at first; try again.',
+    },
+    /** The question a directory past what one Root is claimed to hold needs, and the summary it shows. */
+    claim: {
+      question: (path: string, past: readonly string[]) =>
+        `${path} is past what one Root is claimed to hold, in ${list(past.map((claim) => CLAIMS[claim] ?? claim))}. ` +
+        `Watch it anyway?`,
+      captured: 'Captured',
+      capturedTotals: (t: PreviewTotals) =>
+        `${counted(t.files, 'file', 'files')}, ${counted(t.directories, 'directory', 'directories')}, ${byteSize(t.bytes)}`,
+      excluded: 'Excluded',
+      excludedTotals: (t: PreviewTotals) =>
+        `${counted(t.files, 'file', 'files')}, ${byteSize(t.bytes)}` +
+        (t.pruned ? `, and ${counted(t.pruned, 'directory', 'directories')} not entered` : ''),
+      withheld: 'Without content',
+      /** What is recorded without its content for `reason`, the daemon's word for why. */
+      withheldTotals: (reason: string, t: PreviewTotals) =>
+        `${counted(t.files + t.directories, 'path', 'paths')}, ${byteSize(t.bytes)} — ${reason}`,
+      unreadable: 'Unreadable',
+      unreadableCount: (count: number) => counted(count, 'path', 'paths'),
+      /** What each rule decided, largest first: the title of the list `groupTotals` and `groupPruned` fill. */
+      groups: 'By the rule that decided',
+      /** A rule as a person reads it: the pattern, and where it was written. */
+      rule: (rule: RuleReference) =>
+        `${rule.pattern} (${rule.level}, ${rule.source}${rule.line == null ? '' : ` line ${rule.line}`})`,
+      /** What `rule` decided in `group`: the files it took, of the class it put them in. */
+      groupTotals: (group: PreviewGroup, rule: RuleReference) =>
+        `${group.class}: ${counted(group.files, 'file', 'files')}, ${byteSize(group.bytes)} — ${strings.adding.claim.rule(rule)}`,
+      /** A directory of `className` that `rule` excluded and the preview did not enter. */
+      groupPruned: (className: string, path: string, rule: RuleReference) =>
+        `${className}: ${path}/ not entered — ${strings.adding.claim.rule(rule)}`,
+      largest: 'Largest captured',
+      largestLeftOut: 'Largest left out',
+      /** The one number a preview never gives, said as `keepster watch` says it. */
+      noGrowth: 'Store growth is not estimated: only the capture itself can know what the history store will hold.',
+      watch: 'Watch it anyway',
+      decline: 'Don’t watch',
+    },
+    /** The banner once the directory is a Root; the page stays where it is. */
+    added: (path: string) => `${path} is now watched.`,
+    open: 'Open its history',
+    dismiss: 'Dismiss',
+  },
+
+  /**
+   * What the "added" banner says while store maintenance cannot run, as `keepster watch` says it (ticket
+   * 11), without the part about the shell's own `git`: a page cannot know what a shell runs.
+   */
+  maintenance: {
+    title: 'Store maintenance is unavailable.',
+    /** The `git` the daemon found, where it knows its version as well. */
+    gitAt: (version: string, path: string) => `git ${version} at ${path}`,
+    /** The `git` the daemon found, without a version. */
+    gitPath: (path: string) => `git ${path}`,
+    /**
+     * Why maintenance cannot run, by the daemon's `git.reason`, in the words `keepster watch` uses. An open
+     * set: a reason without an entry is shown as it is. `too_old` and `failed` are worded below.
+     */
+    reasons: {
+      missing: 'No git was found',
+      macos_stub: 'Only the macOS stub is installed, without the Command Line Tools',
+      not_executable: 'It could not be run',
+    } as Partial<Record<string, string>>,
+    /** Why, for `too_old`. */
+    tooOld: (minimum: string) => `It is older than ${minimum}`,
+    /** What `why` costs while no usable git is installed. */
+    unreclaimed: (why: string, minimum: string) =>
+      `${why}; nothing Retention removes is reclaimed until git ${minimum} or newer is installed.`,
+    /** Why, and what it costs, for `failed`. */
+    failed:
+      'A Maintenance Pass with it failed; nothing Retention removes is reclaimed until the daemon restarts or git.path changes.',
+    /** What running `git` said, word for word. */
+    gitSaid: (detail: string) => `git said: ${detail}`,
+    /** Before the command that installs `git`, which is set as code; Keepster never runs it. */
+    install: 'Install it:',
+  },
+
+  /** The folder browser over the daemon's machine (#29), for adding a directory and recording a Move. */
+  folders: {
+    label: 'Folders',
+    /** The field holding the directory listed, where an absolute path can be typed or pasted. */
+    path: 'Path',
+    go: 'Go',
+    up: 'Up',
+    showHidden: 'Show hidden folders',
+    /** Beside a folder that cannot be listed, which cannot be gone into. */
+    unreadable: 'cannot be listed',
+    empty: 'No folders here.',
   },
 
   themeLabel: 'Theme',
@@ -184,9 +392,22 @@ export const strings = {
     absent: 'This Snapshot holds nothing at this path: the file did not exist then.',
   } satisfies Record<Card, string>,
 
+  /** The banner once the shown Root's history was erased (#33), by what the screen offers (`Erasure`). */
+  erased: {
+    title: (path: string) => `The history of ${path} was erased.`,
+    why: {
+      refresh: 'It is still watched, so its history starts over from its files as they are now.',
+      manage: 'It is no longer watched, so nothing will capture it again.',
+    } satisfies Record<Erasure, string>,
+    /** The banner's button, by the same key. */
+    go: { refresh: 'Show its history afresh', manage: 'Manage Roots' } satisfies Record<Erasure, string>,
+  },
+
   /** The Restore dialog: one for every view mode, so an irreversible action has one face (ticket 15). */
   restore: {
     open: 'Restore…',
+    /** Beside the disabled Restore while the Root shown is no longer watched (#33). */
+    unwatched: 'Restore writes only into a Watched Root, and this one is no longer watched.',
     title: (path: string) => `Restore ${path}`,
     version: (moment: Date) => `The version in the Snapshot of ${when(moment)}.`,
     beforeDeletion: (moment: Date) =>
@@ -250,7 +471,6 @@ export const strings = {
     changedSince: 'The files changed since this plan was made. This is the plan as it stands now.',
     go: 'Restore',
     working: 'Restoring…',
-    cancel: 'Cancel',
     close: 'Close',
     done: 'Done.',
     undo: (moment: Date, id: string) => `To undo it, restore from the Safety Snapshot of ${when(moment)} (${id}).`,
@@ -266,7 +486,6 @@ export const strings = {
     content: 'Content',
     everyRoot: 'Every Root',
     results: 'Results',
-    cancel: 'Cancel',
     close: 'Close',
     searching: 'Searching…',
     nothing: 'Nothing found.',

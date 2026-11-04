@@ -23,10 +23,16 @@
 
   let {
     rootId,
+    unwatched,
     target,
     onSessionEnded,
   }: {
     rootId: string
+    /**
+     * Whether the Root is no longer watched: the daemon restores only into a Watched Root, so Restore is
+     * shown disabled, with that reason, rather than left to be refused (#33).
+     */
+    unwatched: boolean
     /** The Snapshot, its predecessor and the file, given together; `null` while none is known yet. */
     target: DiffTarget | null
     onSessionEnded: () => void
@@ -38,6 +44,8 @@
   const file = $derived(target?.file ?? null)
 
   const preferences = usePreferences()
+  /* Names the reason Restore is disabled, for the button to be described by it. */
+  const blockedId = $props.id()
 
   let host = $state<HTMLDivElement>()
   let status = $state<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -127,7 +135,16 @@
     {/if}
     <span class="spacer"></span>
     {#if file && file.card !== 'absent'}
-      <button onclick={() => (restoring = true)}>{strings.restore.open}</button>
+      {#if unwatched}
+        <span class="blocked muted" id={blockedId} title={strings.restore.unwatched}>{strings.restore.unwatched}</span>
+      {/if}
+      <button
+        disabled={unwatched}
+        aria-describedby={unwatched ? blockedId : undefined}
+        onclick={() => (restoring = true)}
+      >
+        {strings.restore.open}
+      </button>
     {/if}
     <label class="wrap">
       <input
@@ -176,6 +193,7 @@
     from={restoreFrom}
     path={file.path}
     beforeDeletion={deleted}
+    {unwatched}
     onClose={() => (restoring = false)}
     {onSessionEnded}
   />
@@ -203,6 +221,13 @@
   }
   .spacer {
     flex: 1;
+  }
+  /* Why Restore is disabled: one line beside it, cut short, read in full from the tooltip. */
+  .blocked {
+    min-width: 12ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .wrap {
     display: flex;

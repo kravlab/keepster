@@ -11,8 +11,12 @@ import { connectEvents } from './events'
 import type { Root } from './wire'
 
 /** The events that change the Registry: a Root added, gone, moved, or its state. */
-const REGISTRY_EVENTS = ['root.registered', 'root.unregistered', 'root.moved', 'root.state_changed']
+export const REGISTRY_EVENTS = ['root.registered', 'root.unregistered', 'root.moved', 'root.state_changed']
 
+/**
+ * The Registry the page holds: loaded with `load`, kept current with `follow`, its newest failure in
+ * `error`. Only the newest load's answer is kept, and a failure keeps the Roots last loaded.
+ */
 export class WatchedRoots {
   /** Every registered Root, in registration order; `null` until a load first succeeds. */
   roots = $state<Root[] | null>(null)

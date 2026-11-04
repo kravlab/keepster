@@ -109,3 +109,66 @@ describe('the words of a search', () => {
     expect(strings.search.notSearched('/home/u/app', 'unreadable')).toBe('/home/u/app was not searched: unreadable')
   })
 })
+
+describe('a size as a person reads it', () => {
+  it('reads in binary units with one decimal, as the CLI writes it', () => {
+    expect(strings.byteSize(40)).toBe('40 B')
+    expect(strings.byteSize(1536)).toBe('1.5 KiB')
+    expect(strings.byteSize(10 * 1024 * 1024 * 1024)).toBe('10.0 GiB')
+    expect(strings.byteSize(3 * 1024 ** 5)).toBe('3072.0 TiB')
+  })
+})
+
+describe('the words of the Capture Preview before registering', () => {
+  it('names the claims a directory is past in words, and one it does not know as it is', () => {
+    expect(strings.adding.claim.question('/home/u/huge', ['files', 'bytes', 'inodes'])).toBe(
+      '/home/u/huge is past what one Root is claimed to hold, in files, size, inodes. Watch it anyway?',
+    )
+  })
+
+  it('writes the totals as the CLI does, one of a kind in the singular', () => {
+    expect(strings.adding.claim.capturedTotals({ files: 1, directories: 2, bytes: 1536 })).toBe(
+      '1 file, 2 directories, 1.5 KiB',
+    )
+    expect(strings.adding.claim.excludedTotals({ files: 3, directories: 0, bytes: 40, pruned: 1 })).toBe(
+      '3 files, 40 B, and 1 directory not entered',
+    )
+    expect(strings.adding.claim.excludedTotals({ files: 3, directories: 0, bytes: 40, pruned: 0 })).toBe(
+      '3 files, 40 B',
+    )
+    expect(strings.adding.claim.withheldTotals('secret', { files: 2, directories: 1, bytes: 0 })).toBe(
+      '3 paths, 0 B — secret',
+    )
+  })
+
+  it('names a rule as it was written, and where, with its line where it has one', () => {
+    const rule = { pattern: 'target/', effect: 'exclude', level: 'root', source: '/home/u/src/.keepster.toml' } as const
+    expect(strings.adding.claim.rule(rule)).toBe('target/ (root, /home/u/src/.keepster.toml)')
+    expect(strings.adding.claim.rule({ ...rule, line: 4 })).toBe('target/ (root, /home/u/src/.keepster.toml line 4)')
+  })
+
+  it('writes what a rule decided, and the directories it did not enter, with the rule', () => {
+    const rule = { pattern: '*.o', effect: 'exclude', level: 'default', source: 'built-in' } as const
+    const group = { class: 'excluded', rule, files: 3, directories: 0, bytes: 1536 }
+    expect(strings.adding.claim.groupTotals(group, rule)).toBe('excluded: 3 files, 1.5 KiB — *.o (default, built-in)')
+    expect(strings.adding.claim.groupPruned('excluded', 'build', rule)).toBe(
+      'excluded: build/ not entered — *.o (default, built-in)',
+    )
+  })
+
+  it('says that the growth of the store is not estimated, as the CLI does', () => {
+    expect(strings.adding.claim.noGrowth).toBe(
+      'Store growth is not estimated: only the capture itself can know what the history store will hold.',
+    )
+  })
+
+  it('titles what the rules decided and the largest files left out', () => {
+    expect(strings.adding.claim.groups).toBe('By the rule that decided')
+    expect(strings.adding.claim.largestLeftOut).toBe('Largest left out')
+  })
+
+  it('counts the paths walked so far', () => {
+    expect(strings.adding.preview.walked(1)).toBe('1 path so far')
+    expect(strings.adding.preview.walked(25)).toBe('25 paths so far')
+  })
+})

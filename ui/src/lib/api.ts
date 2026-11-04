@@ -9,18 +9,27 @@ import type {
   ContentRecord,
   Diff,
   DiffFile,
+  DirectoryListing,
   Entries,
   Entry,
+  MoveRoot,
   PathHit,
+  PathMode,
   PathResolution,
   PathSearch,
+  Pins,
   Preferences,
+  PreviewGroup,
+  PreviewRecord,
+  PreviewSize,
   Problem,
+  RegisterRoot,
   RestoreIssue,
   RestoreRequest,
   Restored,
   RestoredPath,
   Root,
+  Status,
   Timeline,
 } from './wire'
 import { momentOf } from './ids'
@@ -35,7 +44,10 @@ export class SessionEnded extends Error {
   override name = 'SessionEnded'
 }
 
-/** The daemon refused or failed a request; `detail` is its own explanation, when it gave one. */
+/**
+ * The daemon refused or failed a request; `detail` is its own explanation, when it gave one, and `details`
+ * its machine-readable particulars, such as the `root` a `root_overlaps` refusal names.
+ */
 export class ApiError extends Error {
   override name = 'ApiError'
 
@@ -43,6 +55,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly detail?: string,
     readonly code?: string,
+    readonly details?: Record<string, string>,
   ) {
     super(detail ?? `HTTP ${status}`)
   }
@@ -54,9 +67,9 @@ export class UnexpectedAnswer extends Error {
 }
 
 /**
- * A `/v1` path with its segments escaped and its query, leaving out absent parameters. A Root-relative
- * `path` goes last, as `pathQuery` encodes its bytes: `URLSearchParams` takes text, and would spell a byte
- * that is not UTF-8 as U+FFFD (ticket 74).
+ * A `/v1` path with its segments escaped and its query, leaving out absent parameters. A `path` — Root-
+ * relative, or an absolute path on the daemon's machine for `/v1/fs` — goes last, as `pathQuery` encodes
+ * its bytes: `URLSearchParams` takes text, and would spell a byte that is not UTF-8 as U+FFFD (ticket 74).
  */
 function url(segments: readonly string[], query: Record<string, string | undefined> = {}, path?: string): string {
   const target = `/v1/${segments.map(encodeURIComponent).join('/')}`
@@ -122,6 +135,38 @@ function contentRecordIn(record: ContentRecord): ContentRecord {
     : record
 }
 
+/** One of a preview's largest files, its path exact. */
+function sizeIn(size: PreviewSize): PreviewSize {
+  return { path: exactPath(size.path, size.path_bytes), bytes: size.bytes }
+}
+
+/** What one rule decided in a preview, the paths it pruned exact. */
+function groupIn(group: PreviewGroup): PreviewGroup {
+  return group.pruned === undefined ? group : { ...group, pruned: exactPaths(group.pruned, group.pruned_bytes) }
+}
+
+/**
+ * One line of a Capture Preview, its paths exact; `null` for a record of a type this page does not know,
+ * which the contract says to pass over.
+ */
+function previewRecordIn(record: PreviewRecord): PreviewRecord | null {
+  switch (record.type) {
+    case 'summary':
+      return {
+        ...record,
+        groups: record.groups.map(groupIn),
+        largest_captured: record.largest_captured.map(sizeIn),
+        largest_left_out: record.largest_left_out.map(sizeIn),
+      }
+    case 'header':
+    case 'progress':
+    case 'error':
+      return record
+    default:
+      return null
+  }
+}
+
 /** A Restore request as the wire takes it: each path that is not UTF-8 named by its bytes as well. */
 function restoreRequestOut(request: RestoreRequest): RestoreRequest {
   const paths = wirePaths(request.paths)
@@ -151,14 +196,19 @@ async function problemOf(response: Response): Promise<Partial<Problem>> {
 /** The failure an answer that is not OK stands for: `SessionEnded` for a 401, `ApiError` otherwise. */
 function failure(response: Response, problem: Partial<Problem>): Error {
   if (response.status === 401) return new SessionEnded('the session has ended')
-  return new ApiError(response.status, problem.detail, problem.code)
+  return new ApiError(response.status, problem.detail, problem.code, problem.details)
+}
+
+/** Sends `init` to `target` and hands back the OK answer, turning a failure into `SessionEnded` or `ApiError`. */
+async function request(target: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(target, init)
+  if (response.ok) return response
+  throw failure(response, await problemOf(response))
 }
 
 /** GETs `target`, turning a failure into `SessionEnded` or `ApiError`; `signal` aborts the request. */
-async function get(target: string, signal?: AbortSignal): Promise<Response> {
-  const response = await fetch(target, signal ? { signal } : undefined)
-  if (response.ok) return response
-  throw failure(response, await problemOf(response))
+function get(target: string, signal?: AbortSignal): Promise<Response> {
+  return request(target, signal ? { signal } : undefined)
 }
 
 /** GETs `target` and parses its JSON body as `T`, which the caller names from the endpoint's contract. */
@@ -167,13 +217,22 @@ async function getJson<T>(target: string, signal?: AbortSignal): Promise<T> {
 }
 
 /** Sends `body` as JSON to `target` with `method`, and hands back the answer whatever its status. */
-function sendJson(method: 'POST' | 'PUT', target: string, body: unknown): Promise<Response> {
+function sendJson(method: 'POST' | 'PUT' | 'PATCH', target: string, body: unknown): Promise<Response> {
   return fetch(target, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 }
 
 /** Every registered Root. */
 export function listRoots(): Promise<Root[]> {
   return getJson(url(['roots']))
+}
+
+/**
+ * The directories in the absolute directory `path` on the daemon's machine, or in its home directory
+ * when `path` is absent. A path that is not absolute, names nothing, is not a directory or cannot be
+ * listed is refused as an `ApiError` with the daemon's explanation.
+ */
+export function listDirectories(path?: string): Promise<DirectoryListing> {
+  return getJson(url(['fs'], {}, path))
 }
 
 /**
@@ -267,6 +326,91 @@ export async function restore(root: string, request: RestoreRequest): Promise<Re
   throw failure(response, problem)
 }
 
+/**
+ * What registering a directory came to: the Root it now is, or a refusal asking which a path through a
+ * link is — `path` as it was sent and `realPath` where the link leads now — with nothing registered. Any
+ * other refusal is thrown, as everywhere.
+ */
+export type RegisterAnswer = { kind: 'registered'; root: Root } | ThroughLink
+
+/** A path sent for a Root leads through a link: `path` as it was sent, `realPath` where the link leads now. */
+export type ThroughLink = { kind: 'throughLink'; path: string; realPath: string }
+
+/**
+ * Registers the directory at `path` as a Watched Root. A path through a link is refused until `pathMode`
+ * says which the Root is; that refusal is answered as `throughLink`, so the person can be asked.
+ */
+export async function registerRoot(path: string, pathMode?: PathMode): Promise<RegisterAnswer> {
+  const body: RegisterRoot = rootPathBody(path, pathMode)
+  const response = await sendJson('POST', url(['roots']), body)
+  if (response.ok) return { kind: 'registered', root: (await response.json()) as Root }
+  return throughLink(response)
+}
+
+/**
+ * What recording a Move came to: the Root at its new path, as the daemon describes it now, or a refusal
+ * asking which a path through a link is, as for registering, with nothing recorded. Any other refusal is
+ * thrown, as everywhere.
+ */
+export type MoveAnswer = { kind: 'moved'; root: Root } | ThroughLink
+
+/**
+ * Records a Move: the Root `id`'s directory is now at `path`. No file is touched, and the identity, with
+ * it the history, stays. A path through a link is refused until `pathMode` says which the Root is; that
+ * refusal is answered as `throughLink`, as `registerRoot` answers it.
+ */
+export async function moveRoot(id: string, path: string, pathMode?: PathMode): Promise<MoveAnswer> {
+  const body: MoveRoot = rootPathBody(path, pathMode)
+  const response = await sendJson('PATCH', url(['roots', id]), body)
+  if (response.ok) return { kind: 'moved', root: (await response.json()) as Root }
+  return throughLink(response)
+}
+
+/**
+ * The body of a request that sends a path for a Root, registering or moving one: `path`, and `path_mode`
+ * only once the person has said which a path through a link is, so that the daemon asks until then.
+ */
+function rootPathBody(path: string, pathMode: PathMode | undefined): RegisterRoot & MoveRoot {
+  return pathMode === undefined ? { path } : { path, path_mode: pathMode }
+}
+
+/**
+ * A failed answer to a request that sends a path for a Root, registering or moving one: the refusal
+ * asking which a path through a link is, as a `ThroughLink`; any other refusal is thrown.
+ */
+async function throughLink(response: Response): Promise<ThroughLink> {
+  const problem = await problemOf(response)
+  const details = problem.details
+  if (
+    response.status === 400 &&
+    problem.code === 'confirmation_required' &&
+    details?.missing === 'path_mode' &&
+    details.path !== undefined &&
+    details.real_path !== undefined
+  ) {
+    return { kind: 'throughLink', path: details.path, realPath: details.real_path }
+  }
+  throw failure(response, problem)
+}
+
+/**
+ * Stops watching the Root `id`: its history is kept, its last state pinned. With `purge` the history is
+ * erased too, which cannot be undone; the query carries it only then. A refusal is thrown, as everywhere.
+ */
+export async function unwatchRoot(id: string, purge: boolean): Promise<void> {
+  await request(url(['roots', id], purge ? { purge: 'true' } : {}), { method: 'DELETE' })
+}
+
+/** The Root `id`'s pinned Snapshots, newest first; a Root that never captured anything has none. */
+export function readPins(id: string): Promise<Pins> {
+  return getJson(url(['roots', id, 'pins']))
+}
+
+/** The daemon's health surface; only its maintenance rows are read. */
+export function readStatus(): Promise<Status> {
+  return getJson(url(['status']))
+}
+
 /** The web UI's preferences, as the daemon keeps them. */
 export function readPreferences(): Promise<Preferences> {
   return getJson(url(['preferences']))
@@ -289,6 +433,20 @@ export async function searchPaths(q: string, signal?: AbortSignal): Promise<Path
 }
 
 /**
+ * The records of a newline-delimited JSON answer, as they arrive. An answer with no body, or a line that
+ * is not JSON, is an `UnexpectedAnswer` that says `what` sent it.
+ */
+async function* streamedRecords(response: Response, what: string, signal?: AbortSignal): AsyncGenerator<unknown> {
+  if (!response.body) throw new UnexpectedAnswer(`${what} answered with no body`)
+  try {
+    yield* ndjsonRecords(response.body, signal)
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new UnexpectedAnswer(`${what} sent a line that is not JSON: ${e.message}`)
+    throw e
+  }
+}
+
+/**
  * The records of a content search for `q` in the Roots named, or in every Root, as the daemon finds them.
  * Leaving the loop early, or aborting `signal`, closes the connection, which stops the daemon's walk.
  */
@@ -299,12 +457,21 @@ export async function* searchContent(
 ): AsyncGenerator<ContentRecord> {
   const query = scope === 'all' ? { q, all: 'true' } : { q, roots: scope.roots.join(',') }
   const response = await get(url(['search', 'content'], query), signal)
-  if (!response.body) throw new UnexpectedAnswer('the content search answered with no body')
-  try {
-    for await (const record of ndjsonRecords(response.body, signal)) yield contentRecordIn(record as ContentRecord)
-  } catch (e) {
-    if (e instanceof SyntaxError)
-      throw new UnexpectedAnswer(`the content search sent a line that is not JSON: ${e.message}`)
-    throw e
+  for await (const record of streamedRecords(response, 'the content search', signal))
+    yield contentRecordIn(record as ContentRecord)
+}
+
+/**
+ * The records of a Capture Preview of the absolute directory `path` on the daemon's machine, at the
+ * default depth, which sends the summary alone: a `header`, `progress` now and then while the walk runs,
+ * then its `summary`, or an `error` in its place. A preview the daemon refuses — `preview_busy` while
+ * another one walks — is thrown as an `ApiError` with its code. Leaving the loop early, or aborting
+ * `signal`, closes the connection, which stops the daemon's walk.
+ */
+export async function* previewDirectory(path: string, signal?: AbortSignal): AsyncGenerator<PreviewRecord> {
+  const response = await get(url(['preview'], {}, path), signal)
+  for await (const line of streamedRecords(response, 'the preview', signal)) {
+    const record = previewRecordIn(line as PreviewRecord)
+    if (record) yield record
   }
 }

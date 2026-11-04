@@ -1,6 +1,6 @@
 /**
  * Newline-delimited JSON read off a streamed body, one record per line, as each line arrives: the shape of
- * `GET /v1/search/content` (ticket 59).
+ * `GET /v1/search/content` (ticket 59) and of `GET /v1/preview`, the Capture Preview (#30).
  */
 
 /**
@@ -10,7 +10,7 @@
  *
  * Aborting `signal` cancels the stream at once, even while it waits for bytes, and the reading fails with
  * the signal's reason. That, or leaving the loop early, closes a fetched body's connection: it is how a
- * content search is stopped.
+ * content search or a preview is stopped.
  */
 export async function* ndjsonRecords(
   stream: ReadableStream<Uint8Array>,

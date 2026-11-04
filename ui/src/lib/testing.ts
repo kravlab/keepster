@@ -1,7 +1,7 @@
 /**
  * Test support, imported by tests only: the browser's `EventSource` as the live stream opens it, driven by
- * hand, and a way to end every subscription a test started, so that the page-wide stream a test leaves
- * behind never reaches the next test.
+ * hand, a way to end every subscription a test started, so that the page-wide stream a test leaves
+ * behind never reaches the next test, and a newline-delimited JSON answer.
  */
 import type { EventSourceLike } from './events'
 
@@ -77,3 +77,7 @@ export const stopFollowing = () => {
   for (const stop of stops.splice(0)) stop()
   FakeSource.opened = []
 }
+
+/** An answer of newline-delimited JSON, one of `lines` to a line, as the streamed endpoints send it. */
+export const ndjson = (...lines: string[]): Response =>
+  new Response(lines.map((l) => `${l}\n`).join(''), { headers: { 'content-type': 'application/x-ndjson' } })

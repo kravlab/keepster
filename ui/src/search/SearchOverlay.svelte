@@ -162,7 +162,7 @@
       <label><input type="checkbox" bind:checked={everyRoot} /> {strings.search.everyRoot}</label>
     {/if}
     {#if run.running}
-      <button onclick={() => run.cancel()}>{strings.search.cancel}</button>
+      <button onclick={() => run.cancel()}>{strings.cancel}</button>
     {/if}
     <button onclick={(e) => e.currentTarget.closest('dialog')?.close()}>{strings.search.close}</button>
   </header>
